@@ -42,5 +42,5 @@ It's hard to know whether a formal model actually does what it's supposed to. Th
 
 ## Requirements
 - [elan](https://github.com/leanprover/elan) (Lean 4.34.1, from `lean-toolchain`) and Python 3
-- QEMU (`qemu-system-i386`, `qemu-system-x86_64`) and clang for the differential tests
+- QEMU 11.1.2 (`qemu-system-i386`, `qemu-system-x86_64`; older versions disagree with it) and clang for the differential tests
 - For the Linux guest images: a Linux machine or VM with `build-essential` and an `i686-linux-gnu` cross toolchain (`validation/guest/build.sh`, `x86_64/guest/build.sh`)

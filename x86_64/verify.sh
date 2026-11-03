@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 N=${1:-20000}
 SEED=${2:-1}
 lake build x64run x64test x64check X64Proofs
-if rg -n '\b(sorry|admit|axiom)\b' X64 --glob '*.lean'; then
+if grep -rnwE 'sorry|admit|axiom' --include='*.lean' X64; then
   echo 'FAIL: proof hole or user-declared axiom' >&2
   exit 1
 fi

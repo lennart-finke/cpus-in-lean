@@ -37,6 +37,7 @@ echo "== 3. IA-32 runners"
 
 if command -v qemu-system-i386 >/dev/null && command -v qemu-system-x86_64 >/dev/null; then
   echo "== 4. QEMU differential tests ($N vectors each, seed $SEED)"
+  qemu-system-i386 --version | head -1
   OUT=$(validation/test/run.sh "$N" "$SEED")
   echo "   ia32:   $OUT"
   echo "$OUT" | grep -q ", 0 mismatches" || { echo "FAIL: ia32 mismatches"; exit 1; }

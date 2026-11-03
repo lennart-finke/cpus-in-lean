@@ -13,8 +13,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install QEMU and clang
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 clang
+      # The differential tests are validated against this QEMU; distribution packages are older
+      # and disagree with it (Ubuntu 24.04's 8.2 reports mismatches and can crash in TCG).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build pkg-config libglib2.0-dev libpixman-1-dev python3-venv flex bison
+
+      - name: Cache QEMU
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-11.1.2-${{ runner.os }}
+
+      - name: Build QEMU 11.1.2
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL https://download.qemu.org/qemu-11.1.2.tar.xz | tar -xJ
+          cd qemu-11.1.2
+          ./configure --prefix="$HOME/qemu" --target-list=i386-softmmu,x86_64-softmmu \
+            --disable-docs --disable-tools --disable-user
+          make -j"$(nproc)" install
+
+      - name: Add QEMU to PATH
+        run: |
+          echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+          "$HOME/qemu/bin/qemu-system-i386" --version
 
       - name: Install elan
         run: |
