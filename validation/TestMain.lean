@@ -1,0 +1,254 @@
+import X86
+/-!
+# x86test — differential testing of the model against QEMU
+
+    x86test vectors.bin vectors.metaLines qemu.out
+
+Rebuilds, for every vector, the machine state the QEMU harness (test/harness) sets up:
+ring 3, flat user segments, GDT at 0x1000, TSS at 0x1800, IDT base 0x2000, optional paging
+(page directory 0x3000, identity page table 0x4000, per-vector PTEs for the data pages 8 and 9,
+CR0.WP), data area at 0x8000 (8 KiB) filled by xorshift32, code buffer at 0x20000 filled with
+INT3. Executes exactly one instruction with the model and compares the outcome (exception vector,
+error code and CR2, or EIP, GPRs, defined EFLAGS, segment selectors, a hash of the data area and
+the two PTEs including accessed/dirty bits) with QEMU's.
+-/
+open X86
+
+def DATA : UInt32 := 0x8000
+def CODE : UInt32 := 0x20000
+
+def xorshift (s : UInt32) : UInt32 :=
+  let x := s ^^^ (s <<< 13)
+  let x := x ^^^ (x >>> 17)
+  x ^^^ (x <<< 5)
+
+def segDesc (base limit typ flags : UInt32) : Nat :=
+  let lo : Nat := ((limit &&& 0xFFFF) ||| ((base &&& 0xFFFF) <<< 16)).toNat
+  let hi : Nat := (((base >>> 16) &&& 0xFF) ||| (typ <<< 8) ||| (limit &&& 0xF0000) |||
+                   (flags <<< 20) ||| (base &&& 0xFF000000)).toNat
+  lo + hi * 2^32
+
+def gdt : List Nat := [0,
+  segDesc 0 0xfffff 0x9b 0xc, segDesc 0 0xfffff 0x93 0xc, segDesc 0 0xfffff 0xfb 0xc,
+  segDesc 0 0xfffff 0xf3 0xc, segDesc 0x8000 0xfff 0xf3 0x4, segDesc 0 0x7fff 0xf7 0x4,
+  segDesc 0 0xfffff 0xf1 0xc, segDesc 0x1800 0x67 0x8b 0x0, segDesc 0 0xfffff 0x93 0xc,
+  segDesc 0 0xfffff 0x73 0xc, segDesc 0 0xffff 0xfb 0x0, segDesc 0 0xffff 0xf3 0x0,
+  segDesc 0 0xfffff 0xf9 0xc]
+
+def fnv (mem : ByteArray) : UInt32 := Id.run do
+  let mut h : UInt32 := 2166136261
+  for i in [0:8192] do
+    h := (h ^^^ (mem.get! (DATA.toNat + i)).toUInt32) * 16777619
+  return h
+
+structure Outcome where
+  vec : UInt32
+  err : UInt32
+  eip : UInt32
+  regs : Array UInt32   -- eax ecx edx ebx esp ebp esi edi
+  eflags : UInt32
+  segs : Array UInt32   -- ds es fs gs ss
+  hash : UInt32
+  cr2 : UInt32
+  pte8 : UInt32
+  pte9 : UInt32
+  pageHashes : List UInt32 := []
+  deriving BEq, Repr
+
+def baseMachine : Machine := Id.run do
+  let mut mem := ByteArray.mk (Array.replicate 0x40000 0)
+  let mut k : UInt32 := 0
+  for d in gdt do
+    mem := wr64 mem (0x1000 + k * 8) d
+    k := k + 1
+  mem := wrBytes mem (0x1800 + 0x64) 4 (0x68 <<< 16)
+  mem := wrBytes mem 0x3000 4 (0x4000 ||| 0x27)
+  for i in [0:1024] do
+    mem := wrBytes mem (0x4000 + 4 * i.toUInt32) 4 ((i.toUInt32 <<< 12) ||| 0x67)
+  let user (sel : UInt16) (attr : UInt32) : SegReg := { sel, base := 0, limit := 0xFFFFFFFF, attr }
+  let cpu : Cpu := {
+    cs := user 0x1B 0xC0FB, ss := user 0x23 0xC0F3, ds := user 0x23 0xC0F3,
+    es := user 0x23 0xC0F3, fs := user 0x23 0xC0F3, gs := user 0x23 0xC0F3,
+    gdtBase := 0x1000, gdtLimit := 14 * 8 - 1, idtBase := 0x2000, idtLimit := 20 * 8 - 1,
+    tr := { sel := 0x40, base := 0x1800, limit := 0x67, attr := 0x8B },
+    ldtr := { sel := 0, base := 0, limit := 0, attr := 0 },
+    cr0 := 0x31 }
+  return { cpu, mem }
+
+/-- Read-modify-write instructions with a memory destination: the model, like the CPU of the
+2026-10-22 hardware campaign, translates the destination with write intent on the first access
+(`rmwE`, XADD, CMPXCHG, CMPXCHG8B, BTS/BTR/BTC); QEMU's TCG reads it first and writes afterwards. -/
+def rmwDest (i : Inst) : Bool :=
+  lockOk i || (i.isMem &&
+    (i.op == 0xC0 || i.op == 0xC1 || (0xD0 ≤ i.op && i.op ≤ 0xD3) ||          -- shifts, rotates
+     i.op == 0x1A4 || i.op == 0x1A5 || i.op == 0x1AC || i.op == 0x1AD ||      -- SHLD, SHRD
+     i.op == 0x63))                                                           -- ARPL
+
+/-- QEMU (TCG) behaviours that differ from the hardware the model was checked against (README):
+* RMW destinations: TCG reads first, so a #PF on the destination has the W bit clear; its read
+  translation sets only A where the write-intent translation sets A and D (or faults before setting
+  A); and for an operand crossing into the next page, a readable but read-only first page lets TCG's
+  read reach the second page and fault there. The CPU reports a write fault from the first access, at
+  the operand start when the first page is not writable (hardware campaign, README).
+* PUSHA: TCG probes the whole push range first and faults at its start with nothing written; the CPU
+  pushes in order, keeps completed pushes and faults at the first failing push.
+`qemuAsHardware i qo lo init` rewrites exactly those fields of QEMU's outcome `qo` to the model's
+`lo` when they show the TCG signature; every other field is still compared. -/
+def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome := Id.run do
+  if qo.vec != 14 || lo.vec != 14 then return qo
+  let mut q := qo
+  if rmwDest i then
+    if q.err &&& 2 == 0 && lo.err &&& 2 != 0 && lo.cr2 < q.cr2 && q.cr2 &&& 0xFFF == 0 && q.cr2 - lo.cr2 < 8 then
+      q := { q with err := lo.err, cr2 := lo.cr2 }
+    if q.err &&& 2 == 0 && lo.err == q.err ||| 2 then q := { q with err := lo.err }
+    let readVsWrite (qp lp : UInt32) : Bool :=
+      (qp &&& 0x20 != 0 && lp == qp &&& ~~~0x20) || lp == qp ||| 0x40 || lp == qp ||| 0x60
+    if readVsWrite q.pte8 lo.pte8 then q := { q with pte8 := lo.pte8 }
+    if readVsWrite q.pte9 lo.pte9 then q := { q with pte9 := lo.pte9 }
+  if i.op == 0x60 then
+    let esp := lo.regs[4]!
+    let start := esp - 8 * i.opsz.toUInt32
+    if q.cr2 == start && start ≤ lo.cr2 && lo.cr2 < esp then q := { q with cr2 := lo.cr2 }
+    if q.hash == initHash then q := { q with hash := lo.hash, pte8 := lo.pte8, pte9 := lo.pte9 }
+  return q
+
+def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
+    Except String (Outcome × Option Inst × UInt32) := do
+  let len := u8At v o
+  let rd32 (i : Nat) : UInt32 := (u32At v (o + i)).toUInt32
+  let regs := (List.range 8).map fun r => rd32 (16 + 4 * r)
+  let eflags := rd32 48
+  let seed := rd32 52
+  let sels := (List.range 4).map fun s => (u16At v (o + 56 + 2 * s)).toUInt16
+  let poff := (List.range 2).map fun k => u16At v (o + 64 + 2 * k)
+  let pval := (List.range 2).map fun k => rd32 (68 + 4 * k)
+  let mode := rd32 76
+  let pte8 := rd32 80
+  let pte9 := rd32 84
+  let mut m := baseMachine
+  let mut mem := m.mem
+  let mut s := seed
+  for i in [0:2048] do
+    s := xorshift s
+    mem := wrBytes mem (DATA + (4 * i).toUInt32) 4 s
+  for (po, pv) in poff.zip pval do
+    if po != 0xFFFF then mem := wrBytes mem (DATA + po.toUInt32) 4 pv
+  for i in [0:512] do mem := mem.set! (CODE.toNat + i) 0xCC
+  for i in [0:len] do mem := mem.set! (CODE.toNat + 256 + i) (v.get! (o + 1 + i))
+  let mut c := m.cpu
+  for r in [0:8] do c := c.setReg r.toUInt8 regs[r]!
+  c := { c with eflags, eip := CODE + 256, cr3 := 0x3000 }
+  mem := wrBytes mem (0x4000 + 8 * 4) 4 (0x8000 ||| (pte8 &&& 0xFFF))
+  mem := wrBytes mem (0x4000 + 9 * 4) 4 (0x9000 ||| (pte9 &&& 0xFFF))
+  if nativeMemory then
+    mem := wrBytes mem (0x4000 + 16 * 4) 4 (0x8000 ||| (pte8 &&& 0xFFF))
+    mem := wrBytes mem (0x4000 + 17 * 4) 4 (0x9000 ||| (pte9 &&& 0xFFF))
+  if mode &&& 1 != 0 then
+    c := { c with cr0 := 0x80000031 ||| (if mode &&& 2 != 0 then 0x10000 else 0) }
+  m := { m with mem, cpu := c }
+  -- data segment registers through the descriptor-load path
+  for (si, sel) in [SegN.DS, SegN.ES, SegN.FS, SegN.GS].zip sels do
+    match (loadSeg si sel) m with
+    | .ok _ m' => m := m'
+    | .error _ _ => throw s!"bad initial selector {sel}"
+  let start := m.cpu.eip
+  let inst := match decode m with | .ok i _ => some i | .error _ _ => none
+  let initHash := fnv m.mem
+  let tf := eflags &&& Flag.TF != 0
+  let mut res : Option Fault := none
+  let mut trapped := false
+  let mut steps := 0
+  let mut go := true
+  while go do
+    match execInstr { m with cpu := { m.cpu with shadow := false } } with
+    | .ok i m' => m := m'; if tf && !noStepTrap i then trapped := true
+    | .error f m' => m := m'; res := some f
+    steps := steps + 1
+    -- a REP string instruction that stopped early is re-executed, as the CPU would
+    go := res.isNone && !trapped && m.cpu.eip == start && steps < 1000 && (u8At v (o+1) ≠ 0xEB)
+  let fc := m.cpu
+  let (vec, err, cr2) := match res with
+    | none => if trapped then (1, 0, 0) else (3, 0, 0)
+    | some (.exc vv e a) => (vv.toUInt32, e.getD 0, if vv == Vec.PF then a else 0)
+    | some (.shutdown _) => (0xFFFF, 0, 0)
+    | some (.unsupported _) => (0xFFFE, 0, 0)
+  let mut pageHashes : List UInt32 := []
+  if nativeMemory then
+    for page in [0:2] do
+      let mut h : UInt64 := 14695981039346656037
+      for k in [0:4096] do h := (h ^^^ (m.mem.get! (0x8000+page*4096+k)).toUInt64) * 1099511628211
+      pageHashes := pageHashes ++ [h.toUInt32, (h >>> 32).toUInt32]
+  return ({ vec, err, eip := fc.eip,
+            regs := #[fc.eax, fc.ecx, fc.edx, fc.ebx, fc.esp, fc.ebp, fc.esi, fc.edi],
+            eflags := fc.eflags, segs := #[fc.ds.sel.toUInt32, fc.es.sel.toUInt32, fc.fs.sel.toUInt32,
+              fc.gs.sel.toUInt32, fc.ss.sel.toUInt32], hash := fnv m.mem, cr2,
+            pte8 := rdBytes m.mem (0x4000 + 32) 4, pte9 := rdBytes m.mem (0x4000 + 36) 4, pageHashes },
+          inst, initHash)
+
+def parseHex (s : String) : UInt32 :=
+  s.foldl (fun a ch => a * 16 + (if ch.isDigit then ch.toNat - 48 else ch.toLower.toNat - 87).toUInt32) 0
+
+def main (args : List String) : IO UInt32 := do
+  let nativeMemory := args.head? == some "--native-memory"
+  let dumpArgs := if nativeMemory then ["--dump"] ++ args.drop 1 else args
+  if let ["--dump", vf] := dumpArgs then
+    let v ← IO.FS.readBinFile vf
+    if v.size == 0 || v.size % 88 != 0 then IO.eprintln "invalid vector size"; return 2
+    let hx := fun (x : UInt32) =>
+      let s := String.ofList (Nat.toDigits 16 x.toNat)
+      "".pushn '0' (8 - s.length) ++ s
+    IO.println s!"BEGIN {hx (v.size / 88).toUInt32}"
+    for idx in [0:v.size / 88] do
+      match runVector v (idx * 88) nativeMemory with
+      | .error e => IO.eprintln s!"vector {idx}: {e}"; return 1
+      | .ok (o, _, _) =>
+        if o.vec >= 0xFFFE then IO.eprintln s!"vector {idx}: unsupported model outcome"; return 1
+        let fields := [idx.toUInt32, o.vec, o.err, o.eip] ++ o.regs.toList ++
+          [o.eflags] ++ o.segs.toList ++ [o.hash, o.cr2, o.pte8, o.pte9] ++ o.pageHashes
+        IO.println (String.intercalate " " (fields.map hx))
+    IO.println "END"
+    return 0
+  let [vf, mf, qf] := args | do IO.eprintln "usage: x86test vectors.bin vectors.metaLines qemu.out"; return 2
+  let v ← IO.FS.readBinFile vf
+  let metaLines := (← IO.FS.lines mf)
+  let qlines := (← IO.FS.lines qf).filter fun l => l.length > 150 && (l.get 0).isAlphanum
+  let n := v.size / 88
+  let mut bad := 0
+  let mut tcg := 0
+  let mut checked := 0
+  let mut q := 0
+  for l in qlines do
+    let f := (l.splitOn " ").filter (· ≠ "") |>.map parseHex |>.toArray
+    if f.size < 22 then continue
+    let idx := f[0]!.toNat
+    if idx ≥ n then continue
+    let fm := parseHex ((metaLines[idx]!.splitOn " ")[0]!)
+    let desc := (metaLines[idx]!.splitOn " ")[1]!
+    let qo : Outcome := { vec := f[1]!, err := f[2]!, eip := f[3]!, regs := f.extract 4 12,
+                          eflags := f[12]!, segs := f.extract 13 18, hash := f[18]!,
+                          cr2 := f[19]!, pte8 := f[20]!, pte9 := f[21]! }
+    match runVector v (idx * 88) with
+    | .error e => IO.println s!"#{idx} {desc}: {e}"; bad := bad + 1
+    | .ok (lo, inst, initHash) =>
+      -- the instruction completed (INT3 terminator or single-step trap): undefined flags masked
+      let mask := if qo.vec == 3 || qo.vec == 1 then fm else 0xFFFEFFFF
+      -- CMPS reads two memory operands in an unspecified order: CR2 is not compared
+      let cmps := desc.endsWith "a6" || desc.endsWith "a7"
+      let flt := qo.vec != 3 && qo.vec != 1
+      let norm := fun (x : Outcome) => { x with eflags := x.eflags &&& mask,
+                                                cr2 := if cmps then 0 else x.cr2,
+                                                err := if cmps && x.vec == 14 then 0 else x.err,
+                                                pte8 := if cmps && flt then x.pte8 &&& ~~~0x20 else x.pte8,
+                                                pte9 := if cmps && flt then x.pte9 &&& ~~~0x20 else x.pte9 }
+      checked := checked + 1
+      let qh := match inst with | some i => qemuAsHardware i qo lo initHash | none => qo
+      if norm lo != norm qo && norm lo == norm qh then
+        tcg := tcg + 1
+      else if norm lo != norm qo then
+        bad := bad + 1
+        IO.println s!"MISMATCH #{idx} insn {desc} (flag mask {(Nat.toDigits 16 mask.toNat).asString})"
+        IO.println s!"  qemu: {repr (norm qo)}"
+        IO.println s!"  lean: {repr (norm lo)}"
+    q := q + 1
+  IO.println s!"{checked} vectors compared, {bad} mismatches ({tcg} known QEMU deviations accepted)"
+  return (if bad == 0 then 0 else 1)

@@ -1,0 +1,142 @@
+/*
+ * Differential test harness: runs one instruction per test vector in ring 3 and
+ * reports the resulting state over COM1. Vectors come from a multiboot module.
+ * Shared fixed layout (mirrored by the Lean side, see TestMain.lean):
+ *   0x1000 GDT, 0x1800 TSS, 0x2000 IDT, 0x3000 page directory, 0x4000 page table (identity, 4 MiB),
+ *   0x8000 data area (8 KiB = pages 8 and 9, whose PTEs come from the vector), 0x20000 code buffer (512 B)
+ */
+#include <stdint.h>
+
+#define GDT  ((uint64_t *)0x1000)
+#define TSS  ((uint32_t *)0x1800)
+#define IDT  ((uint64_t *)0x2000)
+#define DATA ((uint8_t *)0x8000)
+#define CODE ((uint8_t *)0x20000)
+#define DATA_SIZE 8192
+#define PD ((uint32_t *)0x3000)
+#define PT ((uint32_t *)0x4000)
+#define CODE_SIZE 512
+#define INSN_OFF 256
+
+struct vec {
+	uint8_t len, bytes[15];
+	uint32_t r[8];			/* eax ecx edx ebx esp ebp esi edi */
+	uint32_t eflags;
+	uint32_t seed;
+	uint16_t sel[4];		/* ds es fs gs */
+	uint16_t poff[2];		/* patch offsets into the data area (0xffff = none) */
+	uint32_t pval[2];
+	uint32_t mode;			/* bit 0: paging, bit 1: CR0.WP */
+	uint32_t pte[2];		/* low 12 bits of the PTEs of pages 8 and 9 */
+};					/* 88 bytes */
+
+/* layout used by enter_user in boot.S */
+struct ustate { uint32_t r[8]; uint32_t eflags, eip, ss, ds, es, fs, gs; } ustate;
+
+static struct vec *vecs;
+static uint32_t nvec, cur;
+extern char tss_stack_top[];
+extern void enter_user(void);
+
+static inline void outb(uint16_t p, uint8_t v) { __asm__ volatile("outb %0,%1" :: "a"(v), "Nd"(p)); }
+static inline uint8_t inb(uint16_t p) { uint8_t v; __asm__ volatile("inb %1,%0" : "=a"(v) : "Nd"(p)); return v; }
+
+static void putc_(char c) { while (!(inb(0x3fd) & 0x20)); outb(0x3f8, c); }
+static void puts_(const char *s) { while (*s) putc_(*s++); }
+static void hex(uint32_t v) { for (int i = 28; i >= 0; i -= 4) putc_("0123456789abcdef"[(v >> i) & 15]); putc_(' '); }
+
+uint32_t xorshift(uint32_t *s) { uint32_t x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }
+
+static uint64_t seg(uint32_t base, uint32_t limit, uint32_t type_dpl_p, uint32_t flags) {
+	return (limit & 0xffff) | ((uint64_t)(base & 0xffffff) << 16) | ((uint64_t)type_dpl_p << 40) |
+	       ((uint64_t)((limit >> 16) & 0xf) << 48) | ((uint64_t)flags << 52) | ((uint64_t)(base >> 24) << 56);
+}
+
+extern char isr0[], isr1[], isr2[], isr3[], isr4[], isr5[], isr6[], isr7[], isr8[], isr9[],
+	isr10[], isr11[], isr12[], isr13[], isr14[], isr15[], isr16[], isr17[], isr18[], isr19[];
+static char *isrs[20] = { isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8, isr9,
+	isr10, isr11, isr12, isr13, isr14, isr15, isr16, isr17, isr18, isr19 };
+
+static void setup(void) {
+	GDT[0] = 0;
+	GDT[1] = seg(0, 0xfffff, 0x9b, 0xc);		/* 0x08 kernel code */
+	GDT[2] = seg(0, 0xfffff, 0x93, 0xc);		/* 0x10 kernel data */
+	GDT[3] = seg(0, 0xfffff, 0xfb, 0xc);		/* 0x1b user code */
+	GDT[4] = seg(0, 0xfffff, 0xf3, 0xc);		/* 0x23 user data */
+	GDT[5] = seg(0x8000, 0xfff, 0xf3, 0x4);		/* 0x2b user data, base 0x8000 limit 0xfff */
+	GDT[6] = seg(0, 0x7fff, 0xf7, 0x4);		/* 0x33 user data, expand-down, limit 0x7fff */
+	GDT[7] = seg(0, 0xfffff, 0xf1, 0xc);		/* 0x3b user data, read-only */
+	GDT[8] = seg(0x1800, 0x67, 0x89, 0x0);		/* 0x40 TSS */
+	GDT[9] = seg(0, 0xfffff, 0x93, 0xc);		/* 0x48 kernel data (0x4b from ring 3: #GP) */
+	GDT[10] = seg(0, 0xfffff, 0x73, 0xc);		/* 0x50 not-present user data (0x53: #NP) */
+	GDT[11] = seg(0, 0xffff, 0xfb, 0x0);		/* 0x5b user code, 16-bit, limit 0xffff */
+	GDT[12] = seg(0, 0xffff, 0xf3, 0x0);		/* 0x63 user data, 16-bit (B=0) */
+	GDT[13] = seg(0, 0xfffff, 0xf9, 0xc);		/* 0x6b user code, execute-only */
+	struct { uint16_t l; uint32_t b; } __attribute__((packed)) gd = { 14 * 8 - 1, 0x1000 }, id = { 20 * 8 - 1, 0x2000 };
+	for (int i = 0; i < 26; i++) TSS[i] = 0;
+	TSS[1] = (uint32_t)tss_stack_top;		/* esp0 */
+	TSS[2] = 0x10;					/* ss0 */
+	TSS[25] = 0x68u << 16;				/* I/O map base beyond the limit: no ports */
+	for (int i = 0; i < 20; i++) {
+		uint32_t a = (uint32_t)isrs[i];
+		uint32_t dpl = (i == 3) ? 3 : 0;
+		IDT[i] = (a & 0xffff) | (0x08ull << 16) | ((uint64_t)(0x8e | (dpl << 5)) << 40) | ((uint64_t)(a >> 16) << 48);
+	}
+	__asm__ volatile("lgdt %0; lidt %1" :: "m"(gd), "m"(id));
+	__asm__ volatile("ljmp $0x08, $1f; 1: mov $0x10,%%eax; mov %%eax,%%ds; mov %%eax,%%es; mov %%eax,%%ss;"
+			 "mov %%eax,%%fs; mov %%eax,%%gs; mov $0x40,%%eax; ltr %%ax; xor %%eax,%%eax; lldt %%ax" ::: "eax", "memory");
+	__asm__ volatile("mov %0, %%cr0" :: "r"(0x31u));	/* PE ET NE */
+	outb(0x21, 0xff); outb(0xa1, 0xff);		/* mask all IRQs */
+	for (int i = 0; i < 1024; i++) PD[i] = 0;
+	PD[0] = 0x4000 | 0x27;				/* P RW US A */
+	for (int i = 0; i < 1024; i++) PT[i] = (i << 12) | 0x67;	/* P RW US A D */
+	__asm__ volatile("mov %0, %%cr3" :: "r"(0x3000u));
+}
+
+static void run_next(void) {
+	if (cur >= nvec) { puts_("END\n"); outb(0xf4, 0); for (;;) __asm__ volatile("hlt"); }
+	struct vec *v = &vecs[cur];
+	uint32_t s = v->seed;
+	for (int i = 0; i < DATA_SIZE; i += 4) *(uint32_t *)(DATA + i) = xorshift(&s);
+	for (int k = 0; k < 2; k++) if (v->poff[k] != 0xffff) *(uint32_t *)(DATA + v->poff[k]) = v->pval[k];
+	for (int i = 0; i < CODE_SIZE; i++) CODE[i] = 0xcc;
+	for (int i = 0; i < v->len; i++) CODE[INSN_OFF + i] = v->bytes[i];
+	/* re-mark the GDT entries we can modify through segment loads (accessed bits) */
+	for (int i = 0; i < 8; i++) ustate.r[i] = v->r[i];
+	ustate.eflags = v->eflags; ustate.eip = (uint32_t)CODE + INSN_OFF; ustate.ss = 0x23;
+	ustate.ds = v->sel[0]; ustate.es = v->sel[1]; ustate.fs = v->sel[2]; ustate.gs = v->sel[3];
+	PT[8] = 0x8000 | (v->pte[0] & 0xfff);
+	PT[9] = 0x9000 | (v->pte[1] & 0xfff);
+	__asm__ volatile("mov %0, %%cr3" :: "r"(0x3000u) : "memory");
+	if (v->mode & 1)
+		__asm__ volatile("mov %0, %%cr0" :: "r"(0x80000031u | ((v->mode & 2) ? 0x10000u : 0)) : "memory");
+	enter_user();
+}
+
+struct frame { uint32_t edi, esi, ebp, kesp, ebx, edx, ecx, eax, ds, es, fs, gs, vecno, err, eip, cs, eflags, esp, ss; };
+
+static uint32_t fnv(void) { uint32_t h = 2166136261u; for (int i = 0; i < DATA_SIZE; i++) { h ^= DATA[i]; h *= 16777619u; } return h; }
+
+void record(struct frame *f) {
+	uint32_t cr2;
+	__asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+	__asm__ volatile("mov %0, %%cr0" :: "r"(0x31u) : "memory");	/* paging off */
+	uint32_t eip = f->eip;
+	if (f->vecno == 3) eip -= 1;	/* the int3 terminator */
+	hex(cur); hex(f->vecno); hex(f->err); hex(eip);
+	hex(f->eax); hex(f->ecx); hex(f->edx); hex(f->ebx); hex(f->esp); hex(f->ebp); hex(f->esi); hex(f->edi);
+	hex(f->eflags); hex(f->ds & 0xffff); hex(f->es & 0xffff); hex(f->fs & 0xffff); hex(f->gs & 0xffff); hex(f->ss & 0xffff);
+	hex(fnv()); hex(f->vecno == 14 ? cr2 : 0); hex(PT[8]); hex(PT[9]); putc_('\n');
+	cur++;
+	run_next();
+}
+
+void harness_main(uint32_t *mbi) {
+	setup();
+	uint32_t *mods = (uint32_t *)mbi[6];
+	vecs = (struct vec *)mods[0];
+	nvec = (mods[1] - mods[0]) / sizeof(struct vec);
+	puts_("BEGIN "); hex(nvec); putc_('\n');
+	cur = 0;
+	run_next();
+}

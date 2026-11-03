@@ -1,0 +1,23 @@
+# Build outputs
+.lake/
+__pycache__/
+*.pyc
+*.o
+**/test/out/
+**/doom/out/
+**/test/harness/*.o
+**/test/harness/harness.elf
+
+# Guest images (rebuilt by the guest build scripts; not versioned)
+bzImage
+vmlinux
+System.map
+*.cpio
+**/guest/*.log
+**/guest/workload.lean.txt
+*.tgz
+
+# Local state
+.env
+.DS_Store
+.claude/

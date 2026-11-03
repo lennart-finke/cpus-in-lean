@@ -1,0 +1,10 @@
+name = "doom"
+defaultTargets = ["doomrun"]
+
+[[require]]
+name = "x86"
+path = "../../ia32"
+
+[[lean_exe]]
+name = "doomrun"
+root = "DoomRun"

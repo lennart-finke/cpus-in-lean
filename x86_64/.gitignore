@@ -1,0 +1,13 @@
+.lake/
+test/out/
+test/harness/*.o
+test/harness/harness.elf
+guest/bzImage
+guest/vmlinux
+guest/System.map
+guest/.config
+guest/initramfs.cpio
+guest/*.log
+guest/workload.*.txt
+guest/verified.json
+__pycache__/

@@ -1,0 +1,13 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "x86",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../../ia32",
+   "configFile": "lakefile.toml"}],
+ "name": "doom",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

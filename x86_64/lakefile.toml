@@ -1,0 +1,22 @@
+name = "x86_64"
+version = "0.1.0"
+defaultTargets = ["x64run", "x64test", "x64check", "X64Proofs"]
+
+[[lean_lib]]
+name = "X64"
+
+[[lean_lib]]
+name = "X64Proofs"
+roots = ["X64.Proofs"]
+
+[[lean_exe]]
+name = "x64run"
+root = "Main"
+
+[[lean_exe]]
+name = "x64test"
+root = "TestMain"
+
+[[lean_exe]]
+name = "x64check"
+root = "CheckMain"

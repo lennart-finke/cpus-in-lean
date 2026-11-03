@@ -1,0 +1,17 @@
+# Evidence that the model is the IA-32 architecture: the Linux boot runner (`x86run`) and the
+# differential-test runner (`x86test`, driven by `test/`). Nothing here is imported by statements or proofs.
+name = "validation"
+version = "0.1.0"
+defaultTargets = ["x86run", "x86test"]
+
+[[require]]
+name = "x86"
+path = "../ia32"
+
+[[lean_exe]]
+name = "x86run"
+root = "Main"
+
+[[lean_exe]]
+name = "x86test"
+root = "TestMain"

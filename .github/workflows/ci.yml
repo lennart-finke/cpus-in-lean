@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU and clang
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 clang
+
+      - name: Install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lean toolchain and builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ia32/.lake
+            x86_64/.lake
+            validation/.lake
+          key: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', '**/lean-toolchain') }}-${{ hashFiles('**/*.lean', '**/lakefile.toml') }}
+          restore-keys: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', '**/lean-toolchain') }}-
+
+      - name: Verify (models, proofs, runners, QEMU differential tests)
+        run: ./verify.sh 2000
