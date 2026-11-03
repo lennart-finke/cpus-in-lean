@@ -17,7 +17,7 @@ It can also run DOOM (slowly). On MacOS:
 ```
 $ cd validation && doom/play.command # arrows to move, Ctrl to fire
 ```
-https://github.com/user-attachments/assets/ed9fb555-24f2-4fb1-8819-8f20790c2bab
+<img width="400" height="225" alt="doom-small" src="https://github.com/user-attachments/assets/ed9fb555-24f2-4fb1-8819-8f20790c2bab" />
 
 You can use the code from another Lean project with
 
