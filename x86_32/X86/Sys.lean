@@ -690,7 +690,9 @@ def rsm : M Unit := do
   let cr0 := ((← r 0x7FFC) &&& 0xE005003F) ||| CR0.ET
   let cr4 ← r 0x7F14
   if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
-  if cr4 &&& ~~~(0x01FC : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
+  -- the CR4 bits MOV CR4 accepts besides VME/PVI and OSXMMEXCPT/OSFXSR (as before), plus system A's UMIP,
+  -- SMEP and SMAP: an SMI taken while they are set must be able to return
+  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
   let cr3 ← r 0x7FF8
   let efl ← r 0x7FF4
   let eip ← r 0x7FF0
