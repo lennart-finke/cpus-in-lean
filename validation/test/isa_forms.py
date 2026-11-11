@@ -15,7 +15,8 @@ A form is (encoding, map, pp, opcode byte) plus an optional ModRM constraint:
   map       1 = 0F, 2 = 0F 38, 3 = 0F 3A
   pp        mandatory prefix: 0 none, 1 = 66, 2 = F3, 3 = F2 (as Inst.pp); None = any
   ops       opcode bytes
-  modrm     None, or (mod, reg) with mod in {'mem', 'reg', None} and reg 0..7 or None
+  modrm     None, or (mod, reg) with mod in {'mem', 'reg', None} and reg 0..7 or None, optionally
+            (mod, reg, rm) for a single register form (rm 0..7; a query without rm matches it)
 Rows may be broader than the exact set of Zen 2 forms (e.g. a whole VEX opcode range); they must
 not be narrower, or the '#UD' family would generate a form that QEMU executes.
 """
@@ -84,10 +85,6 @@ NOT_YET_IMPLEMENTED = [
     F('avx', 'Avx', 'vex', 2, None, rng(0x00, 0x4F) + rng(0x58, 0x5A) + [0x78, 0x79, 0x8C, 0x8E] +
       rng(0x90, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF) + rng(0xDB, 0xDF)),
     F('avx', 'Avx', 'vex', 3, None, rng(0x00, 0x22) + [0x38, 0x39] + rng(0x40, 0x4C) + rng(0x60, 0x63) + [0xDF]),
-    # --- Sys ---
-    F('syscall', 'Sys', 'legacy', 1, None, [0x05, 0x07, 0x34, 0x35]),
-    F('smap', 'Sys', 'legacy', 1, None, [0x01], ('reg', 1)),
-    F('altMovCr8', 'Sys', 'legacy-lock', 1, None, [0x20, 0x22]),
     # --- Svm ---
     F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3)),
 ]
@@ -95,32 +92,40 @@ NOT_YET_IMPLEMENTED = [
 # Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
 # hints; see gen.py (ext_form). Empty until a workstream adds its forms.
 IMPLEMENTED = [
+    # --- Sys (generator: test/gen_sys.py) ---
+    F('syscall', 'Sys', 'legacy', 1, None, [0x05, 0x07]),
+    F('sep', 'Sys', 'legacy', 1, None, [0x34, 0x35]),
+    F('smap', 'Sys', 'legacy', 1, None, [0x01], ('reg', 1, 2)),    # 0F 01 CA CLAC
+    F('smap', 'Sys', 'legacy', 1, None, [0x01], ('reg', 1, 3)),    # 0F 01 CB STAC
+    F('altMovCr8', 'Sys', 'legacy-lock', 1, None, [0x20, 0x22], (None, 0)),
 ]
 
 
-def _matches(f, encoding, map_, pp, op, mod, reg):
+def _matches(f, encoding, map_, pp, op, mod, reg, rm=None):
     if f.encoding != encoding or f.map != map_ or op not in f.ops:
         return False
     if f.pp is not None and f.pp != pp:
         return False
     if f.modrm is not None:
-        m, r = f.modrm
+        m, r = f.modrm[:2]
         if m == 'mem' and mod == 3 or m == 'reg' and mod != 3:
             return False
         if r is not None and reg != r:
             return False
+        if len(f.modrm) > 2 and rm is not None and rm != f.modrm[2]:
+            return False
     return True
 
 
-def not_yet_implemented(encoding, map_, pp, op, mod=None, reg=None):
-    """The form (with ModRM mod/reg if known) is a Zen 2 form the model does not implement yet."""
-    return any(_matches(f, encoding, map_, pp, op, mod, reg) for f in NOT_YET_IMPLEMENTED)
+def not_yet_implemented(encoding, map_, pp, op, mod=None, reg=None, rm=None):
+    """The form (with ModRM mod/reg/rm if known) is a Zen 2 form the model does not implement yet."""
+    return any(_matches(f, encoding, map_, pp, op, mod, reg, rm) for f in NOT_YET_IMPLEMENTED)
 
 
-def defined(encoding, map_, pp, op, mod=None, reg=None):
+def defined(encoding, map_, pp, op, mod=None, reg=None, rm=None):
     """The form may be defined on Zen 2 (listed as implemented or not yet implemented)."""
-    return not_yet_implemented(encoding, map_, pp, op, mod, reg) or \
-        any(_matches(f, encoding, map_, pp, op, mod, reg) for f in IMPLEMENTED)
+    return not_yet_implemented(encoding, map_, pp, op, mod, reg, rm) or \
+        any(_matches(f, encoding, map_, pp, op, mod, reg, rm) for f in IMPLEMENTED)
 
 
 def model_has(feature):

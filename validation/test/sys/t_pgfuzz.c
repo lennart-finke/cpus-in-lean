@@ -1,6 +1,11 @@
 /* Paging differential fuzzing: random 32-bit/PSE/PAE/NX page tables for a small linear window, random
    accesses (reads, writes, instruction fetches; ring 0 and ring 3; page-crossing), compared with QEMU.
-   Each case rebuilds the tables with paging off and re-enables paging, so no TLB entry survives. */
+   Each case rebuilds the tables with paging off and re-enables paging, so no TLB entry survives.
+   Dimensions of system workstream A: CR4.PGE at random; PSE-36 (4 MiB PDE bits 20:13 = physical
+   address bits 39:32, beyond the RAM: values read there are not printed); PAE reserved bits only
+   above MAXPHYADDR = 48 (CPUID 8000_0008); and in about half of the cases (when CPUID reports SMEP and
+   SMAP) a supervisor identity map with CR4.SMEP/SMAP at random and EFLAGS.AC at random for ring-0
+   accesses. The ring-3 snippets and their stack are then copied to user pages at USERPG. */
 #include "sys.h"
 
 #define EFER 0xC0000080
@@ -9,6 +14,7 @@
 #define W32 0x403FA000          /* window: 6 pages through PDE 256, then 2 pages through PDE 257 */
 #define WPAE 0x401FA000         /* window: 6 pages through PD1[0], then 2 pages through PD1[1] */
 #define NPAGES 8
+#define USERPG 0x3400000        /* user code and stack (52 MiB, a 2 MiB region of its own) */
 
 static u32 rs = 0x6B43A9B5;
 static u32 rnd(void) { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; }
@@ -20,9 +26,34 @@ __asm__(
 	".globl pgf_w1\npgf_w1: movb %bl, (%eax)\n int $0x40\n"
 	".globl pgf_w2\npgf_w2: movw %bx, (%eax)\n int $0x40\n");
 extern char pgf_r1[], pgf_r2[], pgf_w1[], pgf_w2[];
+/* ring-3 entry with the stack at the top of USERPG's second page (run_user's stack is kernel data) */
+static int pgf_user(char *code, u32 eax, u32 ebx) {
+	return TRY(({
+		register u32 a __asm__("eax") = eax;
+		register u32 b __asm__("ebx") = ebx;
+		__asm__ volatile(
+			"movl %2, %%ecx\n movl %%ecx, %%ds\n movl %%ecx, %%es\n"
+			"pushl %2\n pushl %3\n pushl $0x202\n pushl %4\n pushl %5\n iret"
+			:: "a"(a), "b"(b), "i"(UDATA), "i"(USERPG + 0x2000), "i"(UCODE), "r"((u32)code)
+			: "ecx", "memory");
+	}));
+}
+/* copies of the snippets in USERPG: r1 r2 r4 w1 w2 w4 call */
+static char *usnip[7];
+static void copy_snippets(void) {
+	char *src[7] = { pgf_r1, pgf_r2, u_read, pgf_w1, pgf_w2, u_write, u_call };
+	char *d = (char *)USERPG;
+	for (int k = 0; k < 7; k++) {
+		usnip[k] = d;
+		for (int i = 0; i < 6; i++) d[i] = src[k][i];   /* each is at most 6 bytes, ending with INT 0x40 */
+		d += 16;
+	}
+}
 
 static u32 *pd32, *ipt32;       /* 32-bit page directory and its identity page tables (0..64 MiB) */
+static u32 *ipt32s;             /* the same with supervisor pages except USERPG (SMEP/SMAP cases) */
 static u64 *pdpt, *pd0, *pd1;   /* PAE: PDPT, identity PD (2 MiB pages), window PD */
+static u64 *pd0s;               /* the same, supervisor except USERPG's 2 MiB page */
 static u32 *pta, *ptb;          /* window page tables (32-bit or PAE format) */
 static u32 frames[NFRAMES];
 static int pae, pse;
@@ -48,7 +79,7 @@ static u32 lin2phys(u32 lin) {
 	}
 	u32 e = pd32[lin >> 22];
 	if (!(e & 1)) return ~0u;
-	if ((e & 0x80) && pse) return (e & 0xFFC00000) | (lin & 0x3FFFFF);
+	if ((e & 0x80) && pse) return (e & 0x1FE000) ? ~0u : (e & 0xFFC00000) | (lin & 0x3FFFFF);  /* PSE-36: above 4 GiB */
 	e = ((u32 *)(e & 0xFFFFF000))[(lin >> 12) & 0x3FF];
 	if (!(e & 1)) return ~0u;
 	return (e & 0xFFFFF000) | (lin & 0xFFF);
@@ -68,10 +99,12 @@ static u32 rnd_attr(void) {
 	return e;
 }
 
-/* A random PAE reserved bit (none most of the time): bits 62:36, and 63 when NXE = 0 */
+/* A random PAE reserved bit (none most of the time): bits 62:48 (MAXPHYADDR = 48), and 63 when NXE = 0.
+   Bits 47:36 are address bits on the EPYC 7742 but reserved under TCG (fewer physical-address bits):
+   t_pae.c checks one of them with a deviation rule. */
 static u64 pae_rsvd(int nxe) {
 	if (rnd() % 24) return 0;
-	u32 b = 36 + rnd() % (nxe ? 27 : 28);
+	u32 b = 48 + rnd() % (nxe ? 15 : 16);
 	return 1ULL << b;
 }
 
@@ -106,6 +139,7 @@ static u64 large(int nxe) {
 	} else {
 		e |= LARGE;
 		if (rnd() % 24 == 0) e |= 1u << 21;               /* reserved bit 21 */
+		if (rnd() % 8 == 0) e |= (rnd() & 0xFF) << 13;    /* PSE-36: physical-address bits 39:32 */
 	}
 	return e;
 }
@@ -123,8 +157,15 @@ void test_paging_fuzz(void) {
 	ipt32 = page_alloc(16);
 	for (u32 a = 0; a < 0x4000000; a += 0x1000) ipt32[a >> 12] = a | 7;
 	for (u32 i = 0; i < 16; i++) pd32[i] = ((u32)ipt32 + i * 0x1000) | 7;
+	ipt32s = page_alloc(16);
+	for (u32 a = 0; a < 0x4000000; a += 0x1000) ipt32s[a >> 12] = a | ((a >> 21) == (USERPG >> 21) ? 7 : 3);
 	pdpt = page_alloc(1); pd0 = page_alloc(1); pd1 = page_alloc(1);
 	for (u32 i = 0; i < 32; i++) pd0[i] = ((u64)i << 21) | 0x87;
+	pd0s = page_alloc(1);
+	for (u32 i = 0; i < 32; i++) pd0s[i] = ((u64)i << 21) | (i == (USERPG >> 21) ? 0x87 : 0x83);
+	copy_snippets();
+	int smx_ok = has_feature(7, 0, 1, 7) && has_feature(7, 0, 1, 20);
+	int pge_ok = has_feature(1, 0, 3, 13);
 	pta = page_alloc(1); ptb = page_alloc(1);
 	for (int i = 0; i < NFRAMES; i++) {
 		u32 *f = page_alloc(1);
@@ -136,13 +177,15 @@ void test_paging_fuzz(void) {
 		((u32 *)(LARGE + 0x200000))[k] = 0x5A000000u + k;
 	}
 
-	u32 cr0 = RDCR(0) & ~0x80010000u, cr4 = RDCR(4) & ~0x30u;
+	u32 cr0 = RDCR(0) & ~0x80010000u, cr4 = RDCR(4) & ~0x3000B0u;
 	for (u32 c = 0; c < n; c++) {
 		WRCR(0, cr0);
 		u32 mode = rnd() % 4;
 		pae = mode >= 2; pse = mode == 1;
 		int nxe = pae ? mode == 3 : (int)(rnd() % 2);   /* NXE has no effect on 32-bit paging */
 		int wp = rnd() % 2;
+		int smx = smx_ok && rnd() % 2;                    /* supervisor identity map, SMEP/SMAP */
+		int smep = smx && rnd() % 2, smap = smx && rnd() % 2, pge = pge_ok && rnd() % 2;
 		wrmsr(EFER, nxe ? 0x800 : 0);
 		clear(pta); clear(ptb);
 		int big = rnd() % 3 == 0;
@@ -155,14 +198,16 @@ void test_paging_fuzz(void) {
 		u64 pdpte = 0;
 		if (pae) {
 			pdpte = (u32)pd1 | ((rnd() % 16) ? 1 : 0) | (rnd() & 0x18) | (rnd() & 0xE00);
-			pdpt[0] = (u32)pd0 | 1; pdpt[1] = pdpte; pdpt[2] = pdpt[3] = 0;
+			pdpt[0] = (u32)(smx ? pd0s : pd0) | 1; pdpt[1] = pdpte; pdpt[2] = pdpt[3] = 0;
 			clear((u32 *)pd1);
 			pd1[0] = pdeA; pd1[1] = pdeB;
 		} else {
+			for (u32 i = 0; i < 16; i++) pd32[i] = ((u32)(smx ? ipt32s : ipt32) + i * 0x1000) | 7;
 			for (u32 i = 16; i < 1024; i++) pd32[i] = 0;
 			pd32[256] = (u32)pdeA; pd32[257] = (u32)pdeB;
 		}
 		kprintf("pgf %d: %s wp=%d nxe=%d", c, pae ? "pae" : pse ? "pse" : "32", wp, nxe);
+		if (smx || pge) kprintf(" smx=%d smep=%d smap=%d pge=%d", smx, smep, smap, pge);
 		if (pae) { kputs(" pdpte"); show64(pdpte); }
 		kputs(" pde"); show64(pdeA); show64(pdeB);
 		kputs(" pte");
@@ -170,7 +215,8 @@ void test_paging_fuzz(void) {
 		for (u32 i = 0; i < 2; i++) show64(get(ptb, i));
 		kputc('\n');
 
-		WRCR(4, cr4 | (pae ? 0x20 : 0) | (pse || (pae && rnd() % 2) ? 0x10 : 0));   /* PSE: ignored with PAE */
+		WRCR(4, cr4 | (pae ? 0x20 : 0) | (pse || (pae && rnd() % 2) ? 0x10 : 0) |   /* PSE: ignored with PAE */
+		        (smep ? 0x100000 : 0) | (smap ? 0x200000 : 0) | (pge ? 0x80 : 0));
 		WRCR(3, pae ? (u32)pdpt : (u32)pd32);
 		WRCR(0, cr0 | 0x80000000u | (wp ? 0x10000 : 0));
 
@@ -184,24 +230,38 @@ void test_paging_fuzz(void) {
 			u32 lin = W + (rnd() % NPAGES) * 0x1000 + off;
 			u32 v = rnd(), got = 0;
 			int vec;
+			/* a PSE-36 page above 4 GiB: no instruction fetch (beyond any memory), values not printed */
+			int high = !pae && pse && (pdeB & 0x80) && (pdeB & 0x1FE000) && lin + size - 1 >= W + 0x6000;
+			if (high && kind == 2) { kind = 0; size = 4; }
+			/* EFLAGS.AC for a ring-0 access (overrides SMAP for explicit accesses) */
+			int ac = !user && kind != 2 && rnd() % 2;
 			if (kind == 2) {
 				/* mov $v, %eax; ret: plant it through the physical addresses of the mapped bytes */
 				u8 code[6] = { 0xB8, (u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24), 0xC3 };
 				for (u32 k = 0; k < 6; k++) { u32 p = lin2phys(lin + k); if (p != ~0u) *(volatile u8 *)p = code[k]; }
 				u_eax = 0;
-				if (user) { vec = run_user(u_call, lin, 0); got = u_eax; }
+				if (user) { vec = pgf_user(usnip[6], lin, 0); got = u_eax; }
 				else { u32 (*volatile fn)(void) = (u32 (*)(void))lin; vec = TRY(got = fn()); }
 			} else if (kind == 0) {
 				u_ebx = 0;
-				if (user) { vec = run_user(size == 1 ? pgf_r1 : size == 2 ? pgf_r2 : u_read, lin, 0); got = u_ebx; }
-				else if (size == 1) vec = TRY(got = *(volatile u8 *)lin);
-				else if (size == 2) vec = TRY(got = *(volatile u16 *)lin);
-				else vec = TRY(got = *(volatile u32 *)lin);
+				if (user) { vec = pgf_user(usnip[size == 1 ? 0 : size == 2 ? 1 : 2], lin, 0); got = u_ebx; }
+				else {
+					if (ac) __asm__ volatile("pushfl\n orl $0x40000, (%%esp)\n popfl" ::: "memory", "cc");
+					if (size == 1) vec = TRY(got = *(volatile u8 *)lin);
+					else if (size == 2) vec = TRY(got = *(volatile u16 *)lin);
+					else vec = TRY(got = *(volatile u32 *)lin);
+					__asm__ volatile("pushfl\n andl $~0x40000, (%%esp)\n popfl" ::: "memory", "cc");
+				}
+				if (high) got = 0;
 			} else {
-				if (user) vec = run_user(size == 1 ? pgf_w1 : size == 2 ? pgf_w2 : u_write, lin, v);
-				else if (size == 1) vec = TRY(*(volatile u8 *)lin = (u8)v);
-				else if (size == 2) vec = TRY(*(volatile u16 *)lin = (u16)v);
-				else vec = TRY(*(volatile u32 *)lin = v);
+				if (user) vec = pgf_user(usnip[size == 1 ? 3 : size == 2 ? 4 : 5], lin, v);
+				else {
+					if (ac) __asm__ volatile("pushfl\n orl $0x40000, (%%esp)\n popfl" ::: "memory", "cc");
+					if (size == 1) vec = TRY(*(volatile u8 *)lin = (u8)v);
+					else if (size == 2) vec = TRY(*(volatile u16 *)lin = (u16)v);
+					else vec = TRY(*(volatile u32 *)lin = v);
+					__asm__ volatile("pushfl\n andl $~0x40000, (%%esp)\n popfl" ::: "memory", "cc");
+				}
 				/* the bytes as they are now in memory (all or nothing written) */
 				for (u32 k = 0; k < size; k++) {
 					u32 p = lin2phys(lin + k);
@@ -209,8 +269,8 @@ void test_paging_fuzz(void) {
 				}
 			}
 			int pf = vec == 14;
-			kprintf("pgf %d.%d: %s%d r%d %x vec=%x err=%x cr2=%x val=%x\n", c, a, kname[kind], size, user ? 3 : 0,
-			        lin, vec, pf || vec == 13 ? last.err : 0, pf ? last.cr2 : 0, got);
+			kprintf("pgf %d.%d: %s%d r%d%s %x vec=%x err=%x cr2=%x val=%x\n", c, a, kname[kind], size, user ? 3 : 0,
+			        ac ? "ac" : "", lin, vec, pf || vec == 13 ? last.err : 0, pf ? last.cr2 : 0, got);
 		}
 		/* accessed and dirty flags of every entry of the window: (D << 1) | A */
 		kprintf("pgf %d ad:", c);
@@ -223,13 +283,16 @@ void test_paging_fuzz(void) {
 	WRCR(0, cr0);
 	WRCR(4, cr4);
 	wrmsr(EFER, 0);
+	for (u32 i = 0; i < 16; i++) pd32[i] = ((u32)ipt32 + i * 0x1000) | 7;
 	trap_hook = 0;
 }
 
-/* Model-only: a 4 MiB page whose PDE has one of bits 21:13 set. Without PSE-36 (CPUID.1:EDX[17] = 0)
-   they are all reserved (SDM vol. 3 table 4-4 with M = 32): #PF with P = 1 and RSVD = 1 for a ring-0
-   read (9) and a ring-3 write (f), and the PDE's accessed flag stays clear. TCG implements PSE-36
-   whatever CPUID says (bits 20:13 address memory above 4 GiB), so this is not compared with QEMU. */
+/* Model-only: a 4 MiB page whose PDE has one of bits 21:13 set. With PSE-36 (CPUID.1:EDX[17] = 1)
+   bits 20:13 are physical-address bits 39:32 (AMD APM vol. 2, figure 5-8): the access goes to memory
+   above 4 GiB, which the model has none of (reads are open bus, all ones; writes are dropped), and the
+   PDE gets its accessed flag; bit 21 is reserved: #PF with P = 1 and RSVD = 1 for a ring-0 read (9) and
+   a ring-3 write (f), accessed flag clear. The values read are model-specific (TCG's unassigned memory
+   differs), so this stays model-only; the vectors are compared with QEMU by sysa.pse36. */
 void test_paging_fuzz_model(void) {
 	u32 cr0 = RDCR(0) & ~0x80010000u, cr4 = RDCR(4) & ~0x30u;
 	pae = 0; pse = 1;
@@ -241,10 +304,11 @@ void test_paging_fuzz_model(void) {
 		WRCR(4, cr4 | 0x10);
 		WRCR(3, (u32)pd32);
 		WRCR(0, cr0 | 0x80000000u);
-		int vec = TRY((void)*(volatile u32 *)(W32 + 0x6000));
-		u32 e = last.err;
+		u32 val = 0;
+		int vec = TRY(val = *(volatile u32 *)(W32 + 0x6000));
+		u32 e = vec == 14 ? last.err : 0;
 		int w = run_user(u_write, W32 + 0x7000, 0);
-		kprintf(" %d:%x/%x/%x/%x a=%d", b, vec, e, w, last.err, (pd32[257] >> 5) & 1);
+		kprintf(" %d:%x/%x/%x/%x a=%d v=%x", b, vec, e, w, w == 14 ? last.err : 0, (pd32[257] >> 5) & 1, val);
 	}
 	kputc('\n');
 	WRCR(0, cr0);

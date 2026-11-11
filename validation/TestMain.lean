@@ -124,9 +124,13 @@ def rmwDest (i : Inst) : Bool :=
   the operand start when the first page is not writable (hardware campaign, README).
 * PUSHA: TCG probes the whole push range first and faults at its start with nothing written; the CPU
   pushes in order, keeps completed pushes and faults at the first failing push.
+* SYSRET with EFER.SCE = 0 at CPL 3 (system A): the APM checks SCE first (#UD), then protected mode
+  and CPL (#GP(0)) (AMD APM vol. 3, SYSRET, SYSRET_START); TCG checks the CPL first and raises #GP(0).
 `qemuAsHardware i qo lo init` rewrites exactly those fields of QEMU's outcome `qo` to the model's
 `lo` when they show the TCG signature; every other field is still compared. -/
 def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome := Id.run do
+  if i.op == 0x107 && !i.vex && qo.vec == 13 && qo.err == 0 && lo.vec == 6 then
+    return { qo with vec := 6, err := lo.err }
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo
   if rmwDest i then
@@ -293,6 +297,8 @@ def main (args : List String) : IO UInt32 := do
   let [vf, mf, qf] := args | do IO.eprintln "usage: x86test vectors.bin vectors.metaLines qemu.out"; return 2
   let v ← IO.FS.readBinFile vf
   let (hdr, rsz) := vecFormat v
+  -- a corrupt or stale header must not turn into "0 vectors compared, 0 mismatches"
+  if rsz == 0 then IO.eprintln "invalid vector file: record size 0"; return 2
   let v2 := hdr != 0
   let metaLines := (← IO.FS.lines mf)
   let qlines := (← IO.FS.lines qf).filter fun l => l.length > 150 && (l.get 0).isAlphanum
@@ -346,4 +352,9 @@ def main (args : List String) : IO UInt32 := do
     q := q + 1
   let lenNote := if lenRule == 0 then "" else s!", {lenRule} 16-byte #UD encodings checked as #GP(0)"
   IO.println s!"{checked} vectors compared, {bad} mismatches ({tcg} known QEMU deviations accepted{lenNote})"
+  -- every vector must have been compared: QEMU rows that are short (a harness with another record
+  -- format), missing or out of range would otherwise be skipped silently
+  if checked != n then
+    IO.println s!"FAIL: only {checked} of {n} vectors compared (missing, short or out-of-range QEMU rows)"
+    return 1
   return (if bad == 0 then 0 else 1)

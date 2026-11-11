@@ -26,6 +26,7 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isa_forms
+import gen_sys
 
 DATA, DATA_SIZE = 0x8000, 8192
 CODE, INSN_OFF, CODE_SIZE = 0x20000, 256, 512
@@ -501,6 +502,10 @@ def gen_v2_family(g):
         insn = b'\x3e' * (total - len(body)) + body
         g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
         return insn[:15]
+    if r < 0.24:
+        # 'ext' forms of system workstream A (test/gen_sys.py)
+        insn, g.desc = gen_sys.sys_form()
+        return insn
     return None
 
 def main():
