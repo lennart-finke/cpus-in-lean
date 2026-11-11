@@ -12,3 +12,5 @@ import X86.Proofs.ExtCrypto
 import X86.Proofs.ExtGpr
 import X86.Proofs.ExtSys
 import X86.Proofs.ExtSysB
+import X86.Proofs.ExtLongMode
+import X86.Proofs.ExtAvx

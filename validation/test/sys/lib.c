@@ -160,6 +160,12 @@ void sys_main(void) {
 	setup();
 	kputs("BEGIN\n");
 	if (param("seed", 0)) kprintf("PARAMS seed=%x\n", param("seed", 0));
+	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
+		test_long();
+		kputs("MODEL-ONLY\n");
+		test_long_model();
+		sys_exit();
+	}
 	test_paging();
 	test_pae();
 	test_paging_fuzz();
@@ -183,6 +189,7 @@ void sys_main(void) {
 	test_crypto();
 	test_gpr();
 	test_sysb();
+	test_avx();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -199,5 +206,6 @@ void sys_main(void) {
 	test_gpr_model();
 	test_sysb_model();
 	test_vme_model();
+	test_avx_model();
 	sys_exit();
 }

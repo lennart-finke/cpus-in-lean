@@ -220,7 +220,7 @@ def implemented : Feature → Bool
   | .xsaves => true
   | .xsaveErPtr => true
   -- X86/Ext/Avx.lean
-  | .avx => false
+  | .avx => true
   -- X86/Ext/Avx2.lean
   | .avx2 => false
   | .fma => false
@@ -259,12 +259,14 @@ def implemented : Feature → Bool
   | .ext8Misc => false
   -- system B (VME/PVI, NMI)
   | .vme => true
-  -- X86/Ext/LongMode.lean
-  | .lm => false
-  | .page1gb => false
-  | .lahfsahf => false
+  -- X86/Ext/LongMode.lean (LahfSahf: LAHF/SAHF in 64-bit mode, the x86_64 model's; FSGSBASE: CR4 bit,
+  -- the instructions are #UD outside 64-bit mode; CX16 stays clear: CMPXCHG16B needs REX.W, i.e.
+  -- 64-bit mode, and the x86_64 model does not implement it)
+  | .lm => true
+  | .page1gb => true
+  | .lahfsahf => true
   | .cx16 => false
-  | .fsgsbase => false
+  | .fsgsbase => true
   -- X86/Ext/Smp.lean
   | .x2apic => false
   | .htt => false

@@ -204,12 +204,14 @@ theorem decode_len {m m' : Machine} {i : Inst} (h : decode m = .ok i m') : i.len
   unfold decode at h
   simp only [bind, EStateM.bind] at h
   split at h
-  · rename_i r m1 hr
-    by_cases hn : r.snd > 15
-    · simp [hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind] at h
-    · simp [hn, pure, EStateM.pure, EStateM.bind] at h
-      obtain ⟨rfl, -⟩ := h
-      simpa using hn
+  · split at h
+    · rename_i r m1 hr
+      by_cases hn : r.snd > 15
+      · simp [hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind] at h
+      · simp [hn, pure, EStateM.pure, EStateM.bind] at h
+        obtain ⟨rfl, -⟩ := h
+        simpa using hn
+    · simp at h
   · simp at h
 
 end X86

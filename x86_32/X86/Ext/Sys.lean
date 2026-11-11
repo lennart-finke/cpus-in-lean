@@ -48,7 +48,8 @@ flat at CPL 0; ESP = SYSENTER_ESP, EIP = SYSENTER_EIP; EFLAGS.VM and IF cleared 
 clear while an instruction executes). Also from virtual-8086 mode. -/
 def sysenter : M Unit := do
   let c ← cpu
-  if !c.pe then ud
+  -- #UD in long mode (AMD APM vol. 3 SYSENTER: "This instruction is not recognized in long mode")
+  if !c.pe || LongMode.lma c then ud
   let cs := c.sysx.sysenterCs &&& 0xFFFC
   if cs == 0 then gp 0
   modCpu fun c => { c with
@@ -61,6 +62,8 @@ at CPL > 0 and if SYSENTER_CS is null. CS = (SYSENTER_CS + 16) | 3, SS = (SYSENT
 both flat at CPL 3; ESP = ECX, EIP = EDX. -/
 def sysexit : M Unit := do
   let c ← cpu
+  -- #UD in long mode (AMD APM vol. 3 SYSEXIT), before the privilege checks
+  if LongMode.lma c then ud
   if !c.pe || c.vm86 || c.cpl != 0 then gp 0
   let sc := c.sysx.sysenterCs
   if sc &&& 0xFFFC == 0 then gp 0
@@ -76,6 +79,8 @@ and RF cleared; EIP = STAR[31:0]. -/
 def syscall : M Unit := do
   let c ← cpu
   if c.efer &&& EFER.SCE == 0 then ud
+  -- in compatibility mode: to 64-bit mode at CSTAR (`LongMode.syscallLong`)
+  if LongMode.lma c then return ← LongMode.syscallLong
   let sel := (c.sysx.star >>> 32).toUInt32 &&& 0xFFFF
   modCpu fun c => { c with
     ecx := c.eip, eip := c.sysx.star.toUInt32,
