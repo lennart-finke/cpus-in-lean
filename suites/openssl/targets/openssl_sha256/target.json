@@ -1,0 +1,7 @@
+{
+  "module": "OpensslSha256",
+  "sources": ["vendor/crypto/sha/sha256.c", "vendor/crypto/mem_clr.c"],
+  "roots": ["SHA256_Init", "SHA256_Update", "SHA256_Final", "SHA256_Transform",
+            "SHA224_Init", "SHA224_Update", "SHA224_Final"],
+  "cflags": ["-Iinclude", "-Ivendor/include"]
+}

@@ -21,3 +21,5 @@ System.map
 .env
 .DS_Store
 .claude/
+**/test/sys/out/
+campaign/

@@ -6,7 +6,7 @@
    "name": "x86",
    "manifestFile": "lake-manifest.json",
    "inherited": false,
-   "dir": "../ia32",
+   "dir": "../x86_32",
    "configFile": "lakefile.toml"}],
  "name": "validation",
  "lakeDir": ".lake",

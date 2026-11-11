@@ -1,0 +1,3 @@
+# hand: herd7's X86 has no XADD. LOCK XADD is an atomic fetch-and-add: the threads get 0 and 1, x ends at 2.
+0:EAX=0; 1:EAX=1; x=2;
+0:EAX=1; 1:EAX=0; x=2;

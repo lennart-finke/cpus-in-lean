@@ -1,0 +1,7 @@
+X86 n5
+"x86-TSO paper n5: forbidden"
+{ x=0; }
+ P0          | P1          ;
+ MOV [x],$1  | MOV [x],$2  ;
+ MOV EAX,[x] | MOV EAX,[x] ;
+exists (0:EAX=2 /\ 1:EAX=1)

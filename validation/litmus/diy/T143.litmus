@@ -1,0 +1,17 @@
+X86 T143
+"PodRW Rfe PodRW Coi PodWW Rfe"
+Cycle=Rfe PodRW Rfe PodRW Coi PodWW
+Relax=
+Safe=Rfe Coi PodWW PodRW
+Generator=diy7 (version 7.58)
+Prefetch=0:x=F,0:y=W,1:y=F,1:x=W
+Com=Rf Rf
+Orig=PodRW Rfe PodRW Coi PodWW Rfe
+{
+}
+ P0          | P1          ;
+ MOV EAX,[x] | MOV EAX,[y] ;
+ MOV [y],$1  | MOV [z],$1  ;
+             | MOV [z],$2  ;
+             | MOV [x],$1  ;
+exists ([z]=2 /\ 0:EAX=1 /\ 1:EAX=1)

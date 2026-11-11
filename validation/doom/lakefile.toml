@@ -3,7 +3,7 @@ defaultTargets = ["doomrun"]
 
 [[require]]
 name = "x86"
-path = "../../ia32"
+path = "../../x86_32"
 
 [[lean_exe]]
 name = "doomrun"

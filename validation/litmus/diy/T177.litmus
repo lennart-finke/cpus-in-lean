@@ -1,0 +1,17 @@
+X86 T177
+"PodWW Coe PodWW Coi PodWW Coe"
+Cycle=Coi PodWW Coe PodWW Coe PodWW
+Relax=
+Safe=Coi Coe PodWW
+Generator=diy7 (version 7.58)
+Prefetch=0:x=F,0:y=W,1:y=F,1:x=W
+Com=Co Co
+Orig=PodWW Coe PodWW Coi PodWW Coe
+{
+}
+ P0         | P1         ;
+ MOV [x],$2 | MOV [y],$2 ;
+ MOV [y],$1 | MOV [z],$1 ;
+            | MOV [z],$2 ;
+            | MOV [x],$1 ;
+exists ([x]=2 /\ [y]=2 /\ [z]=2)

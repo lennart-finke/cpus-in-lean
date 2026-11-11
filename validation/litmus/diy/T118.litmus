@@ -1,0 +1,15 @@
+X86 T118
+"PosWW Rfe PodRR Fre PodWR Fre"
+Cycle=Rfe PodRR Fre PodWR Fre PosWW
+Relax=
+Safe=Rfe Fre PosWW PodWR PodRR
+Generator=diy7 (version 7.58)
+Prefetch=1:x=F,1:y=T,2:y=F,2:x=T
+Com=Rf Fr Fr
+Orig=PosWW Rfe PodRR Fre PodWR Fre
+{
+}
+ P0         | P1          | P2          ;
+ MOV [x],$1 | MOV EAX,[x] | MOV [y],$1  ;
+ MOV [x],$2 | MOV EBX,[y] | MOV EAX,[x] ;
+exists ([x]=2 /\ 1:EAX=2 /\ 1:EBX=0 /\ 2:EAX=0)

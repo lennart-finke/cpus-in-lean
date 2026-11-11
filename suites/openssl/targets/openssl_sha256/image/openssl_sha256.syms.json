@@ -1,0 +1,16 @@
+{
+  "K256": 1053260,
+  "OPENSSL_cleanse": 1053136,
+  "SHA224_Final": 1049000,
+  "SHA224_Init": 1048576,
+  "SHA224_Update": 1048768,
+  "SHA256_Final": 1049008,
+  "SHA256_Init": 1048672,
+  "SHA256_Transform": 1053104,
+  "SHA256_Update": 1048800,
+  "halt": 1053256,
+  "memcpy": 1053168,
+  "memset": 1053216,
+  "memset_func": 1053516,
+  "sha256_block_data_order": 1049408
+}

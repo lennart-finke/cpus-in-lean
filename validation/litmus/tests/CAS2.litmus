@@ -1,0 +1,7 @@
+X86 CAS2
+"Two compare-and-swaps from 0: exactly one succeeds"
+{ x=0; 0:EAX=0; 1:EAX=0; 0:EBX=1; 1:EBX=2; }
+ P0                   | P1                   ;
+ LOCK CMPXCHG [x],EBX | LOCK CMPXCHG [x],EBX ;
+locations [x;]
+exists (0:EAX=0 /\ 1:EAX=0)

@@ -1,0 +1,6 @@
+toolchain: official LLVM 23.1.5 release (tools/toolchain.py)
+clang version 23.1.5 (https://github.com/llvm/llvm-project 392dfff97d29b59d77e5cac6d4b6ef2585fe7117)
+compile: clang --target=i386-unknown-none-elf -march=i686 -O3 -fomit-frame-pointer -ffreestanding -fno-builtin -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections -fdata-sections -fno-inline-functions -Ivendor/include -Iinclude
+runtime: clang --target=i386-unknown-none-elf -march=i686 -O3 -fomit-frame-pointer -ffreestanding -fno-builtin -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -ffunction-sections -fdata-sections -fno-inline-functions tools/runtime/shim.c; clang --target=i386-unknown-none-elf -march=i686 tools/runtime/entry.S
+link: ld.lld -m elf_i386 -static --gc-sections --build-id=none -T tools/image.ld -u Poly1305_Init -u Poly1305_Update -u Poly1305_Final -u Poly1305_ctx_size
+image: llvm-objcopy -O binary

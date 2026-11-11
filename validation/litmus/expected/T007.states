@@ -1,0 +1,6 @@
+0:EAX=1; 0:EBX=0; 1:EAX=0; y=2;
+0:EAX=1; 0:EBX=0; 1:EAX=1; y=2;
+0:EAX=1; 0:EBX=1; 1:EAX=0; y=2;
+0:EAX=1; 0:EBX=1; 1:EAX=1; y=2;
+0:EAX=1; 0:EBX=2; 1:EAX=0; y=2;
+0:EAX=1; 0:EBX=2; 1:EAX=1; y=2;

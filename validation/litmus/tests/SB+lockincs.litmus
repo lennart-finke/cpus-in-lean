@@ -1,0 +1,8 @@
+X86 SB+lockincs
+"A locked RMW on another location drains the buffer: 0/0 forbidden"
+{ x=0; y=0; z=0; }
+ P0           | P1           ;
+ MOV [x],$1   | MOV [y],$1   ;
+ LOCK INC [z] | LOCK INC [z] ;
+ MOV EAX,[y]  | MOV EAX,[x]  ;
+exists (0:EAX=0 /\ 1:EAX=0)

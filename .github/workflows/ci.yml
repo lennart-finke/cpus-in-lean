@@ -52,11 +52,30 @@ jobs:
         with:
           path: |
             ~/.elan
-            ia32/.lake
+            x86_32/.lake
             x86_64/.lake
             validation/.lake
+            suites/openssl/.lake
           key: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', '**/lean-toolchain') }}-${{ hashFiles('**/*.lean', '**/lakefile.toml') }}
           restore-keys: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', '**/lean-toolchain') }}-
 
       - name: Verify (models, proofs, runners, QEMU differential tests)
         run: ./verify.sh 2000
+
+      # The task images are rebuilt from source with the pinned LLVM release (fetched by hash) and
+      # must equal the pinned bytes; they are then run on QEMU, and the fuzzer must cover every
+      # instruction form they execute.
+      - name: Cache pinned LLVM
+        uses: actions/cache@v4
+        with:
+          path: suites/openssl/.toolchain
+          key: openssl-suite-llvm-${{ runner.os }}-${{ hashFiles('suites/openssl/tools/toolchain.py') }}
+
+      - name: Install the reference implementations for the specification vectors
+        run: |
+          python3 -m venv "$HOME/reference"
+          "$HOME/reference/bin/pip" install cryptography
+          echo "$HOME/reference/bin" >> "$GITHUB_PATH"
+
+      - name: Validate and audit the OpenSSL tasks
+        run: suites/openssl/verify.sh --rebuild --hw --reference

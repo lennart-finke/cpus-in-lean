@@ -1,0 +1,7 @@
+X86 XADD2
+"Locked fetch-and-add: the two threads see 0 and 1"
+{ x=0; 0:EAX=1; 1:EAX=1; }
+ P0                | P1                ;
+ LOCK XADD [x],EAX | LOCK XADD [x],EAX ;
+locations [x;]
+exists (0:EAX=0 /\ 1:EAX=0)

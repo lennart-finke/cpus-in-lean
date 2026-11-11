@@ -1,0 +1,6 @@
+{
+  "module": "OpensslChacha20",
+  "sources": ["vendor/crypto/chacha/chacha_enc.c"],
+  "roots": ["ChaCha20_ctr32"],
+  "cflags": ["-Ivendor/include", "-Iinclude"]
+}

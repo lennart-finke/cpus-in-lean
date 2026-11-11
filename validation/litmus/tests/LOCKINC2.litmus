@@ -1,0 +1,6 @@
+X86 LOCKINC2
+"Locked increments are atomic: x=1 forbidden"
+{ x=0; }
+ P0           | P1           ;
+ LOCK INC [x] | LOCK INC [x] ;
+exists (x=1)

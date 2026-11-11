@@ -1,0 +1,10 @@
+7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a  ./LICENSE.txt
+f60d961326c61f989dff6010094ca7accfcc4baa12b8b90284a5ee6aab4df632  ./crypto/mem_clr.c
+ff571f1e2a39a7ed55518682cbf01372c42a41dff136b53268815c3f9e595c52  ./crypto/sha/sha256.c
+8d97ec789c8fdd983223e3730b64251143ea199da2b8fa93b6a4db5d88d3ac8c  ./include/crypto/md32_common.h
+7a3d96805f2e1d1bbd2e3b0d5fb68b8fa973aa43269723a34611fd67983fb65d  ./include/crypto/sha.h
+b28172c2f122cd28b0424b3d8b9c2845c6abe652a0c2c792618e170b11f504c4  ./include/internal/deprecated.h
+bb786af28d77ffffd4363163fd0093fad28a5d264144934f2ab14a6f72cb4e6a  ./include/internal/endian.h
+d7300e16ec04f764e8fd45ae5288c37ab5af09dd1ea204d17c54c0155c69921c  ./include/openssl/e_os2.h
+dc27bc9e94abbb9e49bbcb604da5c061a65145586ac388c3fb4fc311daaccf96  ./include/openssl/macros.h
+7e006accd6565cc97dee672c097acc5e38482be7cd4fa1e0c316bf466425b895  ./include/openssl/sha.h

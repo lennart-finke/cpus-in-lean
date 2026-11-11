@@ -1,0 +1,6 @@
+X86 INC2
+"Unlocked increments can lose an update"
+{ x=0; }
+ P0        | P1        ;
+ INC [x]   | INC [x]   ;
+exists (x=1)

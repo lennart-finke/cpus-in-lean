@@ -1,0 +1,5 @@
+7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a  ./LICENSE.txt
+6bff8a2e69892124567ebf1ca3905918240d25eae6e1728a514aea6603c2a660  ./crypto/chacha/chacha_enc.c
+3e62422a910721cdd846f4e76213761986c4ff8cda776d4ac03142c858e3c40d  ./include/crypto/chacha.h
+ad648135c7046803d4ee15adfd6246007d11afd51630868830f86b6ed8f3a76f  ./include/crypto/ctype.h
+bb786af28d77ffffd4363163fd0093fad28a5d264144934f2ab14a6f72cb4e6a  ./include/internal/endian.h
