@@ -40,6 +40,10 @@ structure MachineExt where
   apic : Apic := {}
   /-- Some TLB entry may come from a large page (INVLPG then scans for its other slices). -/
   tlbLarge : Bool := false
+  /-- The 4 MiB / 2 MiB regions (linear address of the large page) whose slices may be in the TLB:
+  INVLPG scans the TLB only for an address in one of them (Linux maps its kernel with large pages
+  and issues many INVLPGs elsewhere). Superset of the cached regions. -/
+  tlbLargeRegions : Array UInt32 := #[]
   /-- Some TLB entry may be global (`Tlb.G`): a CR3 load then scans for the entries it keeps. -/
   tlbGlobal : Bool := false
   /-- DR6.B0..B3 bits of data and I/O breakpoints matched by the current instruction (or event delivery). -/
@@ -236,13 +240,13 @@ def maxPhysAddr : Nat := 48
 /-- Invalidate every TLB entry, including global ones (AMD APM vol. 2, 5.5.3 "Implicit
 Invalidations": changes of CR0.PG, CR4.PAE/PSE/PGE, SMM entry and RSM, MTRR writes). -/
 def flushTlbAll : M Unit := modM fun m =>
-  { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false, tlbGlobal := false }
+  { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false, tlbGlobal := false, tlbLargeRegions := #[] }
 
 /-- A CR3 load (MOV CR3, task switch): invalidate every TLB entry except global ones (AMD APM vol. 2,
 5.5.2). Without global entries this is `flushTlbAll`. -/
 def flushTlb : M Unit := modM fun m =>
   if !m.tlbGlobal then
-    { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false }
+    { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false, tlbLargeRegions := #[] }
   else
     { m with tlbTag := Id.run do
         let mut t := m.tlbTag
@@ -258,7 +262,8 @@ def flushTlbPage (lin : UInt32) : M Unit := modM fun m =>
   if !m.tlbLarge then m else
   let mask : UInt32 := if m.cpu.cr4 &&& CR4.PAE != 0 then 0xFFE00000 else 0xFFC00000
   let region := lin &&& mask
-  { m with tlbTag := Id.run do
+  if !m.tlbLargeRegions.contains region then m else
+  { m with tlbLargeRegions := m.tlbLargeRegions.filter (· != region), tlbTag := Id.run do
       let mut t := m.tlbTag
       for k in [0:tlbSize] do
         if m.tlbVal[k]! &&& Tlb.L != 0 && t[k]! &&& 1 != 0 && t[k]! &&& mask == region then
@@ -301,9 +306,12 @@ and accesses to supervisor pages (U/S = 0 at some level) pass; see `smPass` for 
 /-- Store a translation in the TLB. -/
 @[inline] def tlbFill (m : Machine) (lin : UInt32) (phys : UInt64) (bits : UInt64) (large : Bool) : Machine :=
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
+  let region := lin &&& (if m.cpu.cr4 &&& CR4.PAE != 0 then 0xFFE00000 else 0xFFC00000)
   { m with tlbTag := m.tlbTag.set! idx ((lin &&& 0xFFFFF000) ||| 1),
            tlbVal := m.tlbVal.set! idx (phys ||| bits ||| (if large then Tlb.L else 0)),
            tlbLarge := m.tlbLarge || large,
+           tlbLargeRegions := if large && !m.tlbLargeRegions.contains region then m.tlbLargeRegions.push region
+                              else m.tlbLargeRegions,
            tlbGlobal := m.tlbGlobal || bits &&& Tlb.G != 0 }
 
 /-- TLB permission bits for combined U/S, R/W bits `perm` and the PTE (or large PDE) dirty bit. -/
