@@ -459,8 +459,7 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
        (c.cr0 &&& CR0.PG == 0 || (v ^^^ c.cr0) &&& 0x60000000 != 0) then
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
-    modCpu fun c => { c with cr0 := v, efer := LongMode.withLma c.efer v }
-    if (v ^^^ c.cr0) &&& (CR0.PG ||| CR0.WP ||| CR0.PE) != 0 then flushTlbAll
+    LongMode.setCr0 v
   | 2 => modCpu fun c => { c with cr2 := v }
   | 3 =>
     if c.cr0 &&& CR0.PG != 0 && pae && !LongMode.lma c then

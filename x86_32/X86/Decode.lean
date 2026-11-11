@@ -162,9 +162,6 @@ def opInfoTable : ByteArray := ⟨Array.ofFn (n := 1024) fun k => opInfo k.val.t
 /-- Decode the instruction at CS:EIP; returns the instruction and its length. -/
 def decodeRaw : M (Inst × UInt32) := do
   let c ← cpu
-  -- 64-bit mode (EFER.LMA = 1, CS.L = 1) is the x86_64 model's: stop before fetching
-  -- (the long-mode boundary, `X86/Ext/LongModeBase.lean`)
-  if c.cs.attr &&& 0x2000 != 0 && c.efer &&& EFER.LMA != 0 then unsupported "64-bit mode"
   let eip0 := c.eip
   let d32 := c.cs.big
   let mut n : UInt32 := 0
@@ -330,8 +327,15 @@ def decodeRaw : M (Inst × UInt32) := do
       i := { i with imm2 := v }
   return (i, n)
 
+/-- The long-mode boundary (`X86/Ext/LongModeBase.lean`): in 64-bit mode (EFER.LMA = 1 and CS.L = 1),
+which is the `x86_64` model's, nothing is fetched and the step stops. -/
+@[inline] def stop64 : M Unit := fun m =>
+  if m.cpu.cs.attr &&& 0x2000 != 0 && m.cpu.efer &&& EFER.LMA != 0 then .error (.unsupported "64-bit mode") m
+  else .ok () m
+
 /-- Decode the instruction at CS:EIP. Instructions longer than 15 bytes raise #GP(0). -/
 def decode : M Inst := do
+  stop64
   let (i, n) ← decodeRaw
   if n > 15 then gp 0
   return { i with len := n }

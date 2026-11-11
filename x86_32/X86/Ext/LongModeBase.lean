@@ -94,6 +94,13 @@ enabled after LME is set to 1, the processor sets the EFER.LMA bit to 1"; cleari
 @[inline] def withLma (efer cr0 : UInt32) : UInt32 :=
   if efer &&& EFER.LME != 0 && cr0 &&& CR0.PG != 0 then efer ||| EFER.LMA else efer &&& ~~~EFER.LMA
 
+/-- The state change of MOV CR0 = `v` once its checks have passed: CR0 = `v`, EFER.LMA = LME ∧ PG,
+and a TLB flush (global entries included) if PG, WP or PE change. -/
+def setCr0 (v : UInt32) : M Unit := fun m =>
+  let c := m.cpu
+  let m' := { m with cpu := { c with cr0 := v, efer := withLma c.efer v } }
+  if (v ^^^ c.cr0) &&& (CR0.PG ||| CR0.WP ||| CR0.PE) != 0 then flushTlbAll m' else .ok () m'
+
 /-- MOV CR0 = `v` passes the long-mode consistency checks of table 14-5: enabling paging (PG 0 → 1)
 with EFER.LME = 1 needs CR4.PAE = 1 and CS.L = 0. (Disabling paging from 64-bit mode would be #GP on
 Intel, but the model never executes in 64-bit mode.) -/
