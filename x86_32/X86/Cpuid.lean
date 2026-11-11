@@ -64,7 +64,7 @@ inductive Feature where
   -- CPUID 8000_0007
   | invariantTsc | powerMgmt | mcaRecovery
   -- CPUID 8000_0008:EBX
-  | clzero | irPerf | xsaveErPtr | rdpru | wbnoinvd | ibpb | ibrs | stibp | stibpAlwaysOn | ppin
+  | clzero | irPerf | xsaveErPtr | rdpru | mcommit | wbnoinvd | ibpb | ibrs | stibp | stibpAlwaysOn | ppin
   | ssbd | ext8Misc
   -- CPUID 8000_000A (SVM revision and features) and 8000_001F (memory encryption)
   | svmFeatures | memEncrypt
@@ -86,7 +86,7 @@ def all : List Feature := [
   adMskExtn,
   syscall, nx, mmxext, ffxsr, page1gb, rdtscp, lm,
   invariantTsc, powerMgmt, mcaRecovery,
-  clzero, irPerf, xsaveErPtr, rdpru, wbnoinvd, ibpb, ibrs, stibp, stibpAlwaysOn, ppin, ssbd, ext8Misc,
+  clzero, irPerf, xsaveErPtr, rdpru, mcommit, wbnoinvd, ibpb, ibrs, stibp, stibpAlwaysOn, ppin, ssbd, ext8Misc,
   svmFeatures, memEncrypt]
 
 /-- Where CPUID reports the feature: leaf, subleaf, register (0 EAX, 1 EBX, 2 ECX, 3 EDX), bits. -/
@@ -136,13 +136,15 @@ def loc : Feature → UInt32 × UInt32 × Nat × UInt32
   | mcaRecovery => (0x80000007, 0, 1, 0x1B)
   | clzero => (0x80000008, 0, 1, 1 <<< 0) | irPerf => (0x80000008, 0, 1, 1 <<< 1)
   | xsaveErPtr => (0x80000008, 0, 1, 1 <<< 2) | rdpru => (0x80000008, 0, 1, 1 <<< 4)
+  | mcommit => (0x80000008, 0, 1, 1 <<< 8)   -- APM vol. 3 rev. 3.33, E.4.7 (Fn8000_0008_EBX)
   | wbnoinvd => (0x80000008, 0, 1, 1 <<< 9) | ibpb => (0x80000008, 0, 1, 1 <<< 12)
   | ibrs => (0x80000008, 0, 1, 1 <<< 14) | stibp => (0x80000008, 0, 1, 1 <<< 15)
   | stibpAlwaysOn => (0x80000008, 0, 1, 1 <<< 17) | ppin => (0x80000008, 0, 1, 1 <<< 23)
   | ssbd => (0x80000008, 0, 1, 1 <<< 24)
-  -- UNCONFIRMED: the remaining bits set in the dump's 8000_0008:EBX = 0x018EF757 (6, 8, 10, 13,
-  -- 18, 19), whose names could not be confirmed from a source
-  | ext8Misc => (0x80000008, 0, 1, 0x000C2540)
+  -- the remaining bits set in the dump's 8000_0008:EBX = 0x018EF757: 13 INT_WBINVD, 18
+  -- IbrsPreferred, 19 IbrsSameMode (APM vol. 3 rev. 3.33, E.4.7); 6 and 10 are reserved there
+  -- (UNCONFIRMED)
+  | ext8Misc => (0x80000008, 0, 1, 0x000C2440)
   -- SVM feature identifiers 8000_000A:EDX (NP, LbrVirt, SVML, NRIPS, TscRateMsr, VmcbClean,
   -- FlushByAsid, DecodeAssists, PauseFilter, ... as in the dump); the whole leaf is gated by `svm`
   | svmFeatures => (0x8000000A, 0, 3, 0x0013BCFF)
@@ -177,26 +179,27 @@ def implemented : Feature → Bool
   | .sse2 => true
   | .nx => true
   -- X86/Ext/Gpr.lean
-  | .popcnt => false
-  | .abm => false
-  | .bmi1 => false
-  | .bmi2 => false
-  | .adx => false
-  | .movbe => false
-  | .rdrand => false
-  | .rdseed => false
-  | .rdpid => false
-  | .rdtscp => false
-  | .clfsh => false
-  | .clflushopt => false
-  | .clwb => false
-  | .clzero => false
-  | .wbnoinvd => false
-  | .monitor => false
-  | .mwaitx => false
-  | .prefetchw => false
-  | .rdpru => false
+  | .popcnt => true
+  | .abm => true
+  | .bmi1 => true
+  | .bmi2 => true
+  | .adx => true
+  | .movbe => true
+  | .rdrand => true
+  | .rdseed => true
+  | .rdpid => true
+  | .rdtscp => true
+  | .clfsh => true
+  | .clflushopt => true
+  | .clwb => true
+  | .clzero => true
+  | .wbnoinvd => true
+  | .monitor => true
+  | .mwaitx => true
+  | .prefetchw => true
+  | .rdpru => true
   | .irPerf => false
+  | .mcommit => true
   -- X86/Ext/Sse.lean
   | .sse3 => true
   | .ssse3 => true
@@ -299,7 +302,8 @@ def cr4Writable : UInt32 :=
 /-- EFER bits that WRMSR accepts (others #GP(0)). LMA is set by the processor (long-mode work). -/
 def eferWritable : UInt32 :=
   ifImpl .nx EFER.NXE ||| ifImpl .syscall EFER.SCE ||| ifImpl .lm EFER.LME |||
-  ifImpl .svm EFER.SVME ||| ifImpl .ffxsr EFER.FFXSR ||| ifImpl .tce EFER.TCE
+  ifImpl .svm EFER.SVME ||| ifImpl .ffxsr EFER.FFXSR ||| ifImpl .tce EFER.TCE |||
+  ifImpl .mcommit EFER.MCOMMIT
 
 /-- XCR0 bits the processor supports (CPUID 0xD.0:EDX:EAX): x87 and SSE with XSAVE, AVX state
 with AVX. (The 7742 also reports PKRU, bit 9, in leaf 0xD although CPUID 7:ECX.PKU is 0; the
@@ -439,7 +443,8 @@ def legacyLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
   | 0 => (mb, 0x756E6547, 0x6C65746E, 0x49656E69)  -- "GenuineIntel"
   | 1 =>
     let osx : UInt32 := if implemented .xsave && c.cr4 &&& CR4.OSXSAVE != 0 then 1 <<< 27 else 0
-    (0x00000619, 0, featBits 1 0 2 true ||| osx, featBits 1 0 3 true)
+    -- EBX[15:8]: the CLFLUSH line size in quadwords (8: 64 bytes), once CLFSH is reported
+    (0x00000619, if implemented .clfsh then 0x800 else 0, featBits 1 0 2 true ||| osx, featBits 1 0 3 true)
   | 0x80000000 => (me, 0, 0, 0)
   | 0x80000001 => (0, 0, featBits 0x80000001 0 2 true, featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask)
   | 5 | 6 | 7 | 0xD | 0x80000007 | 0x80000008 | 0x8000000A => amdLeaf c leaf sub

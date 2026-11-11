@@ -36,7 +36,10 @@ leaves room, the weaker choice is taken:
   and devices (each CPU has its own copy of the device state; a CPU must start with `intr = false`
   and no timer).
 * MFENCE drains the store buffer. LFENCE and SFENCE need no additional ordering for the ordinary
-  write-back accesses supported here. Non-temporal and masked stores, APIC MMIO and SMM stop.
+  write-back accesses supported here. Non-temporal and masked stores (and CLZERO, weakly ordered
+  like them, APM CLZERO), APIC MMIO and SMM stop. CLFLUSH, CLFLUSHOPT, CLWB and the prefetches
+  have no memory effect in the model (no caches). MONITOR/MONITORX and MWAIT/MWAITX stop: a store
+  by another CPU to the monitored line would end the wait, which the single-CPU step does not see.
 * Instruction fetch reads the view like data; code is assumed not to be modified concurrently.
 -/
 namespace X86
@@ -72,7 +75,13 @@ def drains (i : Inst) : Bool := locked i || serializing i ||
 
 /-- Non-temporal and masked stores use ordering outside this write-back TSO model. -/
 def isWeakStore (i : Inst) : Bool :=
-  i.op == 0x12B || i.op == 0x1C3 || i.op == 0x1E7 || i.op == 0x1F7
+  i.op == 0x12B || i.op == 0x1C3 || i.op == 0x1E7 || i.op == 0x1F7 ||
+  (!i.vex && i.op == 0x101 && i.modrm == 0xFC)   -- CLZERO
+
+/-- MONITOR, MWAIT, MONITORX, MWAITX (0F 01 C8, C9, FA without F3, FB). -/
+def isMonitorWait (i : Inst) : Bool :=
+  !i.vex && i.op == 0x101 && (i.modrm == 0xC8 || i.modrm == 0xC9 || i.modrm == 0xFB ||
+    (i.modrm == 0xFA && i.rep != 0xF3))
 
 /-- IN, OUT, INS, OUTS. -/
 def isIO (i : Inst) : Bool :=
@@ -141,6 +150,7 @@ def exec (t : TMachine) (k : Nat) : Option TMachine := do
   if inst.any isIO then return stop "TSO: I/O instruction"
   if v.smiPending || v.cpu.smm then return stop "TSO: SMM"
   if inst.any isWeakStore then return stop "TSO: non-temporal or masked store"
+  if inst.any isMonitorWait then return stop "TSO: MONITOR/MWAIT"
   let v' := step { v with tso := some {} }
   let log := v'.tso.getD {}
   -- A locked instruction is atomic only if it completed: lockable instructions never branch, so

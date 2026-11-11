@@ -44,6 +44,7 @@ FEATURES={
     'mmxext':(0x80000001,0,3,22),'rdtscp':(0x80000001,0,3,27),'clzero':(0x80000008,0,1,0),
     'rdpru':(0x80000008,0,1,4),'wbnoinvd':(0x80000008,0,1,9),
 }
+FEATURES.update({'clfsh':(1,0,3,19),'monitor':(1,0,2,3),'mcommit':(0x80000008,0,1,8)})  # Gpr families
 
 
 def parse_cpuid(text):
@@ -201,6 +202,7 @@ def prepare(args):
              ROOT/'test/native/build.py',ROOT/'test/native/signal_oracle.c',ROOT/'test/native/signal_enter.S',
              ROOT/'test/native/start.S',REPO/'x86_64/test/harness/link.py']
     sources+=[REPO/'x86_32/X86.lean']+sorted((REPO/'x86_32/X86').rglob('*.lean'))
+    sources+=[ROOT/'test/gpr_cases.py']   # Gpr families (fp_cases.FAMILIES)
     for source in sources:
         target=out/'sources'/source.relative_to(REPO)
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
