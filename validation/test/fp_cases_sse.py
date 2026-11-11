@@ -77,6 +77,35 @@ def int_case(rng, family, name, code, imm=None, mmx=False, mem_bytes=16):
     return record(c, xmm=xmm_of(a, b), mem=b.to_bytes(16, 'little')[:mem_bytes]), meta(family, name, c)
 
 
+def hadd_nan_pairs(bits):
+    """Pairs (lower element, higher element) of two NaNs with distinct payloads, in both orders:
+    QNaN/QNaN, SNaN/QNaN, SNaN/SNaN, with a negative one."""
+    if bits == 32:
+        q1, q2, qn, s1, s2 = 0x7FC00001, 0x7FC00002, 0xFFC00003, 0x7F800004, 0x7F800005
+    else:
+        q1, q2, qn, s1, s2 = 0x7FF8000000000001, 0x7FF8000000000002, 0xFFF8000000000003, \
+            0x7FF0000000000004, 0x7FF0000000000005
+    return [(q1, q2), (q2, q1), (qn, q1), (q1, qn), (s1, q2), (q2, s1), (s1, s2), (s2, s1)]
+
+
+def hadd_nan_cases():
+    """sse3_hadd_nan: which NaN HADDPx/HSUBPx return when both elements of a pair are NaNs (the first
+    operand's, SDM vol. 1 table 4-7; for HADD the manuals write the higher element first, for HSUB the
+    lower; the model follows that, Sse.hop). No rng: the other families' streams are unchanged."""
+    for name, code, bits in (('haddps', 'f20f7c', 32), ('hsubps', 'f20f7d', 32),
+                             ('haddpd', '660f7c', 64), ('hsubpd', '660f7d', 64)):
+        n = 128 // bits
+        for lo, hi in hadd_nan_pairs(bits):
+            a = sum((lo if k % 2 == 0 else hi) << (bits * k) for k in range(n))
+            b = sum((hi if k % 2 == 0 else lo) << (bits * k) for k in range(n))
+            for mem in (False, True):
+                for mx in (0x1f80, 0x1f00):
+                    c = bytes.fromhex(code) + bytes([3 if mem else 0xc1])
+                    yield record(c, xmm=xmm_of(a, b), mxcsr=mx, mem=b.to_bytes(16, 'little')), \
+                        meta('sse3_hadd_nan', name, c, policy='observe',
+                             reason='two NaN operands of one HADD/HSUB pair: which one the hardware returns')
+
+
 def sse3_cases(rng, count):
     for name, code, bits in (('haddps', 'f20f7c', 32), ('hsubps', 'f20f7d', 32), ('addsubps', 'f20fd0', 32),
                              ('haddpd', '660f7c', 64), ('hsubpd', '660f7d', 64), ('addsubpd', '660fd0', 64)):
@@ -91,6 +120,7 @@ def sse3_cases(rng, count):
             yield record(c), meta('sse3_move', name, c)
         else:
             yield record(c), meta('sse3_move', 'lddqu_reg_ud', c)
+    yield from hadd_nan_cases()
     # FISTTP m16/m32/m64 [ebx]: every operand class, all rounding modes (ignored), masked and unmasked IE
     for name, code in (('fisttp16', 'df0b'), ('fisttp32', 'db0b'), ('fisttp64', 'dd0b')):
         for rc in range(4):

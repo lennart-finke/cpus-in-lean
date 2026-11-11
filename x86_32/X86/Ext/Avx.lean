@@ -659,9 +659,15 @@ def map3 (i : Inst) : Option (M Unit) :=
     let a ← src1 i
     let b ← rdRmV i
     let mx ← mx64
-    let (r0, f0, u0) := Sse.dpps a.lo b.lo imm mx
-    let (r1, f1, u1) := if L then Sse.dpps a.hi b.hi imm mx else ({}, 0, false)
-    Sse.statusStaged (f0 ||| f1) (u0 || u1)
+    -- VEX.256: the stages are per operation across both lanes (all multiplies, then the first
+    -- additions, then the last additions; SDM DPPS: "Exceptions are determined separately for each add
+    -- and multiply operation, in the order of their execution"): an unmasked exception in a stage of
+    -- either lane suppresses the later stages of both, as for one 256-bit operation (`sseStatus`:
+    -- an unmasked IE/DE/ZE suppresses OE/UE/PE of every element)
+    let (r0, s0) := Sse.dppsStages a.lo b.lo imm mx
+    let (r1, s1) := if L then Sse.dppsStages a.hi b.hi imm mx else ({}, [0, 0, 0])
+    let (fl, u) := Sse.stages mx (List.zipWith (· ||| ·) s0 s1)
+    Sse.statusStaged fl u
     setV i i.reg { lo := r0, hi := r1 }
   | 0x41 => some do                                           -- VDPPD (VEX.128 only)
     start i (!L)

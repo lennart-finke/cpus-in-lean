@@ -3,13 +3,13 @@
 
 Written from the manuals, not from the Lean model: Intel SDM vol. 1, chapter 13 (13.4 XSAVE area,
 13.6 XINUSE/XMODIFIED, 13.7-13.12) and the vol. 2 pseudocode of XSAVE, XSAVEOPT, XSAVEC, XSAVES,
-XRSTOR and XRSTORS; AMD APM vol. 2, 11.5 (table 11-3 initial values, 11.5.10 error pointers with
-CPUID Fn8000_0008_EBX[XSaveErPtr]) and vol. 4. The few points where the manuals leave the processor
+XRSTOR and XRSTORS; AMD APM vol. 2, 11.5 (table 11-3 initial values) and vol. 4; AMD APM vol. 3,
+appendix E, CPUID Fn8000_0008_EBX[2] XSaveErPtr: "FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save
+error pointers and FXRSTOR, XRSTOR, XRSTORS always restore error pointers". The few points where the manuals leave the processor
 latitude are fixed the way x86_32/X86/Ext/Xsave.lean documents them:
   * XINUSE[i] = (bit i set by the last XRSTOR*/cleared by its init) OR (component i not in its
     initial configuration); the generated cases reset that bit with an XRSTOR before every case,
   * no modified optimization applies (the case instruction never follows an XRSTOR directly),
-  * error pointers: written by XSAVE* only with FSW.ES = 1, else zeros; always loaded by XRSTOR*.
 
     xsaveref.py table N SEED > xsave_cases.h   (the case table t_xsave.c checks; default 400, 1)
     xsaveref.py selftest                        (layout and pseudocode spot checks)
@@ -145,10 +145,10 @@ def compact_offset(fmt, i):
 
 # ---- component save/load ----
 def save_x87(s, mem):
-    ptrs = s.fsw & 0x80 != 0          # XSaveErPtr: pointers only with an exception pending
-    struct.pack_into('<HHBBH', mem, 0, s.fcw, s.fsw, s.ftw, 0, s.fop if ptrs else 0)
-    struct.pack_into('<IIII', mem, 8, s.fip if ptrs else 0, s.fcs if ptrs else 0,
-                     s.fdp if ptrs else 0, s.fds if ptrs else 0)
+    # XSaveErPtr: the error pointers are always saved, as FXSAVE saves them (FOP 11 bits; FCS and FDS
+    # zero-extended to 32 bits: the 32-bit FXSAVE image layout of the legacy region)
+    struct.pack_into('<HHBBH', mem, 0, s.fcw, s.fsw, s.ftw, 0, s.fop)
+    struct.pack_into('<IIII', mem, 8, s.fip, s.fcs, s.fdp, s.fds)
     for k, (sig, se) in enumerate(s.st):
         struct.pack_into('<QH', mem, 32 + 16 * k, sig, se)   # bytes 10..15 of the slot untouched
 

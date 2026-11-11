@@ -17,6 +17,9 @@ import X86.Proofs.Basic
   PE); `strFlags_cf`, `strFlags_of` (PCMPxSTRx: CF = IntRes2 ≠ 0, OF = IntRes2[0]).
 * FISTTP: `roundQ_trunc` (the truncating conversion never rounds up: C1 = 0).
 * Ownership: `map2?_crypto` (the AES and SHA opcodes of 0F 38 are left to `Crypto.lean`).
+* DPPS/DPPD staging: `stages_stop` (a stage with an unmasked exception ends the reporting: the later
+  stages' flags are not reported; VDPPS ymm passes the stage flags of both lanes ORed stage by
+  stage, so this holds across the two lanes).
 -/
 namespace X86
 
@@ -119,6 +122,22 @@ theorem strFlags_of (imm res la lb : Nat) :
 ("rounded up") stays clear. -/
 theorem roundQ_trunc (n d : Nat) (neg : Bool) : roundQ n d neg 3 = (n / d, n % d != 0, false) := by
   simp [roundQ]
+
+theorem stages_fold_stop (mx acc : UInt64) (rest : List UInt64) :
+    rest.foldl (fun (p : UInt64 × Bool) fl =>
+      if p.2 then p else let r := Sse.stageFlags fl mx; (p.1 ||| r.1, r.2)) (acc, true) = (acc, true) := by
+  induction rest with
+  | nil => rfl
+  | cons x xs ih => simpa using ih
+
+/-- A first stage with an unmasked exception: only its flags are reported (with the input-exception
+rule of `stageFlags`), whatever the later stages would raise. -/
+theorem stages_stop (mx f : UInt64) (rest : List UInt64) (h : (Sse.stageFlags f mx).2 = true) :
+    Sse.stages mx (f :: rest) = ((Sse.stageFlags f mx).1, true) := by
+  have e := stages_fold_stop mx (0 ||| (Sse.stageFlags f mx).1) rest
+  simp only [Sse.stages, List.foldl_cons]
+  simp only [h] at e ⊢
+  simpa using e
 
 theorem map2?_crypto (i : Inst) (h : i.byte = 0xDB ∨ i.byte = 0xC8) : Sse.map2? i = none := by
   rcases h with h | h <;> simp [Sse.map2?, h] <;> split <;> rfl

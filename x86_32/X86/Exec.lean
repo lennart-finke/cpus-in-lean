@@ -682,6 +682,25 @@ def loadFarPtr (s : UInt8) (i : Inst) : M Unit := do
   wrReg i.opsz i.reg o
   if s == SegN.SS then modCpu fun c => { c with shadow := true }
 
+/-- INT n (CD ib) without the virtual-8086 extensions: IOPL-sensitive in virtual-8086 mode (INT3
+and INTO are not), otherwise a software interrupt through the IDT (or IVT). -/
+def intPlain (n : UInt8) : M Unit := do
+  let c ← cpu
+  if c.vm86 && c.iopl < 3 then gp 0
+  deliver n none true false
+
+/-- INT n (CD ib). Only in virtual-8086 mode with CR4.VME = 1 does it read the interrupt
+redirection bitmap in the TSS (`Sys.vmeRedirected`, AMD APM vol. 2, 8.10.1 and table 8-11; vol. 3
+INT): a clear bit redirects it to the 8086 handler (`Sys.vmeInt`). In every other mode the TSS is
+not accessed (`Proofs/ExtSysB.lean`, `intN_noVme`). The redirection test is a nested `if`: a
+nested `(← vmeRedirected n)` in a `&&` condition would be lifted out of the condition by `do`
+notation and run for every INT n. -/
+def intN (n : UInt8) : M Unit := do
+  let c ← cpu
+  if c.vm86 && c.cr4 &&& CR4.VME != 0 then
+    if (← vmeRedirected n) then return ← vmeInt n
+  intPlain n
+
 /-- Opcodes defined by ranges. -/
 def execRange (op : Nat) : Inst → M Unit :=
   if 0x40 ≤ op && op ≤ 0x47 then fun i => do
@@ -903,15 +922,7 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xCA => fun i => farRet i.opsz i.imm
   | 0xCB => fun i => farRet i.opsz 0
   | 0xCC => fun _ => deliver Vec.BP none true false
-  | 0xCD => fun i => do
-    -- INT n is IOPL-sensitive in virtual-8086 mode (INT3 and INTO are not); with CR4.VME it may be
-    -- redirected to the 8086 handler (`Sys.vmeInt`)
-    let c ← cpu
-    let n := i.imm.toUInt8
-    if c.vm86 && c.cr4 &&& CR4.VME != 0 && (← vmeRedirected n) then vmeInt n
-    else
-      if c.vm86 && c.iopl < 3 then gp 0
-      deliver n none true false
+  | 0xCD => fun i => intN i.imm.toUInt8
   | 0xCE => fun _ => do if (← flag OF) then deliver Vec.OF none true false
   | 0xCF => fun i => iret i.opsz
   | 0xD0 | 0xD1 => fun i => shiftGrp i 1

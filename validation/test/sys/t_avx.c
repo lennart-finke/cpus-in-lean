@@ -490,6 +490,39 @@ void test_avx_model(void) {
 	WRCR(4, RDCR(4) | 0x400);
 	MXI = 0x1F80;
 	kprintf("avxm.xm: divps=%x mxcsr=%x unchanged=%d subps=%x mxcsr=%x noxmmexcpt=%x\n", x0, m0, same0, x1, m1, x2);
+	/* VDPPS ymm0, ymm1, ymm2, 0xF1 with only IE unmasked: the stages (all multiplies, the first
+	   additions, the last additions) span both 128-bit lanes, so the SNaN product of the low lane (#XM,
+	   IE) suppresses the inexact last addition 1 + 2^-24 of the high lane (no PE). The inputs are printed
+	   for test/avx_ref.py (a = YMM1, b = YMM2). TCG has no staging. */
+	yfill();
+	for (int k = 0; k < 8; k++) { YI[8 + k] = 0x3F800000; YI[16 + k] = 0x3F800000; }
+	YI[8] = 0x7F800001;                                   /* low lane: SNaN * 1.0, then 1.0 * 1.0 */
+	YI[16 + 5] = 0; YI[16 + 6] = 0x33800000; YI[16 + 7] = 0;   /* high lane products 1, 0, 2^-24, 0 */
+	MXI = 0x1F00;
+	int dp = Y(AM, 0xC4, 0xE3, 0x75, 0x40, 0xC2, 0xF1);
+	kprintf("avxm.dpps256: imm=f1 mx=1f00"); py("a", YI + 8); py("b", YI + 16);
+	kprintf(" vec=%x mxo=%x unchanged=%d\n", dp, MXO, memcmp_eq(YO, YI));
+	/* VHADDPS/VHADDPD/VHSUBPS ymm0, ymm1, ymm2 with two-NaN pairs in both lanes: HADD returns the NaN of
+	   the higher element (the manuals' first operand), HSUB of the lower (Sse.hop; checked by
+	   test/avx_ref.py; TCG returns the larger significand) */
+	{
+		static const u32 hn[16] = { 0x7FC00001, 0x7FC00002, 0x7F800003, 0x7FC00004, 0x7FC00011, 0x7FC00012, 0x3F800000, 0x7F800014,
+		                            0xFFC00005, 0x3F800000, 0x7F800006, 0x7F800007, 0x7FC00015, 0x7FC00016, 0x7FC00017, 0x7FC00018 };
+		for (int k = 0; k < 16; k++) YI[8 + k] = hn[k];
+		MXI = 0x1F80;
+		kprintf("avxm.hnan256: mx=1f80"); py("a", YI + 8); py("b", YI + 16);
+		int h0 = Y(AM, 0xC5, 0xF7, 0x7C, 0xC2); kprintf(" vhaddps=%x", h0); py("r", YO); kprintf(" mxo=%x", MXO);
+		int h1 = Y(AM, 0xC5, 0xF7, 0x7D, 0xC2); kprintf(" vhsubps=%x", h1); py("r", YO); kprintf(" mxo=%x", MXO);
+		kputc('\n');
+		/* binary64: (QNaN, QNaN) | (SNaN, 1.0) in each lane */
+		static const u32 hd[16] = { 1, 0x7FF80000, 2, 0x7FF80000, 3, 0x7FF00000, 0, 0x3FF00000,
+		                            4, 0x7FF00000, 5, 0x7FF00000, 6, 0xFFF80000, 7, 0x7FF80000 };
+		for (int k = 0; k < 16; k++) YI[8 + k] = hd[k];
+		kprintf("avxm.hnan256pd: mx=1f80"); py("a", YI + 8); py("b", YI + 16);
+		int h2 = Y(AM, 0xC5, 0xF5, 0x7C, 0xC2); kprintf(" vhaddpd=%x", h2); py("r", YO); kprintf(" mxo=%x", MXO);
+		int h3 = Y(AM, 0xC5, 0xF5, 0x7D, 0xC2); kprintf(" vhsubpd=%x", h3); py("r", YO); kprintf(" mxo=%x\n", MXO);
+	}
+	MXI = 0x1F80;
 	/* #AC at CPL 3 with CR0.AM and EFLAGS.AC: VEX operands must be aligned to min(size, 16) (AMD APM
 	   vol. 2, table 8-7: 256-bit media 16); class-1 moves raise #GP first; VMASKMOVPx never #AC */
 	WRCR(0, RDCR(0) | 0x40000);
