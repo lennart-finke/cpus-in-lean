@@ -184,6 +184,13 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- masked-out elements, AMD APM vol. 4 VPMASKMOVD calls the details implementation dependent).
   -- Accepted only when both raise the same #PF and the model left memory unchanged; only the memory
   -- hash is replaced.
+  -- (Avx2) the scalar FMA forms (VFMADD/VFMSUB/VFNMADD/VFNMSUB 132/213/231 SS/SD: VEX.66.0F38 99, 9B, 9D,
+  -- 9F, A9, AB, AD, AF, B9, BB, BD, BF) read a 4- or 8-byte memory operand (SDM and AMD APM vol. 4:
+  -- "xmm3/m32", "xmm3/m64"); TCG loads 16 bytes, so an operand ending right before a not-present page
+  -- faults at that page's first byte. Only that #PF is replaced.
+  if i.vex && i.map == 2 && i.pp == 1 && i.isMem && i.byte &&& 0x0F ≥ 9 && i.byte &&& 1 == 1 &&
+     0x99 ≤ i.byte && i.byte ≤ 0xBF && qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then
+    return lo
   -- (Avx; added by the Avx2 work) VMOVSS/VMOVSD with a memory operand and VEX.vvvv ≠ 1111b are #UD
   -- (SDM VMOVSS/VMOVSD: "VEX.vvvv ... is reserved and must be 1111b" for the memory forms; AMD APM vol. 4
   -- VMOVSS); TCG checks VEX.vvvv only after its memory access, so a not-present or inaccessible operand
