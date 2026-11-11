@@ -53,12 +53,19 @@ static int on_ap(void) {
 	return esp >= (u32)ap_stack && esp < (u32)ap_stack + sizeof ap_stack;
 }
 static void eoi(void) { if (smp_x2) wrmsr(0x80B, 0); else LR(0xB0) = 0; }
+/* system B: the AP's NMI handler can be held (NMIs blocked) until the BSP releases it */
+static volatile u32 ap_nmi_hold, ap_nmi_in, ap_nmi_release;
 static int smp_hook(struct frame *f) {
 	if (f->vec != 2 && (f->vec < 0x20 || f->vec == 0xFF)) return 0;
 	if (on_ap()) {
 		if (ap_n < 32) ap_log[ap_n] = f->vec;
 		ap_n++;
 		if (f->vec == 0x5D) { invlpg(0x800000); shoot_done = 1; }
+		if (f->vec == 2 && ap_nmi_hold) {
+			ap_nmi_hold = 0;
+			ap_nmi_in = 1;
+			while (!ap_nmi_release) cpu_relax();
+		}
 	} else {
 		if (bsp_n < 32) bsp_log[bsp_n] = f->vec;
 		bsp_n++;
@@ -237,6 +244,18 @@ void test_smp(void) {
 	ipi(1, 0x400);
 	wait_ap_n(1);
 	logs("smp.ipi.nmi");
+	/* system B: an NMI IPI to the AP while it is in its NMI handler (NMIs blocked) is latched and taken
+	   after the handler's IRET (AMD APM vol. 2, 8.2.3) */
+	ap_nmi_release = 0; ap_nmi_in = 0; ap_nmi_hold = 1;
+	ipi(1, 0x400);
+	wait_until(&ap_nmi_in, 1);
+	ipi(1, 0x400);
+	spin(20000);
+	u32 nmi_inside = ap_n;
+	ap_nmi_release = 1;
+	wait_ap_n(2);
+	kprintf("smp.nmi.blocked.inside: ap=%d\n", nmi_inside);
+	logs("smp.nmi.blocked");
 	/* INIT and STARTUP again: the AP restarts in the trampoline */
 	ap_ready = 0;
 	start_ap(2);

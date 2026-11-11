@@ -195,11 +195,12 @@ def modApicAt (m : Machine) (k : Nat) (f : Apic → Apic) : Machine :=
 def waitSipiAt (m : Machine) (k : Nat) : Bool :=
   if k == m.cur then m.cpu.smpx.waitSipi else (m.peers[k]?.map (·.waitSipi)).getD false
 
-/-- HOOK for the NMI architecture (system workstream B), RECONCILE AT MERGE: latch an NMI for CPU `k`.
-Here the latch is the APIC's `nmi` message to the core; `smpEvent?` (`X86/Step.lean`) delivers it as
-a minimal placeholder (vector 2 at the next boundary, after SMI and debug traps, outside SMM; NMI
-blocking until IRET is system B's). Every NMI source of the SMP work (NMI IPIs and I/O APIC entries)
-goes through this function; LVT entries in NMI mode set the same flag (`Apic.lvtFire`). -/
+/-- An NMI for CPU `k`: the APIC's `nmi` message to the core (the running CPU's or a peer's). At that
+CPU's next instruction boundary outside the INIT state it enters the CPU's NMI latch
+(`Machine.takeNmi`, `Cpu.latchNmi`: one pending NMI per CPU, `SysBState`, swapped with the CPU by
+`MpMachine.switchTo` as part of `Cpu`), from where `Step.nextEvent` delivers it with the NMI blocking
+of system B (until IRET, in SMM). Every NMI source goes through this function (NMI IPIs, I/O APIC
+entries) or sets the same message (LVT entries in NMI mode, `Apic.lvtFire`). -/
 def latchNmi (m : Machine) (k : Nat) : Machine := m.modApicAt k fun a => { a with nmi := true }
 
 /-- Lowest-priority arbitration among `cands` for vector `v` (APM 16.6.2): a focus CPU (the vector

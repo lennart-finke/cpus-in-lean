@@ -41,7 +41,9 @@ def loadElf (img : ByteArray) (memSize : Nat) (cmdline : String := "") : Except 
                      cs, ds, es := ds, ss := ds, fs := ds, gs := ds, idtBase := 0, idtLimit := 0,
                      cr0 := CR0.PE ||| CR0.ET,
                      -- firmware (SeaBIOS) relocates SMBASE to 0xA0000 before starting the kernel
-                     smbase := 0xA0000 }
+                     smbase := 0xA0000,
+                     -- model-only test hooks of system B (the NMI test MSR, `SysB.nmiHookMsr`)
+                     sysbx := { testHooks := true } }
   return { cpu, mem }
 
 structure SysOpts where

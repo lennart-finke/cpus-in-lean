@@ -16,7 +16,8 @@ here in `cores`, and CPUs are swapped in and out at quantum boundaries (`switchT
 The machine is a function of its state; nothing depends on the host:
 * **Schedule**: round robin with a fixed quantum (`quantum` steps, default 1000). The running CPU
   takes steps while it is *runnable* (`runnableState`: not halted, or an event `X86.step` would take:
-  INIT, STARTUP, NMI, SMI, a pending debug trap, or INTR with IF = 1; a CPU in the INIT state only for
+  INIT, STARTUP, an NMI that is not blocked (system B's latch, or the APIC's NMI message), SMI, a
+  pending debug trap, or INTR with IF = 1; a CPU in the INIT state only for
   INIT or STARTUP) and its quantum lasts. Then (`resched`) due timers are fired, MWAIT waits whose
   monitored line another CPU changed end, and the next runnable CPU in the order cur+1, cur+2, …, cur
   (cyclically) runs a new quantum. Halted and waiting CPUs are skipped; a CPU woken by an IPI or an
@@ -77,7 +78,8 @@ namespace MpMachine
 module documentation. `intr`: the CPU's INTR line. -/
 def runnableState (c : Cpu) (a : Apic) (smi : Bool) (dbPend : UInt32) (intr : Bool) : Bool :=
   if c.smpx.waitSipi then a.init || a.sipi.isSome
-  else !c.halted || (a.init && !c.smm) || a.sipi.isSome || (a.nmi && !c.smm) || (smi && !c.smm) ||
+  else !c.halted || (a.init && !c.smm) || a.sipi.isSome ||
+    ((a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) || (smi && !c.smm) ||
     dbPend != 0 || (intr && c.eflags &&& Flag.IF != 0)
 
 /-- CPU `k` is runnable. -/

@@ -62,15 +62,16 @@ def NT   : UInt32 := 0x4000
 def RF   : UInt32 := 0x10000
 def VM   : UInt32 := 0x20000
 def AC   : UInt32 := 0x40000
-/-- Virtual interrupt flag and virtual interrupt pending (CR4.VME/PVI). Names only: POPF, IRET and
-`valid` do not implement them yet. -/
+/-- Virtual interrupt flag and virtual interrupt pending (CR4.VME/PVI; system workstream B, see
+`Sys.lean`). -/
 def VIF  : UInt32 := 0x80000
 def VIP  : UInt32 := 0x100000
 def ID   : UInt32 := 0x200000
 /-- The six arithmetic status flags. -/
 def arith : UInt32 := 0x8D5
-/-- Bits that exist on this CPU model (bit 1 is reserved-one). -/
-def valid : UInt32 := 0x00277FD5
+/-- Bits that exist on this CPU model (bit 1 is reserved-one): the flags through ID, with VIF and
+VIP (loaded by task switches, IRET to virtual-8086 mode and RSM). -/
+def valid : UInt32 := 0x003F7FD5
 end Flag
 
 namespace DR6

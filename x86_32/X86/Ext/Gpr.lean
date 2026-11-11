@@ -1,4 +1,5 @@
 import X86.Ext.Vex
+import X86.Ext.SysB
 /-!
 # General-purpose instruction extensions of Zen 2
 
@@ -77,7 +78,8 @@ Every hook returns `none` for a form whose feature is not `implemented`, so that
   reason only implicitly). MONITOR/MWAIT are #UD at CPL > 0 unless HWCR.MonMwaitUserEn (MSR
   C001_0015h bit 10); MONITORX/MWAITX run at any CPL.
 * **HWCR** (C001_0015h) models only MonMwaitUserEn (bit 10, writable) and TscFreqSel (bit 24, reads
-  1); writes to its other bits are ignored.
+  1), plus McStatusWrEn (bit 18) and IRPerfEn (bit 30), which system workstream B keeps
+  (`SysB.hwcrBits`/`hwcrWrite`); writes to its other bits are ignored.
 * **MCOMMIT** needs EFER.MCOMMIT (bit 17, else #UD); the model has no memory with delayed error
   reporting, so it always sets CF = 1 and clears OF, SF, ZF, AF, PF (APM MCOMMIT).
 * **RDPRU** returns MPERF (ECX = 0) or APERF (ECX = 1) with CF = 1, and 0 with CF = 0 for any other
@@ -92,7 +94,7 @@ Every hook returns `none` for a form whose feature is not `implemented`, so that
 * `map2?` (legacy 0F 38): F0/F1 (MOVBE; F2: CRC32), F6 (66: ADCX, F3: ADOX).
 * `vex?`: VEX.0F38 F2, F3, F5, F6, F7 and VEX.0F3A F0 (all their forms, undefined ones #UD).
 * `msr?`: TSC_AUX (C000_0103h), HWCR (C001_0015h), MPERF/APERF (E7h/E8h), PerfEvtSel/PerfCtr
-  (C001_0000h..7, C001_0200h..B).
+  (C001_0000h..7, C001_0200h..B); then system workstream B's `SysB.msr?` (IRPerfCount C000_00E9h).
 -/
 namespace X86
 namespace Gpr
@@ -502,8 +504,10 @@ def msr? (n : UInt32) : Option MsrImpl :=
     else none
   else if n == 0xC0010015 then
     -- HWCR: TscFreqSel (bit 24) reads 1; only MonMwaitUserEn (bit 10) is modelled
-    some { rd := do return (if (← gst).monMwaitUserEn then 0x400 else 0) ||| 0x01000000
-           wr := fun v => modG fun g => { g with monMwaitUserEn := v &&& 0x400 != 0 } }
+    some { rd := do return (if (← gst).monMwaitUserEn then 0x400 else 0) ||| 0x01000000 ||| (← SysB.hwcrBits)
+           wr := fun v => do
+             modG fun g => { g with monMwaitUserEn := v &&& 0x400 != 0 }
+             SysB.hwcrWrite v }
   else if (n == 0xE7 || n == 0xE8) && implemented .rdpru then
     some { rd := do
              let g ← gst
@@ -516,7 +520,7 @@ def msr? (n : UInt32) : Option MsrImpl :=
   else if 0xC0010200 ≤ n && n ≤ 0xC001020B && implemented .perfCtrExtCore then
     let k := (n - 0xC0010200).toNat
     some (perfMsr (k / 2) (k % 2 == 1))
-  else none
+  else SysB.msr? n
 
 end Gpr
 end X86

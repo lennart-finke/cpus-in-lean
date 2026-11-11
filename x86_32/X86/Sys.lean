@@ -5,9 +5,9 @@ import X86.Ext.LongModeBase
 Stack operations, descriptor tables and segment loads, far control transfers (including call
 gates with inner-stack switch and parameter copying), hardware task switching (JMP/CALL to a TSS
 or task gate, task gates in the IDT, IRET with NT), interrupt/exception delivery through the IDT,
-and IRET. Virtual-8086 mode (without the CR4.VME extensions): entry by IRET from CPL 0 or by a task
-switch, interrupts and exceptions to ring-0 handlers, IOPL-sensitive INT n and IRET (PUSHF, POPF,
-CLI and STI are in `Exec`). System-management mode: SMI entry and RSM.
+and IRET. Virtual-8086 mode: entry by IRET from CPL 0 or by a task switch, interrupts and exceptions
+to ring-0 handlers, IOPL-sensitive INT n and IRET (PUSHF, POPF, CLI and STI are in `Exec`), and the
+CR4.VME/PVI extensions (system workstream B). System-management mode: SMI entry and RSM.
 
 Long mode (EFER.LMA = 1) differs at the places marked `LongMode.` (`X86/Ext/LongModeBase.lean`):
 64-bit IDT and call gates, no task switches, returns to 64-bit code.
@@ -561,27 +561,106 @@ def deliver (vec : UInt8) (err : Option UInt32) (soft ext : Bool) : M Unit := do
   if let some e := err then push gsz e
   modCpu fun c => { c with eip := off, eflags := c.eflags &&& ~~~clr }
 
-/-- IRET / IRETD. -/
+/-! ## Virtual-8086 mode extensions and protected-mode virtual interrupts
+
+CR4.VME (AMD APM vol. 2, 8.10.1; vol. 3 CLI, STI, PUSHF, POPF, IRET, INT; SDM vol. 3, 23.3) changes
+the IOPL-sensitive instructions of virtual-8086 code running with IOPL < 3: CLI and STI clear and
+set the virtual interrupt flag VIF instead of IF (STI with VIP = 1 is #GP(0)); the 16-bit PUSHF
+pushes FLAGS with VIF in the IF position and IOPL = 3; the 16-bit POPF and IRET load FLAGS except IF
+and IOPL and copy the popped IF into VIF, and raise #GP(0) if the popped TF is 1 or the popped IF is 1
+while VIP = 1; their 32-bit forms stay #GP(0). INT n (CD) consults the interrupt redirection bitmap
+(IRB, the 32 bytes below the I/O permission bitmap in the TSS; AMD table 8-11): with the vector's
+bit clear it is redirected to the 8086 handler of the real-mode vector table at linear 0 (with any
+IOPL), with the bit set it is handled as without VME (#GP(0) with IOPL < 3). INT3, INTO and INT1 are
+never redirected. CR4.PVI (AMD 8.10.2) makes CLI and STI at CPL 3 in protected mode with IOPL < 3
+work on VIF the same way; nothing else changes. The processor never sets VIP; VIF and VIP are loaded
+by IRETD at CPL 0, IRET to virtual-8086 mode, task switches and RSM (`Flag.valid`). Where the AMD
+manuals do not say (the TSS limit for the IRB), the IRB bytes are read like the I/O map base: an
+offset beyond the TSS limit is #GP(0) (AMD 12.2.2), also for a 16-bit TSS (AMD's INT pseudocode
+reads the IRB through the I/O map base word at offset 102 for any TSS). -/
+
+/-- VME applies to an IOPL-sensitive instruction: virtual-8086 mode with CR4.VME and IOPL < 3. -/
+@[inline] def Cpu.vmeActive (c : Cpu) : Bool := c.vm86 && c.cr4 &&& CR4.VME != 0 && c.iopl < 3
+
+/-- CLI/STI work on VIF: VME (`vmeActive`), or PVI at CPL 3 in protected mode with IOPL < 3. -/
+@[inline] def Cpu.virtualIf (c : Cpu) : Bool :=
+  c.vmeActive || (c.pe && !c.vm86 && c.cr4 &&& CR4.PVI != 0 && c.cpl == 3 && c.iopl < 3)
+
+/-- The FLAGS image that PUSHF and a redirected INT n push under VME with IOPL < 3: VIF in the IF
+position, IOPL = 3 (AMD APM vol. 3 PUSHF, INT). -/
+def vmeFlagsImage (fl : UInt32) : UInt32 :=
+  ((fl &&& 0xFFFF &&& ~~~(Flag.IF ||| Flag.IOPL)) ||| (if fl &&& Flag.VIF != 0 then Flag.IF else 0)) ||| Flag.IOPL
+
+/-- POPF and IRET under VME raise #GP(0) for a popped image with TF = 1, or IF = 1 while VIP = 1. -/
+@[inline] def vmePopFault (old v : UInt32) : Bool :=
+  v &&& Flag.TF != 0 || (v &&& Flag.IF != 0 && old &&& Flag.VIP != 0)
+
+/-- EFLAGS after a 16-bit POPF or IRET under VME: FLAGS[15:0] from the image except IF and IOPL,
+VIF = the image's IF, bits 31:16 otherwise unchanged. -/
+def vmePopFlags (old v : UInt32) : UInt32 :=
+  let keep : UInt32 := 0xFFFF0000 ||| Flag.IF ||| Flag.IOPL
+  let r := (old &&& keep &&& ~~~Flag.VIF) ||| (v &&& Flag.valid &&& 0xFFFF &&& ~~~keep)
+  (r ||| (if v &&& Flag.IF != 0 then Flag.VIF else 0)) ||| 2
+
+/-- EFLAGS after a redirected INT n: TF and RF cleared, and IF (IOPL = 3) or VIF (IOPL < 3). -/
+def vmeIntFlags (fl : UInt32) : UInt32 :=
+  fl &&& ~~~(Flag.TF ||| Flag.RF ||| (if (fl >>> 12) &&& 3 == 3 then Flag.IF else Flag.VIF))
+
+/-- Whether INT `n` in virtual-8086 mode with CR4.VME is redirected: bit `n` of the IRB is clear. -/
+def vmeRedirected (n : UInt8) : M Bool := do
+  let tr := (← cpu).tr
+  if 0x67 > tr.limit then gp 0
+  let iomap ← sysRd (tr.base + 0x66) 2
+  let off := iomap - 32 + (n.toUInt32 >>> 3)
+  if off > tr.limit then gp 0
+  let b ← sysRd (tr.base + off) 1
+  return (b >>> (n.toUInt32 &&& 7)) &&& 1 == 0
+
+/-- INT n redirected to the 8086 handler (AMD APM vol. 3 INT, "virtual-8086 mode with VME"): the
+vector's CS:IP from linear address 4n (a user-mode read through paging, no limit check), then FLAGS
+(with VIF as IF and IOPL = 3 if IOPL < 3), CS and IP pushed with 16-bit pushes, as in real mode.
+EIP holds the return address. -/
+def vmeInt (n : UInt8) : M Unit := do
+  let c ← cpu
+  let ip ← linRd (n.toUInt32 * 4) 2 true
+  let cs ← linRd (n.toUInt32 * 4 + 2) 2 true
+  push 2 (if c.iopl < 3 then vmeFlagsImage c.eflags else c.eflags &&& 0xFFFF)
+  push 2 c.cs.sel.toUInt32
+  push 2 (c.eip &&& 0xFFFF)
+  modCpu fun c => { c with eip := ip, cs := vm86Seg cs, eflags := vmeIntFlags c.eflags }
+
+/-- IRET / IRETD. (An IRET that completes also ends the blocking of NMIs:
+`Step.iretUnblock`.) -/
 def iret (opsz : Sz) : M Unit := do
   let c ← cpu
   if !c.pe then
     let ip ← pop opsz
     let cs ← pop opsz
     let fl ← pop opsz
-    let keep := if opsz == 4 then Flag.VM else 0xFFFF0000
+    -- real-address mode: VM, VIF and VIP are not loaded (SDM IRET: "(EFLAGS AND 1A0000H)")
+    let keep := if opsz == 4 then Flag.VM ||| Flag.VIF ||| Flag.VIP else 0xFFFF0000
     let mask := Flag.valid &&& ~~~keep
     modCpu fun c => { c with eip := ip, cs := { c.cs with sel := cs.toUInt16, base := (cs &&& 0xFFFF) <<< 4 },
                              eflags := ((c.eflags &&& ~~~mask) ||| (fl &&& mask)) ||| 2 }
     return
   if c.vm86 then
-    -- IOPL-sensitive; at IOPL 3 a real-mode style return that cannot change VM or IOPL
-    if c.iopl < 3 then gp 0
+    -- IOPL-sensitive; at IOPL 3 a real-mode style return that cannot change VM, IOPL, VIF or VIP
+    if c.iopl < 3 then
+      -- CR4.VME: the 16-bit IRET works on VIF (see `vmePopFlags`)
+      if c.cr4 &&& CR4.VME == 0 || opsz == 4 then gp 0
+      let ip ← peek 2 0
+      let cs ← peek 2 2
+      let fl ← peek 2 4
+      if vmePopFault c.eflags fl then gp 0
+      addSp 6
+      modCpu fun c => { c with eip := ip, cs := vm86Seg cs, eflags := vmePopFlags c.eflags fl }
+      return
     let ip ← peek opsz 0
     let cs ← peek opsz opsz.toUInt32
     let fl ← peek opsz (2 * opsz.toUInt32)
     if ip > 0xFFFF then gp 0
     addSp (3 * opsz.toUInt32)
-    let mask := (if opsz == 4 then Flag.valid else 0xFFFF) &&& ~~~(Flag.VM ||| Flag.IOPL)
+    let mask := (if opsz == 4 then Flag.valid else Flag.valid &&& 0xFFFF) &&& ~~~(Flag.VM ||| Flag.IOPL ||| Flag.VIF ||| Flag.VIP)
     modCpu fun c => { c with eip := ip, cs := vm86Seg cs,
                              eflags := ((c.eflags &&& ~~~mask) ||| (fl &&& mask)) ||| 2 }
     return
@@ -617,6 +696,9 @@ def iret (opsz : Sz) : M Unit := do
   if opsz == 4 then mask := mask ||| Flag.RF ||| Flag.AC ||| Flag.ID
   if cpl ≤ c.iopl then mask := mask ||| Flag.IF
   if cpl == 0 then mask := mask ||| Flag.IOPL
+  -- VIF and VIP are loaded only by IRETD at CPL 0 (AMD APM vol. 3 IRET: "VIF,VIP,IOPL only changed
+  -- if old_CPL == 0"; SDM IRET: "IF OperandSize = 32 THEN EFLAGS(VIF, VIP)")
+  if cpl == 0 && opsz == 4 then mask := mask ||| Flag.VIF ||| Flag.VIP
   let newFlags := (c.eflags &&& ~~~mask) ||| (fl &&& mask)
   if !LongMode.limitOk c cs ip then gp 0
   if rpl == cpl then
@@ -639,7 +721,8 @@ state-save map at `smbase + 0xFE00..0xFFFF` and enters SMM at `smbase:8000` in a
 environment with 4 GiB segment limits; RSM restores the saved state (SDM 32.4-32.5). The SDM leaves
 the save locations of hidden state (descriptor caches, table registers, CR4) implementation-specific;
 they follow QEMU's 32-bit layout, with descriptor attributes stored like `SegReg.attr`. SMRAM
-protection belongs to the chipset and is not modelled; NMIs do not exist in this model. -/
+protection belongs to the chipset and is not modelled. SMM entry blocks NMIs; RSM restores the NMI
+blocking state of the interrupted context, and an IRET in SMM unblocks them. -/
 
 /-- SMM revision identifier: SMBASE relocation supported (bit 17), no I/O instruction restart. -/
 def smmRevision : UInt32 := 0x00020000
@@ -686,6 +769,8 @@ def smmEnter : M Unit := do
   let flat (sel : UInt16) (base : UInt32) : SegReg := { sel, base, limit := 0xFFFFFFFF, attr := 0x8093 }
   modCpu fun c => { c with
     smm := true, halted := false, shadow := false,
+    -- SMM entry blocks NMIs (an NMI arriving in SMM stays latched); RSM restores the blocking state
+    sysbx := { c.sysbx with smmNmiBlocked := c.sysbx.nmiBlocked, nmiBlocked := true },
     eflags := 2, eip := 0x8000,
     cr0 := c.cr0 &&& ~~~(CR0.PE ||| CR0.EM ||| CR0.TS ||| CR0.PG), cr4 := 0, dr7 := 0x400, bpOn := false,
     cs := flat (c.smbase >>> 4).toUInt16 c.smbase,
@@ -704,9 +789,10 @@ def rsm : M Unit := do
   if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
   -- the 32-bit save map has no EFER: returning to paging with EFER.LME = 1 would need EFER.LMA from it
   if cr0 &&& CR0.PG != 0 && c.efer &&& EFER.LME != 0 then unsupported "RSM to paging with EFER.LME = 1"
-  -- the CR4 bits MOV CR4 accepts besides VME/PVI and OSXMMEXCPT/OSFXSR (as before), plus system A's UMIP,
-  -- SMEP and SMAP: an SMI taken while they are set must be able to return
-  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP ||| CR4.FSGSBASE : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
+  -- a reserved CR4 bit in the saved state shuts the processor down (SDM vol. 3, RSM: "any reserved bit of
+  -- CR4 is set to 1"; AMD APM vol. 3 RSM: an invalid saved state causes shutdown);
+  -- every bit MOV CR4 accepts is valid: an SMI taken while it is set must be able to return
+  if cr4 &&& ~~~Cpuid.cr4Writable != 0 then throw (.shutdown "RSM: invalid saved CR4")
   let cr3 ← r 0x7FF8
   let efl ← r 0x7FF4
   let eip ← r 0x7FF0
@@ -731,7 +817,8 @@ def rsm : M Unit := do
   let nsb ← if rev &&& 0x20000 != 0 then r 0x7EF8 else pure c.smbase
   modCpu fun c => Id.run do
     let mut c := { c.setDr7 dr7 with smm := false, smbase := nsb, cr0, cr3, cr4, eflags := (efl &&& Flag.valid) ||| 2,
-                                     eip, dr6, tr, ldtr, gdtBase, gdtLimit, idtBase, idtLimit }
+                                     eip, dr6, tr, ldtr, gdtBase, gdtLimit, idtBase, idtLimit,
+                                     sysbx := { c.sysbx with nmiBlocked := c.sysbx.smmNmiBlocked } }
     for k in [0:8] do c := c.setReg k.toUInt8 regs[k]!
     for k in [0:6] do c := c.setSeg k.toUInt8 segs[k]!
     return c

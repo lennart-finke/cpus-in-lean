@@ -198,7 +198,7 @@ def implemented : Feature → Bool
   | .mwaitx => true
   | .prefetchw => true
   | .rdpru => true
-  | .irPerf => false
+  | .irPerf => true   -- system B (IRPerf needs the step hook, X86/Ext/SysB.lean)
   | .mcommit => true
   -- X86/Ext/Sse.lean
   | .sse3 => true
@@ -258,7 +258,7 @@ def implemented : Feature → Bool
   | .ssbd => true
   | .ext8Misc => false
   -- system B (VME/PVI, NMI)
-  | .vme => false
+  | .vme => true
   -- X86/Ext/LongMode.lean (LahfSahf: LAHF/SAHF in 64-bit mode, the x86_64 model's; FSGSBASE: CR4 bit,
   -- the instructions are #UD outside 64-bit mode; CX16 stays clear: CMPXCHG16B needs REX.W, i.e.
   -- 64-bit mode, and the x86_64 model does not implement it)
