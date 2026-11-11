@@ -504,6 +504,10 @@ def gen_v2_family(g):
         return insn[:15]
     if r < 0.40:
         return gen_gpr.gen(g)   # 'ext' family of the Gpr forms (gen_gpr.py)
+    # 'ext' family, Crypto workstream: AES-NI, PCLMULQDQ, SHA (gen_crypto.py)
+    if r < 0.55:
+        import gen_crypto
+        return gen_crypto.gen(g)
     return None
 
 def main():

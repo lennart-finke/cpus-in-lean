@@ -208,8 +208,9 @@ def implemented : Feature → Bool
   | .sse4a => false
   | .misalignSse => false
   -- X86/Ext/Crypto.lean
-  | .aes => false
-  | .pclmulqdq => false
+  | .aes => true
+  | .pclmulqdq => true
+  -- SHA instructions are implemented (Crypto.shaAvail); the bit waits for SSSE3, see there
   | .sha => false
   -- X86/Ext/Xsave.lean
   | .xsave => false
