@@ -62,6 +62,10 @@ def NT   : UInt32 := 0x4000
 def RF   : UInt32 := 0x10000
 def VM   : UInt32 := 0x20000
 def AC   : UInt32 := 0x40000
+/-- Virtual interrupt flag and virtual interrupt pending (CR4.VME/PVI). Names only: POPF, IRET and
+`valid` do not implement them yet. -/
+def VIF  : UInt32 := 0x80000
+def VIP  : UInt32 := 0x100000
 def ID   : UInt32 := 0x200000
 /-- The six arithmetic status flags. -/
 def arith : UInt32 := 0x8D5
@@ -84,6 +88,8 @@ def ET : UInt32 := 0x10
 def NE : UInt32 := 0x20
 def WP : UInt32 := 0x10000
 def AM : UInt32 := 0x40000
+def NW : UInt32 := 0x20000000
+def CD : UInt32 := 0x40000000
 def PG : UInt32 := 0x80000000
 end CR0
 
@@ -94,16 +100,40 @@ def TSD : UInt32 := 0x4
 def DE  : UInt32 := 0x8
 def PSE : UInt32 := 0x10
 def PAE : UInt32 := 0x20
+def MCE : UInt32 := 0x40
 def PGE : UInt32 := 0x80
+def PCE : UInt32 := 0x100
 def OSFXSR : UInt32 := 0x200
 def OSXMMEXCPT : UInt32 := 0x400
+def UMIP : UInt32 := 0x800
+def FSGSBASE : UInt32 := 0x10000
+def PCIDE : UInt32 := 0x20000
+def OSXSAVE : UInt32 := 0x40000
+def SMEP : UInt32 := 0x100000
+def SMAP : UInt32 := 0x200000
+def PKE : UInt32 := 0x400000
 end CR4
 
--- IA32_EFER (MSR 0xC0000080). Only NXE exists on this 32-bit CPU.
+/- IA32_EFER (MSR 0xC0000080), AMD APM vol. 2, 3.1.7. Which bits WRMSR accepts is
+`Cpuid.eferWritable` (today only NXE); the others are names for later work. -/
 namespace EFER
 def msr : UInt32 := 0xC0000080
+def SCE : UInt32 := 0x1
+def LME : UInt32 := 0x100
+def LMA : UInt32 := 0x400
 def NXE : UInt32 := 0x800
+def SVME : UInt32 := 0x1000
+def LMSLE : UInt32 := 0x2000
+def FFXSR : UInt32 := 0x4000
+def TCE : UInt32 := 0x8000
 end EFER
+
+-- XCR0 (XFEATURE_ENABLED_MASK) state-component bits (SDM vol. 1, 13.1).
+namespace XCR0
+def X87 : UInt64 := 0x1
+def SSE : UInt64 := 0x2
+def YMM : UInt64 := 0x4
+end XCR0
 
 /-- Read a little-endian value of `n` bytes (1..4) from a byte array; out-of-range bytes read as 0xFF. -/
 @[inline] def rdBytes (a : ByteArray) (p : UInt32) (n : UInt32) : UInt32 :=

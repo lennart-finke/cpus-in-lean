@@ -1,4 +1,4 @@
-import X86.Exec
+import X86.Dispatch
 /-!
 # The step function
 
@@ -55,7 +55,8 @@ def handleFault (m : Machine) (f : Fault) : Machine :=
   | .exc vec err addr => raiseExc (faultState m vec addr) vec err false
   | f => { m with fatal := some f }
 
-/-- LOCK is only permitted on read-modify-write instructions with a memory destination. -/
+/-- LOCK is only permitted on read-modify-write instructions with a memory destination (and, with
+AltMovCr8, on MOV CR). -/
 def lockOk (i : Inst) : Bool :=
   i.isMem &&
   (let op := i.op
@@ -65,7 +66,9 @@ def lockOk (i : Inst) : Bool :=
    ((op == 0xF6 || op == 0xF7) && (i.reg == 2 || i.reg == 3)) ||
    ((op == 0xFE || op == 0xFF) && i.reg < 2) ||
    op == 0x1AB || op == 0x1B3 || op == 0x1BB || (op == 0x1BA && i.reg ≥ 5) ||
-   op == 0x1B0 || op == 0x1B1 || op == 0x1C0 || op == 0x1C1 || (op == 0x1C7 && i.reg == 1))
+   op == 0x1B0 || op == 0x1B1 || op == 0x1C0 || op == 0x1C1 || (op == 0x1C7 && i.reg == 1)) ||
+  -- AltMovCr8 (AMD): LOCK MOV CR0 accesses CR8 (`Sys.op0F?`)
+  (implemented .altMovCr8 && !i.vex && (i.op == 0x120 || i.op == 0x122))
 
 /-- Restore instruction-start state on a fault, except for POPA's completed
 register loads and MXCSR: the exception flags of an unmasked SIMD exception are set when it is

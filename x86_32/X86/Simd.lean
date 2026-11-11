@@ -280,9 +280,8 @@ def sseStatus (flags : UInt64) : M Unit := do
   if unmasked != 0 then
     if c.cr4 &&& CR4.OSXMMEXCPT != 0 then exc Vec.XM else ud
 
-/-- Mandatory prefix: 0 none, 1 66, 2 F3, 3 F2 (F2/F3 take precedence over 66). -/
-@[inline] def pfx (i : Inst) : Nat :=
-  if i.rep == 0xF3 then 2 else if i.rep == 0xF2 then 3 else if i.p66 then 1 else 0
+/-- Mandatory prefix: 0 none, 1 66, 2 F3, 3 F2 (F2/F3 take precedence over 66); `Inst.pp`. -/
+@[inline] def pfx (i : Inst) : Nat := i.pp.toNat
 
 /-! ## Memory operands -/
 
@@ -603,7 +602,7 @@ def fxrstor (i : Inst) : M Unit := do
   for k in [0:8] do fpr := fpr.set! ((top + k) % 8) regs[k]!
   modCpu fun c => { c with fcw := w0.toUInt16, fsw, fempty := ~~~(w1.toUInt8), fpr,
                            fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
-                           fdp, fds := fds.toUInt16, sse := { mxcsr, xmm } }
+                           fdp, fds := fds.toUInt16, sse := { c.sse with mxcsr, xmm } }
   -- as FLDENV: ES and B stay set only if an unmasked exception flag is set
   let c ← cpu
   if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then

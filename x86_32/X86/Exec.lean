@@ -3,6 +3,7 @@ import X86.Alu
 import X86.Sys
 import X86.Fpu
 import X86.Simd
+import X86.Cpuid
 /-!
 # Instruction semantics
 
@@ -370,31 +371,25 @@ def aaaAas (sub : Bool) : M Unit := do
     wrReg 1 0 (al &&& 0xF)
     setFlags (AF ||| CF) 0
 
-/-! ## CPUID -/
+/-! ## Model-specific registers
 
-/-- CPUID.1:EDX feature bits of `X86/Simd.lean`: MMX (23), FXSR (24), SSE (25), SSE2 (26). -/
-def simdFeatures : UInt32 := (1 <<< 23) ||| (1 <<< 24) ||| (1 <<< 25) ||| (1 <<< 26)
+RDMSR/WRMSR look an MSR up in `Dispatch.msr?`: first `coreMsr?` (below), then the `msr?` hook of
+every extension module (`X86/Ext/*.lean`). -/
 
-/-- Add `simdFeatures` to the feature leaf (every leaf that `cpuidVals` answers with leaf 1's
-values) when it reports an x87 FPU (EDX bit 0): FXSAVE saves the x87 state, and an OS seeing FXSR
-without an FPU (Linux with math emulation) would execute FXSAVE under CR0.EM. -/
-def addSimd (leaf : UInt32) (r : UInt32 × UInt32 × UInt32 × UInt32) : UInt32 × UInt32 × UInt32 × UInt32 :=
-  let (a, b, c, d) := r
-  if leaf != 0 && leaf != 0x80000000 && leaf != 0x80000001 && d &&& 1 != 0 then (a, b, c, d ||| simdFeatures)
-  else r
+/-- What RDMSR and WRMSR do with one MSR (after the CPL check; an MSR without an `MsrImpl` is #GP(0)). -/
+structure MsrImpl where
+  rd : M UInt64
+  wr : UInt64 → M Unit
 
-/-- Identification: an i686-class (family 6) core with an x87 FPU (EDX bit 0), supporting debugging
-extensions (CR4.DE), MSRs, CMPXCHG8B, a local APIC, CMOV, PAE and (extended leaf 0x80000001) execute-disable. -/
-def cpuidVals (leaf : UInt32) : UInt32 × UInt32 × UInt32 × UInt32 :=
-  addSimd leaf <| match leaf with
-  | 0 => (1, 0x756E6547, 0x6C65746E, 0x49656E69)  -- "GenuineIntel"
-  | 0x80000000 => (0x80000001, 0, 0, 0)
-  | 0x80000001 => (0, 0, 0, 1 <<< 20)
-  | _ => (0x00000619, 0, 0, 1 ||| (1 <<< 2) ||| (1 <<< 5) ||| (1 <<< 6) ||| (1 <<< 8) ||| (1 <<< 9) ||| (1 <<< 15))
+/-- An MSR kept in `Cpu.msrs` (reads 0 until written); WRMSR stores `v &&& mask` (mask 0: the
+write is accepted and the MSR reads 0). -/
+def MsrImpl.stored (n : UInt32) (mask : UInt64) : MsrImpl where
+  rd := do return (((← cpu).msrs.find? (·.1 == n)).map (·.2)).getD 0
+  wr v := modCpu fun c => { c with msrs := (n, v &&& mask) :: c.msrs.filter (·.1 != n) }
 
-/-- Implemented MSRs: `some writeMask` (0 = read-only), `none` = not present (#GP).
-0x17 platform id, 0x8B microcode revision, 0xC1/0xC2 performance counters (40 bits),
-0x186/0x187 event selects, 0x1D9 debug control. -/
+/-- MSRs of the core model kept in `Cpu.msrs`, with their write masks: 0x17 platform id
+(read-only), 0x8B microcode revision, 0xC1/0xC2 performance counters (40 bits), 0x186/0x187 event
+selects, 0x1D9 debug control. -/
 def msrInfo (n : UInt32) : Option UInt64 :=
   match n with
   | 0x17 => some 0
@@ -404,34 +399,46 @@ def msrInfo (n : UInt32) : Option UInt64 :=
   | 0x1D9 => some 0x7F
   | _ => none
 
-def rdmsr (n : UInt32) : M UInt64 := do
-  cplIs0
-  if n == EFER.msr then return (← cpu).efer.toUInt64
-  if n == 0x1B then
-    -- IA32_APIC_BASE: base, global enable (bit 11), boot processor (bit 8)
+/-- IA32_EFER: WRMSR accepts `Cpuid.eferWritable` (NXE today) and flushes the TLB. -/
+def eferMsr : MsrImpl where
+  rd := do return (← cpu).efer.toUInt64
+  wr v := do
+    if v &&& ~~~Cpuid.eferWritable.toUInt64 != 0 then gp 0
+    modCpu fun c => { c with efer := v.toUInt32 }
+    flushTlb
+
+/-- IA32_APIC_BASE: base, global enable (bit 11), boot processor (bit 8). -/
+def apicBaseMsr : MsrImpl where
+  rd := do
     let a := (← getM).apic
     return (a.base ||| (if a.enabled then 0x800 else 0) ||| 0x100).toUInt64
-  if (msrInfo n).isNone then gp 0
-  let c ← cpu
-  return ((c.msrs.find? (·.1 == n)).map (·.2)).getD 0
-
-def wrmsr (n : UInt32) (v : UInt64) : M Unit := do
-  cplIs0
-  if n == 0x1B then
+  wr v := do
     if v &&& ~~~(0xFFFFF900 : UInt64) != 0 then gp 0
     let en := v &&& 0x800 != 0
     -- a global disable resets the APIC (its base is kept)
     modM fun m =>
       let a := if en then m.apic else {}
       { m with apic := { a with base := v.toUInt32 &&& 0xFFFFF000, enabled := en } }.syncTimer.syncIntr
-    return
-  if n == EFER.msr then
-    if v &&& ~~~EFER.NXE.toUInt64 != 0 then gp 0
-    modCpu fun c => { c with efer := v.toUInt32 }
-    flushTlb
-    return
-  let some mask := msrInfo n | gp 0
-  modCpu fun c => { c with msrs := (n, v &&& mask) :: c.msrs.filter (·.1 != n) }
+
+/-- The MSRs of the core model. -/
+def coreMsr? (n : UInt32) : Option MsrImpl :=
+  if n == EFER.msr then some eferMsr
+  else if n == 0x1B then some apicBaseMsr
+  else (msrInfo n).map (MsrImpl.stored n)
+
+/-- RDMSR of MSR `n`, looked up with `look`. -/
+def rdmsrWith (look : UInt32 → Option MsrImpl) (n : UInt32) : M UInt64 := do
+  cplIs0
+  match look n with
+  | some m => m.rd
+  | none => gp 0
+
+/-- WRMSR of MSR `n`, looked up with `look`. -/
+def wrmsrWith (look : UInt32 → Option MsrImpl) (n : UInt32) (v : UInt64) : M Unit := do
+  cplIs0
+  match look n with
+  | some m => m.wr v
+  | none => gp 0
 
 /-! ## System instructions -/
 
@@ -457,7 +464,7 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
     modCpu fun c => { c with cr3 := v }
     flushTlb
   | 4 =>
-    if v &&& ~~~(0x07FC : UInt32) != 0 then gp 0
+    if v &&& ~~~Cpuid.cr4Writable != 0 then gp 0
     if c.cr0 &&& CR0.PG != 0 && v &&& CR4.PAE != 0 &&
        (v ^^^ c.cr4) &&& (CR4.PAE ||| CR4.PGE ||| CR4.PSE) != 0 then
       let p ← readPdptes c.cr3
@@ -968,12 +975,6 @@ def execOp0F (op : Nat) : Inst → M Unit :=
       | 0 => { c with dr0 := v } | 1 => { c with dr1 := v } | 2 => { c with dr2 := v }
       | 3 => { c with dr3 := v } | 6 => { c with dr6 := v ||| 0xFFFF0FF0 }
       | _ => c.setDr7 (v ||| 0x400)
-  | 0x130 => fun _ => do
-    wrmsr (← getReg 1) ((← getReg 0).toUInt64 ||| ((← getReg 2).toUInt64 <<< 32))
-  | 0x132 => fun _ => do
-    let v ← rdmsr (← getReg 1)
-    setReg 0 v.toUInt32
-    setReg 2 (v >>> 32).toUInt32
   | 0x131 => fun _ => do
     let c ← cpu
     if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
@@ -984,7 +985,7 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x1A0 => pushSeg SegN.FS | 0x1A1 => popSeg SegN.FS
   | 0x1A8 => pushSeg SegN.GS | 0x1A9 => popSeg SegN.GS
   | 0x1A2 => fun _ => do
-    let (a, b, c, d) := cpuidVals (← getReg 0)
+    let (a, b, c, d) := cpuid (← cpu) (← getReg 0) (← getReg 1)
     setReg 0 a; setReg 3 b; setReg 1 c; setReg 2 d
   | 0x1A3 => fun i => do bitOp i 0 (← rdReg i.opsz i.reg) false
   | 0x1AB => fun i => do bitOp i 1 (← rdReg i.opsz i.reg) false
@@ -1081,13 +1082,10 @@ def execOp0F (op : Nat) : Inst → M Unit :=
     setReg r ((v <<< 24) ||| ((v &&& 0xFF00) <<< 8) ||| ((v >>> 8) &&& 0xFF00) ||| (v >>> 24))
   | _ => if op ≥ 0x100 && isSimdOp (op - 0x100) then simd else execRange op
 
-def execOne (op : Nat) : Inst → M Unit :=
+/-- The core model's semantics of the one-byte and 0F maps (0x000..0x1FF), before the hooks of
+`X86/Dispatch.lean` (which also handles RDMSR/WRMSR and the 0F 38 / 0F 3A / VEX maps). -/
+def execBase (op : Nat) : Inst → M Unit :=
   if op < 0x60 then execOp00 op else if op < 0xA0 then execOp60 op
   else if op < 0x100 then execOpA0 op else execOp0F op
-
-/-- Dispatch table indexed by opcode (0x000..0x1FF). -/
-def execTable : Array (Inst → M Unit) := Array.ofFn (n := 512) fun k => execOne k.val
-
-@[inline] def exec (i : Inst) : M Unit := execTable[i.op.toNat]! i
 
 end X86

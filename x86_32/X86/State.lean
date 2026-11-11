@@ -48,10 +48,34 @@ structure V128 where
 
 /-- SSE registers XMM0..XMM7 and the SIMD control/status register MXCSR (reset value 0x1F80: all
 exceptions masked, round to nearest). Kept in one field of `Cpu`, so that the many `Cpu` updates of
-integer instructions do not copy them. -/
+integer instructions do not copy them.
+
+`ymmh` holds bits 255:128 of YMM0..YMM7 (AVX); YMMk = `ymmh[k]` : `xmm[k]`. Legacy SSE instructions
+leave it unchanged, VEX.128 instructions zero it (SDM vol. 1, 14.1.2). Nothing writes it yet. -/
 structure SseState where
   xmm : Array V128 := Array.replicate 8 {}
   mxcsr : UInt32 := 0x1F80
+  ymmh : Array V128 := Array.replicate 8 {}
+  deriving Repr, Inhabited
+
+/-! Per-owner state. Each extension module (`X86/Ext/*.lean`, see `EXTENDING.md`) that needs new
+architectural CPU state adds fields to its own structure below, so that parallel work does not edit
+the same lines. They are fields of `CpuExt` (not copied by integer-instruction updates). -/
+
+/-- State of `X86/Ext/Gpr.lean` (e.g. a MONITOR address range). -/
+structure GprState where
+  deriving Repr, Inhabited
+
+/-- State of `X86/Ext/Sys.lean` (SYSENTER/SYSCALL MSRs, TSC offset, PAT, MTRRs, ...). -/
+structure SysState where
+  deriving Repr, Inhabited
+
+/-- State of `X86/Ext/Svm.lean` (VM_HSAVE_PA, GIF, ...). -/
+structure SvmState where
+  deriving Repr, Inhabited
+
+/-- State of `X86/Ext/LongMode.lean`. -/
+structure LongModeState where
   deriving Repr, Inhabited
 
 /-- CPU state beyond the integer core: x87, EFER, PAE registers, SMM. Integer code never touches it,
@@ -71,8 +95,12 @@ structure CpuExt where
   fop : UInt16 := 0
   fdp : UInt32 := 0
   fds : UInt16 := 0
-  /-- IA32_EFER; only NXE (bit 11) is implemented. -/
+  /-- IA32_EFER; the writable bits are `Cpuid.eferWritable` (only NXE, bit 11, today). -/
   efer : UInt32 := 0
+  /-- XCR0 (XFEATURE_ENABLED_MASK, written by XSETBV); reset value 1 (x87 only), SDM vol. 1, 13.3. -/
+  xcr0 : UInt64 := 1
+  /-- IA32_XSS (MSR 0xDA0, supervisor state components of XSAVES/XRSTORS); reset 0. -/
+  xss : UInt64 := 0
   /-- PAE page-directory-pointer-table registers, loaded from CR3 by MOV CR0/CR3/CR4 and task
   switches while PAE paging is (being) enabled; translation uses these, not memory. -/
   pdpte : Array UInt64 := #[0, 0, 0, 0]
@@ -83,6 +111,10 @@ structure CpuExt where
   /-- Some breakpoint of DR7 is enabled (L0..3/G0..3 not all clear), cached from `dr7`: set wherever
   DR7 is written (`Cpu.setDr7`). Checked on every instruction and data access. -/
   bpOn : Bool := false
+  gprx : GprState := {}
+  sysx : SysState := {}
+  svmx : SvmState := {}
+  lmx : LongModeState := {}
   deriving Repr, Inhabited
 
 structure Cpu extends CpuExt where
@@ -118,7 +150,7 @@ structure Cpu extends CpuExt where
   dr3 : UInt32 := 0
   dr6 : UInt32 := 0xFFFF0FF0
   dr7 : UInt32 := 0x400
-  /-- Model-specific registers that have been written (see `Exec.msrInfo`). -/
+  /-- Model-specific registers that have been written (see `Exec.coreMsr?`). -/
   msrs : List (UInt32 × UInt64) := []
   halted : Bool := false
   /-- Interrupts are inhibited for one instruction after STI / MOV SS / POP SS. -/
@@ -134,6 +166,7 @@ namespace Cpu
 
 @[inline] def xmm (c : Cpu) : Array V128 := c.sse.xmm
 @[inline] def mxcsr (c : Cpu) : UInt32 := c.sse.mxcsr
+@[inline] def ymmh (c : Cpu) : Array V128 := c.sse.ymmh
 
 @[inline] def getReg (c : Cpu) (r : UInt8) : UInt32 :=
   match r with
