@@ -305,3 +305,8 @@ from native_xsave import xsave_family, xsavec_family, xsaves_family  # noqa: E40
 FAMILIES.append((xsave_family, ('xsave', 'osxsave', 'avx', 'xsaveopt', 'xgetbv1')))
 FAMILIES.append((xsavec_family, ('xsave', 'osxsave', 'avx', 'xsavec')))
 FAMILIES.append((xsaves_family, ('xsave', 'osxsave', 'avx', 'xsaves')))
+
+# AVX workstream (test/native_avx.py): VEX forms, encodings, masked moves, alignment.
+import native_avx  # noqa: E402
+FAMILIES += [(native_avx.avx_ops, ('avx', 'osxsave')), (native_avx.avx_encoding, ('avx', 'osxsave')),
+             (native_avx.avx_maskmov, ('avx', 'osxsave')), (native_avx.avx_alignment, ('avx', 'osxsave'))]

@@ -182,6 +182,7 @@ void sys_main(void) {
 	test_sse();
 	test_crypto();
 	test_gpr();
+	test_avx();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -196,5 +197,6 @@ void sys_main(void) {
 	test_sysa_model();
 	test_sse_model();
 	test_gpr_model();
+	test_avx_model();
 	sys_exit();
 }

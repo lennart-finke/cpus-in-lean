@@ -17,15 +17,16 @@ A form is (encoding, map, pp, opcode byte) plus an optional ModRM constraint:
   ops       opcode bytes
   modrm     None, or (mod, reg) with mod in {'mem', 'reg', None} and reg 0..7 or None, or
             (mod, reg, rms) with the tuple of allowed ModRM.rm values
+  L, W      (VEX only, optional) the required VEX.L / VEX.W (0 or 1), None = any
 Rows may be broader than the exact set of Zen 2 forms (e.g. a whole VEX opcode range); they must
 not be narrower, or the '#UD' family would generate a form that QEMU executes.
 """
 from collections import namedtuple
 
-Form = namedtuple('Form', 'feature owner encoding map pp ops modrm')
+Form = namedtuple('Form', 'feature owner encoding map pp ops modrm L W', defaults=(None, None))
 
-def F(feature, owner, encoding, map_, pp, ops, modrm=None):
-    return Form(feature, owner, encoding, map_, pp, tuple(ops), modrm)
+def F(feature, owner, encoding, map_, pp, ops, modrm=None, L=None, W=None):
+    return Form(feature, owner, encoding, map_, pp, tuple(ops), modrm, L, W)
 
 def rng(a, b):
     return list(range(a, b + 1))
@@ -36,12 +37,19 @@ NOT_YET_IMPLEMENTED = [
     # --- Sse --- (all implemented: see IMPLEMENTED)
     # --- Crypto ---
     # --- Xsave ---
-    # --- Avx / Avx2 (VEX opcode ranges of Zen 2's AVX, AVX2, FMA3, F16C, VAES-128) ---
-    F('avx', 'Avx', 'vex', 1, None, rng(0x10, 0x17) + rng(0x28, 0x2F) + rng(0x50, 0x7F) + [0xAE, 0xC2] +
-      rng(0xC4, 0xC6) + rng(0xD0, 0xFE)),
-    F('avx', 'Avx', 'vex', 2, None, rng(0x00, 0x4F) + rng(0x58, 0x5A) + [0x78, 0x79, 0x8C, 0x8E] +
-      rng(0x90, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF) + rng(0xDB, 0xDF)),
-    F('avx', 'Avx', 'vex', 3, None, rng(0x00, 0x22) + [0x38, 0x39] + rng(0x40, 0x4C) + rng(0x60, 0x63) + [0xDF]),
+    # --- Avx2 (AVX2, FMA3, F16C; the AVX forms are in IMPLEMENTED): the VEX.256 forms of the integer
+    # opcodes, and the opcodes AVX does not have (broad rows: every pp/W/mod) ---
+    F('avx2', 'Avx2', 'vex', 1, 1, rng(0x60, 0x6D) + rng(0x70, 0x76) + rng(0xD1, 0xD5) + rng(0xD7, 0xDF) +
+      rng(0xE0, 0xE5) + rng(0xE8, 0xEF) + rng(0xF1, 0xF6) + rng(0xF8, 0xFE), None, 1),
+    F('avx2', 'Avx2', 'vex', 1, 2, [0x70], None, 1),
+    F('avx2', 'Avx2', 'vex', 1, 3, [0x70], None, 1),
+    F('avx2', 'Avx2', 'vex', 2, 1, rng(0x00, 0x0B) + rng(0x1C, 0x1E) + rng(0x20, 0x25) + rng(0x28, 0x2B) +
+      rng(0x30, 0x35) + rng(0x37, 0x40), None, 1),
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x13, 0x16, 0x36] + rng(0x45, 0x47) + rng(0x58, 0x5A) + [0x78, 0x79, 0x8C, 0x8E] +
+      rng(0x90, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF)),
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x18, 0x19], ('reg', None)),     # VBROADCASTSS/SD from a register
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x00, 0x01, 0x02, 0x1D, 0x38, 0x39, 0x46]),
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x0E, 0x0F, 0x42, 0x4C], None, 1),
     # --- Svm ---
     F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3)),
 ]
@@ -49,6 +57,51 @@ NOT_YET_IMPLEMENTED = [
 # Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
 # hints; see gen.py (ext_form). Empty until a workstream adds its forms.
 IMPLEMENTED = [
+    # --- Avx (x86_32/X86/Ext/Avx.lean; generator: gen_avx.py) --- exactly the AVX forms of Zen 2
+    # (mandatory prefix, VEX.L, VEX.W, ModRM.mod/reg), so the 'ud' family tests their neighbours as #UD
+    F('avx', 'Avx', 'vex', 1, 0, [0x10, 0x11, 0x14, 0x15, 0x28, 0x29, 0x2E, 0x2F] + rng(0x51, 0x5F) + [0xC2, 0xC6]),
+    F('avx', 'Avx', 'vex', 1, 0, [0x2B], ('mem', None)),
+    F('avx', 'Avx', 'vex', 1, 0, [0x50], ('reg', None)),
+    F('avx', 'Avx', 'vex', 1, 0, [0x12, 0x16], None, 0),            # VMOVLPS/VMOVHLPS, VMOVHPS/VMOVLHPS
+    F('avx', 'Avx', 'vex', 1, 0, [0x13, 0x17], ('mem', None), 0),
+    F('avx', 'Avx', 'vex', 1, 0, [0x77]),                           # VZEROUPPER, VZEROALL
+    F('avx', 'Avx', 'vex', 1, 0, [0xAE], ('mem', 2), 0),            # VLDMXCSR
+    F('avx', 'Avx', 'vex', 1, 0, [0xAE], ('mem', 3), 0),            # VSTMXCSR
+    F('avx', 'Avx', 'vex', 1, 1, [0x10, 0x11, 0x14, 0x15, 0x28, 0x29, 0x2E, 0x2F, 0x51] + rng(0x54, 0x5F) +
+      [0x6F, 0x7C, 0x7D, 0x7F, 0xC2, 0xC6, 0xD0, 0xE6]),
+    F('avx', 'Avx', 'vex', 1, 1, [0x2B, 0xE7], ('mem', None)),
+    F('avx', 'Avx', 'vex', 1, 1, [0x50], ('reg', None)),
+    F('avx', 'Avx', 'vex', 1, 1, [0x12, 0x13, 0x16, 0x17], ('mem', None), 0),
+    F('avx', 'Avx', 'vex', 1, 1, rng(0x60, 0x6D) + [0x6E, 0x70, 0x74, 0x75, 0x76, 0x7E, 0xC4] + rng(0xD1, 0xD6) +
+      rng(0xD8, 0xDF) + rng(0xE0, 0xE5) + rng(0xE8, 0xEF) + rng(0xF1, 0xF6) + rng(0xF8, 0xFE), None, 0),
+    F('avx', 'Avx', 'vex', 1, 1, [0x71, 0x72], ('reg', 2), 0),      # VPSRLW/D imm
+    F('avx', 'Avx', 'vex', 1, 1, [0x71, 0x72], ('reg', 4), 0),      # VPSRAW/D imm
+    F('avx', 'Avx', 'vex', 1, 1, [0x71, 0x72, 0x73], ('reg', 6), 0),  # VPSLLW/D/Q imm
+    F('avx', 'Avx', 'vex', 1, 1, [0x73], ('reg', 2), 0),            # VPSRLQ imm
+    F('avx', 'Avx', 'vex', 1, 1, [0x73], ('reg', 3), 0),            # VPSRLDQ
+    F('avx', 'Avx', 'vex', 1, 1, [0x73], ('reg', 7), 0),            # VPSLLDQ
+    F('avx', 'Avx', 'vex', 1, 1, [0xC5, 0xD7, 0xF7], ('reg', None), 0),
+    F('avx', 'Avx', 'vex', 1, 2, [0x10, 0x11, 0x12, 0x16, 0x2A, 0x2C, 0x2D, 0x51, 0x52, 0x53, 0x58, 0x59, 0x5A, 0x5B,
+      0x5C, 0x5D, 0x5E, 0x5F, 0x6F, 0x7F, 0xC2, 0xE6]),
+    F('avx', 'Avx', 'vex', 1, 2, [0x70, 0x7E], None, 0),            # VPSHUFHW, VMOVQ xmm, xmm/m64
+    F('avx', 'Avx', 'vex', 1, 3, [0x10, 0x11, 0x12, 0x2A, 0x2C, 0x2D, 0x51, 0x58, 0x59, 0x5A, 0x5C, 0x5D, 0x5E, 0x5F,
+      0x7C, 0x7D, 0xC2, 0xD0, 0xE6]),
+    F('avx', 'Avx', 'vex', 1, 3, [0xF0], ('mem', None)),            # VLDDQU
+    F('avx', 'Avx', 'vex', 1, 3, [0x70], None, 0),                  # VPSHUFLW
+    F('avx', 'Avx', 'vex', 2, 1, rng(0x00, 0x0B) + rng(0x1C, 0x1E) + rng(0x20, 0x25) + [0x28, 0x29, 0x2B] +
+      rng(0x30, 0x35) + rng(0x37, 0x41) + rng(0xDB, 0xDF), None, 0),
+    F('avx', 'Avx', 'vex', 2, 1, [0x2A], ('mem', None), 0),         # VMOVNTDQA
+    F('avx', 'Avx', 'vex', 2, 1, [0x0C, 0x0D, 0x0E, 0x0F], None, None, 0),   # VPERMILPS/PD, VTESTPS/PD
+    F('avx', 'Avx', 'vex', 2, 1, [0x17]),                           # VPTEST
+    F('avx', 'Avx', 'vex', 2, 1, [0x18], ('mem', None), None, 0),   # VBROADCASTSS m32
+    F('avx', 'Avx', 'vex', 2, 1, [0x19, 0x1A], ('mem', None), 1, 0),  # VBROADCASTSD m64, VBROADCASTF128
+    F('avx', 'Avx', 'vex', 2, 1, rng(0x2C, 0x2F), ('mem', None), None, 0),   # VMASKMOVPS/PD
+    F('avx', 'Avx', 'vex', 3, 1, [0x04, 0x05, 0x4A, 0x4B], None, None, 0),   # VPERMILPS/PD imm, VBLENDVPS/PD
+    F('avx', 'Avx', 'vex', 3, 1, [0x06, 0x18, 0x19], None, 1, 0),   # VPERM2F128, VINSERTF128, VEXTRACTF128
+    F('avx', 'Avx', 'vex', 3, 1, [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x40]),
+    F('avx', 'Avx', 'vex', 3, 1, [0x0E, 0x0F, 0x14, 0x15, 0x16, 0x17, 0x20, 0x21, 0x22, 0x41, 0x42, 0x44, 0x60,
+      0x61, 0x62, 0x63, 0xDF], None, 0),
+    F('avx', 'Avx', 'vex', 3, 1, [0x4C], None, 0, 0),               # VPBLENDVB
     # --- Sys (generator: test/gen_sys.py) ---
     F('syscall', 'Sys', 'legacy', 1, None, [0x05, 0x07]),
     F('sep', 'Sys', 'legacy', 1, None, [0x34, 0x35]),
@@ -124,10 +177,13 @@ IMPLEMENTED = [
 ]
 
 
-def _matches(f, encoding, map_, pp, op, mod, reg, rm=None):
+def _matches(f, encoding, map_, pp, op, mod, reg, rm=None, L=None, W=None):
     if f.encoding != encoding or f.map != map_ or op not in f.ops:
         return False
     if f.pp is not None and f.pp != pp:
+        return False
+    # (L/W None = unknown: the form may be defined)
+    if f.L is not None and L is not None and f.L != L or f.W is not None and W is not None and f.W != W:
         return False
     if f.modrm is not None:
         m, r = f.modrm[:2]
@@ -141,15 +197,16 @@ def _matches(f, encoding, map_, pp, op, mod, reg, rm=None):
     return True
 
 
-def not_yet_implemented(encoding, map_, pp, op, mod=None, reg=None, rm=None):
-    """The form (with ModRM mod/reg/rm if known) is a Zen 2 form the model does not implement yet."""
-    return any(_matches(f, encoding, map_, pp, op, mod, reg, rm) for f in NOT_YET_IMPLEMENTED)
+def not_yet_implemented(encoding, map_, pp, op, mod=None, reg=None, rm=None, L=None, W=None):
+    """The form (with ModRM mod/reg/rm and VEX.L/W if known) is a Zen 2 form the model does not
+    implement yet."""
+    return any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in NOT_YET_IMPLEMENTED)
 
 
-def defined(encoding, map_, pp, op, mod=None, reg=None, rm=None):
+def defined(encoding, map_, pp, op, mod=None, reg=None, rm=None, L=None, W=None):
     """The form may be defined on Zen 2 (listed as implemented or not yet implemented)."""
-    return not_yet_implemented(encoding, map_, pp, op, mod, reg, rm) or \
-        any(_matches(f, encoding, map_, pp, op, mod, reg, rm) for f in IMPLEMENTED)
+    return not_yet_implemented(encoding, map_, pp, op, mod, reg, rm, L, W) or \
+        any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in IMPLEMENTED)
 
 
 def model_has(feature):

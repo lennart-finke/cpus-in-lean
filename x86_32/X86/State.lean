@@ -51,7 +51,7 @@ exceptions masked, round to nearest). Kept in one field of `Cpu`, so that the ma
 integer instructions do not copy them.
 
 `ymmh` holds bits 255:128 of YMM0..YMM7 (AVX); YMMk = `ymmh[k]` : `xmm[k]`. Legacy SSE instructions
-leave it unchanged, VEX.128 instructions zero it (SDM vol. 1, 14.1.2). Nothing writes it yet. -/
+leave it unchanged, VEX.128 instructions zero it (SDM vol. 1, 14.1.2); XRSTOR and the AVX instructions write it. -/
 structure SseState where
   xmm : Array V128 := Array.replicate 8 {}
   mxcsr : UInt32 := 0x1F80
