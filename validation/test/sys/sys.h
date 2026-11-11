@@ -132,5 +132,7 @@ void test_paging_fuzz_model(void);
 void test_tsf(void);
 void test_cgf(void);
 void test_xfer_model(void);
+void test_gpr(void);
+void test_gpr_model(void);
 
 #endif
