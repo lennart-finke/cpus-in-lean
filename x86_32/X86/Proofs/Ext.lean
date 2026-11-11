@@ -22,17 +22,18 @@ def formerCpuid (leaf : UInt32) : Regs :=
   match leaf with
   | 0 => (7, 0x756E6547, 0x6C65746E, 0x49656E69)
   | 0x80000000 => (0x80000008, 0, 0, 0)
-  | 0x80000001 => (0, 0, 0x20000120 ||| 0xC0, (1 <<< 20) ||| (1 <<< 27))
-  | _ => (0x00000619, 0x800, 0x40C00008 ||| 0x00180201, 0x07888365)
+  | 0x80000001 => (0, 0, 0x200001E0, (1 <<< 20) ||| (1 <<< 27))
+  | _ => (0x00000619, 0x800, 0x40D80209, 0x07888365)
 
+set_option maxRecDepth 10000 in
 theorem legacyMax_former : Cpuid.legacyMax = (7, 0x80000008) := by decide
 
 theorem cpuid_former (c : Cpu) (leaf sub : UInt32)
     (h : leaf = 0 ∨ leaf = 1 ∨ leaf = 0x80000000 ∨ leaf = 0x80000001) :
     cpuid c leaf sub = formerCpuid leaf := by
-  have h12 : Cpuid.featBits 1 0 2 true = 0x40C00008 ||| 0x00180201 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x40D80209 := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x07888365 := by decide
-  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x20000120 ||| 0xC0 := by decide
+  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x200001E0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = (1 <<< 20) ||| (1 <<< 27) := by
     decide
   have hx : implemented .xsave = false := rfl
