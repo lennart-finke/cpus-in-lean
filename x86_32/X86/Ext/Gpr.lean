@@ -126,27 +126,29 @@ def lzcnt (bits x : UInt32) : UInt32 :=
 @[inline] def bmiFlags (sz : Sz) (r : UInt32) (cf : Bool) : UInt32 :=
   szp sz r ||| (if cf then CF else 0)
 
-/-- PDEP: deposit the low bits of `src` at the positions of the set bits of `mask`. -/
-def pdep (src mask : UInt32) : UInt32 := Id.run do
-  let mut r : UInt32 := 0
-  let mut k : UInt32 := 0
-  for i in [0:32] do
-    let b : UInt32 := (1 : UInt32) <<< i.toUInt32
+/-- PDEP over bits `i..31` of `mask` (`n` = 32 − `i` left), the next source bit being `k`. -/
+def pdepGo (src mask : UInt32) : Nat → UInt32 → UInt32 → UInt32 → UInt32
+  | 0, _, _, r => r
+  | n + 1, i, k, r =>
+    let b : UInt32 := (1 : UInt32) <<< i
     if mask &&& b != 0 then
-      if (src >>> k) &&& 1 != 0 then r := r ||| b
-      k := k + 1
-  return r
+      pdepGo src mask n (i + 1) (k + 1) (if (src >>> k) &&& 1 != 0 then r ||| b else r)
+    else pdepGo src mask n (i + 1) k r
+
+/-- PDEP: deposit the low bits of `src` at the positions of the set bits of `mask`. -/
+def pdep (src mask : UInt32) : UInt32 := pdepGo src mask 32 0 0 0
+
+/-- PEXT over bits `i..31` of `mask`, the next result bit being `k`. -/
+def pextGo (src mask : UInt32) : Nat → UInt32 → UInt32 → UInt32 → UInt32
+  | 0, _, _, r => r
+  | n + 1, i, k, r =>
+    let b : UInt32 := (1 : UInt32) <<< i
+    if mask &&& b != 0 then
+      pextGo src mask n (i + 1) (k + 1) (if src &&& b != 0 then r ||| ((1 : UInt32) <<< k) else r)
+    else pextGo src mask n (i + 1) k r
 
 /-- PEXT: gather the bits of `src` at the set bits of `mask` into the low bits. -/
-def pext (src mask : UInt32) : UInt32 := Id.run do
-  let mut r : UInt32 := 0
-  let mut k : UInt32 := 0
-  for i in [0:32] do
-    let b : UInt32 := (1 : UInt32) <<< i.toUInt32
-    if mask &&& b != 0 then
-      if src &&& b != 0 then r := r ||| ((1 : UInt32) <<< k)
-      k := k + 1
-  return r
+def pext (src mask : UInt32) : UInt32 := pextGo src mask 32 0 0 0
 
 /-- BEXTR: the field of `len` (`ctl[15:8]`) bits at `start` (`ctl[7:0]`), zeros beyond bit 31. -/
 def bextr (src ctl : UInt32) : UInt32 :=
@@ -160,15 +162,19 @@ def bzhi (src idx : UInt32) : UInt32 :=
   let n := idx &&& 0xFF
   if n ≥ 32 then src else src &&& (((1 : UInt32) <<< n) - 1)
 
+/-- `n` steps of the bit-serial CRC-32C division (bit-reflected polynomial 82F63B78h). -/
+def crcBits : Nat → UInt32 → UInt32
+  | 0, c => c
+  | n + 1, c => crcBits n (if c &&& 1 != 0 then (c >>> 1) ^^^ 0x82F63B78 else c >>> 1)
+
+/-- CRC-32C over bytes `k..` of `v` (`n` bytes left). -/
+def crc32cGo (v : UInt32) : Nat → UInt32 → UInt32 → UInt32
+  | 0, _, c => c
+  | n + 1, k, c => crc32cGo v n (k + 1) (crcBits 8 (c ^^^ ((v >>> (8 * k)) &&& 0xFF)))
+
 /-- One step of CRC-32C (polynomial 11EDC6F41h, bit-reflected 82F63B78h) over the low `n` bytes of
 `v`, least significant byte first; no pre/post inversion (as the CRC32 instruction). -/
-def crc32c (crc v : UInt32) (n : Nat) : UInt32 := Id.run do
-  let mut c := crc
-  for k in [0:n] do
-    c := c ^^^ ((v >>> (8 * k.toUInt32)) &&& 0xFF)
-    for _ in [0:8] do
-      c := if c &&& 1 != 0 then (c >>> 1) ^^^ 0x82F63B78 else c >>> 1
-  return c
+def crc32c (crc v : UInt32) (n : Nat) : UInt32 := crc32cGo v n 0 crc
 
 /-- SplitMix64: the next state and the output. -/
 def splitmix (s : UInt64) : UInt64 × UInt64 :=
@@ -318,6 +324,20 @@ def rdrand (i : Inst) : M Unit := do
   wrReg i.opsz i.rm z.toUInt32
   setArith CF
 
+/-- RDTSCP: EDX:EAX = TSC, ECX = TSC_AUX; #GP(0) at CPL > 0 with CR4.TSD. -/
+def rdtscp : M Unit := do
+  let c ← cpu
+  if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
+  let t ← tsc
+  setReg 0 t.toUInt32
+  setReg 2 (t >>> 32).toUInt32
+  setReg 1 c.gprx.tscAux
+
+/-- MCOMMIT: #UD unless EFER.MCOMMIT; no delayed-error memory, so CF = 1, OF/SF/ZF/AF/PF = 0. -/
+def mcommit : M Unit := do
+  if (← cpu).efer &&& EFER.MCOMMIT == 0 then ud
+  setArith CF
+
 /-- The 0F-map hook (see the module documentation). -/
 def op0F? (i : Inst) : Option (M Unit) :=
   match i.op with
@@ -334,18 +354,10 @@ def op0F? (i : Inst) : Option (M Unit) :=
     match i.modrm with
     | 0xC8 => if implemented .monitor then some (monitor i false) else none
     | 0xC9 => if implemented .monitor then some (mwait false) else none
-    | 0xF9 => if implemented .rdtscp then some (do
-        let c ← cpu
-        if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
-        let t ← tsc
-        setReg 0 t.toUInt32
-        setReg 2 (t >>> 32).toUInt32
-        setReg 1 c.gprx.tscAux) else none
+    | 0xF9 => if implemented .rdtscp then some rdtscp else none
     | 0xFA =>
       if i.rep == 0xF3 then
-        if implemented .mcommit then some (do
-          if (← cpu).efer &&& EFER.MCOMMIT == 0 then ud
-          setArith CF) else none
+        if implemented .mcommit then some mcommit else none
       else if implemented .mwaitx then some (monitor i true) else none
     | 0xFB => if implemented .mwaitx then some (mwait true) else none
     | 0xFC => if implemented .clzero then some (clzero i) else none
@@ -401,13 +413,10 @@ def map2? (i : Inst) : Option (M Unit) :=
     else none
   | _ => none
 
-/-- BMI1/BMI2 (VEX; real/virtual-8086 mode and legacy prefixes were rejected by `vexExec`).
-Operand size 32 (VEX.W is ignored outside 64-bit mode); VEX.L = 1 is #UD (APM). -/
-def vex? (i : Inst) : Option (M Unit) :=
-  let run (f : Feature) (body : M Unit) : Option (M Unit) :=
-    if !implemented f then none else some (do
-      if i.vexL then ud
-      body)
+/-- The BMI1/BMI2 forms (before the VEX.L check of `vex?`). Operand size 32 (VEX.W is ignored
+outside 64-bit mode). -/
+def vexBody? (i : Inst) : Option (M Unit) :=
+  let run (f : Feature) (body : M Unit) : Option (M Unit) := if !implemented f then none else some body
   let wr := fun (r : UInt8) (v : UInt32) => setReg r v
   if i.map == 2 then
     match i.byte, i.pp with
@@ -458,6 +467,13 @@ def vex? (i : Inst) : Option (M Unit) :=
       let n := i.imm &&& 31
       wr i.reg (if n == 0 then s else (s >>> n) ||| (s <<< (32 - n)))
   else none
+
+/-- BMI1/BMI2 (VEX; real/virtual-8086 mode and legacy prefixes were rejected by `vexExec`):
+VEX.L = 1 is #UD (APM, every BMI instruction) before any operand is read. -/
+def vex? (i : Inst) : Option (M Unit) :=
+  (vexBody? i).map fun body => do
+    if i.vexL then ud
+    body
 
 /-! ## MSRs -/
 
