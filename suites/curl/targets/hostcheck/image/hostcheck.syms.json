@@ -1,0 +1,20 @@
+{
+  "Curl_cert_hostcheck": 1048576,
+  "Curl_host_is_ipnum": 1048848,
+  "Curl_memrchr": 1050352,
+  "Curl_raw_toupper": 1050336,
+  "Curl_touppermap": 1052236,
+  "curl_strnequal": 1050112,
+  "curlx_hexasciitable": 1052492,
+  "curlx_inet_pton": 1048912,
+  "halt": 1050632,
+  "hostmatch": 1048624,
+  "inet_pton4": 1048960,
+  "inet_pton6": 1049184,
+  "memchr": 1050416,
+  "memcpy": 1050544,
+  "memset": 1050592,
+  "ncasecompare": 1050176,
+  "pmatch": 1048816,
+  "strncmp": 1050464
+}

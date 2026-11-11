@@ -1,0 +1,20 @@
+{
+  "_sodium_base642bin_skip_padding": 1051456,
+  "b64_byte_to_char": 1050144,
+  "b64_byte_to_urlsafe_char": 1050032,
+  "b64_char_to_byte": 1051312,
+  "b64_urlsafe_char_to_byte": 1051168,
+  "errno": 1052132,
+  "halt": 1052129,
+  "sodium_base642bin": 1050256,
+  "sodium_base64_check_variant": 1049536,
+  "sodium_bin2base64": 1049552,
+  "sodium_bin2hex": 1048576,
+  "sodium_hex2bin": 1048720,
+  "sodium_memcmp": 1051696,
+  "sodium_memzero": 1051648,
+  "sodium_misuse": 1052086,
+  "sodium_pad": 1051792,
+  "sodium_unpad": 1051952,
+  "strchr": 1052096
+}

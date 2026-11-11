@@ -1,0 +1,15 @@
+#define CURL_OS "i386-unknown-none"
+#define USE_IPV6 1
+#define HAVE_BOOL_T 1
+#define HAVE_STDBOOL_H 1
+#define HAVE_STRUCT_TIMEVAL 1
+#define SIZEOF_INT 4
+#define SIZEOF_LONG 4
+#define SIZEOF_LONG_LONG 8
+#define SIZEOF_OFF_T 8
+#define SIZEOF_CURL_OFF_T 8
+#define SIZEOF_CURL_SOCKET_T 4
+#define SIZEOF_SIZE_T 4
+#define SIZEOF_TIME_T 8
+#define HAVE_RECV 1
+#define HAVE_SEND 1

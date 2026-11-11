@@ -1,0 +1,10 @@
+{
+  "lib": "Curl",
+  "upstream": "https://raw.githubusercontent.com/curl/curl/curl-8_23_0/",
+  "module": "Hostcheck",
+  "sources": ["vendor/lib/vtls/hostcheck.c", "vendor/lib/vdns/hostip.c", "vendor/lib/curlx/inet_pton.c",
+              "vendor/lib/strequal.c", "vendor/lib/strcase.c", "vendor/lib/curl_memrchr.c",
+              "vendor/lib/curlx/strparse.c", "libc.c"],
+  "roots": ["Curl_cert_hostcheck"],
+  "cflags": ["-Iinclude", "-Ivendor/include", "-Ivendor/lib", "-DHAVE_CONFIG_H", "-DBUILDING_LIBCURL", "-DUSE_OPENSSL"]
+}

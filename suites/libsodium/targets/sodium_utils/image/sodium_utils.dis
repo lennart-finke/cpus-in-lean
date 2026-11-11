@@ -1,0 +1,1447 @@
+
+sodium_utils.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+00100000 <sodium_bin2hex>:
+  100000:      	pushl	%ebp
+  100001:      	pushl	%ebx
+  100002:      	pushl	%edi
+  100003:      	pushl	%esi
+  100004:      	pushl	%eax
+  100005:      	movl	0x24(%esp), %ebp
+  100009:      	cmpl	$0x7ffffffe, %ebp       # imm = 0x7FFFFFFE
+  10000f:      	ja	0x100085 <sodium_bin2hex+0x85>
+  100011:      	leal	(%ebp,%ebp), %ecx
+  100015:      	cmpl	%ecx, 0x1c(%esp)
+  100019:      	jbe	0x100085 <sodium_bin2hex+0x85>
+  10001b:      	movl	0x18(%esp), %eax
+  10001f:      	testl	%ebp, %ebp
+  100021:      	je	0x100077 <sodium_bin2hex+0x77>
+  100023:      	movl	%ecx, (%esp)
+  100026:      	movl	0x20(%esp), %esi
+  10002a:      	xorl	%edi, %edi
+  10002c:      	nop
+  10002d:      	nop
+  10002e:      	nop
+  10002f:      	nop
+  100030:      	movzbl	(%esi,%edi), %ebx
+  100034:      	movl	%ebx, %ecx
+  100036:      	andl	$0xf, %ecx
+  100039:      	shrl	$0x4, %ebx
+  10003c:      	leal	0xfff6(%ecx), %edx
+  100042:      	shll	$0x8, %ecx
+  100045:      	andl	$0xd900, %edx           # imm = 0xD900
+  10004b:      	leal	0x5700(%ecx,%edx), %ecx
+  100052:      	leal	0xfff6(%ebx), %edx
+  100058:      	shrl	$0x8, %edx
+  10005b:      	andl	$0xd9, %edx
+  100061:      	addl	%ebx, %edx
+  100063:      	addb	$0x57, %dl
+  100066:      	movb	%dl, (%eax,%edi,2)
+  100069:      	movb	%ch, 0x1(%eax,%edi,2)
+  10006d:      	incl	%edi
+  10006e:      	cmpl	%edi, %ebp
+  100070:      	jne	0x100030 <sodium_bin2hex+0x30>
+  100072:      	movl	(%esp), %ecx
+  100075:      	jmp	0x100079 <sodium_bin2hex+0x79>
+  100077:      	xorl	%ecx, %ecx
+  100079:      	movb	$0x0, (%eax,%ecx)
+  10007d:      	addl	$0x4, %esp
+  100080:      	popl	%esi
+  100081:      	popl	%edi
+  100082:      	popl	%ebx
+  100083:      	popl	%ebp
+  100084:      	retl
+  100085:      	calll	0x100db6 <sodium_misuse>
+  10008a:      	int3
+  10008b:      	int3
+  10008c:      	int3
+  10008d:      	int3
+  10008e:      	int3
+  10008f:      	int3
+
+00100090 <sodium_hex2bin>:
+  100090:      	pushl	%ebp
+  100091:      	pushl	%ebx
+  100092:      	pushl	%edi
+  100093:      	pushl	%esi
+  100094:      	subl	$0xc, %esp
+  100097:      	movl	0x38(%esp), %ecx
+  10009b:      	movl	0x34(%esp), %eax
+  10009f:      	movl	0x28(%esp), %ebp
+  1000a3:      	cmpl	$0x0, 0x2c(%esp)
+  1000a8:      	je	0x10022a <sodium_hex2bin+0x19a>
+  1000ae:      	xorl	%eax, %eax
+  1000b0:      	xorl	%ebx, %ebx
+  1000b2:      	xorl	%edx, %edx
+  1000b4:      	cmpl	$0x0, 0x30(%esp)
+  1000b9:      	je	0x100243 <sodium_hex2bin+0x1b3>
+  1000bf:      	movl	$0x0, 0x8(%esp)
+  1000c7:      	movl	%ebx, (%esp)
+  1000ca:      	movl	%edx, 0x4(%esp)
+  1000ce:      	movzbl	(%ebp,%edx), %ecx
+  1000d3:      	movl	%ecx, %esi
+  1000d5:      	xorl	$0x30, %esi
+  1000d8:      	movl	%ecx, %ebp
+  1000da:      	andb	$-0x21, %cl
+  1000dd:      	addb	$-0x37, %cl
+  1000e0:      	movzbl	%cl, %edi
+  1000e3:      	leal	0xfff6(%edi), %edx
+  1000e9:      	leal	0xfff0(%edi), %ecx
+  1000ef:      	xorl	%ecx, %edx
+  1000f1:      	leal	0xfff6(%esi), %ecx
+  1000f7:      	shrl	$0x8, %ecx
+  1000fa:      	shrl	$0x8, %edx
+  1000fd:      	movl	%ecx, %ebx
+  1000ff:      	orb	%dl, %bl
+  100101:      	je	0x100140 <sodium_hex2bin+0xb0>
+  100103:      	movl	(%esp), %ebx
+  100106:      	cmpl	0x24(%esp), %ebx
+  10010a:      	jae	0x100354 <sodium_hex2bin+0x2c4>
+  100110:      	andl	%esi, %ecx
+  100112:      	andl	%edi, %edx
+  100114:      	orl	%ecx, %edx
+  100116:      	testb	%al, %al
+  100118:      	je	0x1001e0 <sodium_hex2bin+0x150>
+  10011e:      	orb	0x8(%esp), %dl
+  100122:      	movl	0x20(%esp), %ecx
+  100126:      	movb	%dl, (%ecx,%ebx)
+  100129:      	incl	%ebx
+  10012a:      	notb	%al
+  10012c:      	movl	0x28(%esp), %ebp
+  100130:      	movl	0x4(%esp), %edx
+  100134:      	incl	%edx
+  100135:      	cmpl	0x2c(%esp), %edx
+  100139:      	jb	0x1000c7 <sodium_hex2bin+0x37>
+  10013b:      	jmp	0x100214 <sodium_hex2bin+0x184>
+  100140:      	testb	%al, %al
+  100142:      	movl	(%esp), %ebx
+  100145:      	jne	0x100329 <sodium_hex2bin+0x299>
+  10014b:      	pushl	%ebp
+  10014c:      	pushl	0x34(%esp)
+  100150:      	calll	0x100dc0 <strchr>
+  100155:      	addl	$0x8, %esp
+  100158:      	xorl	%esi, %esi
+  10015a:      	testl	%eax, %eax
+  10015c:      	movl	0x28(%esp), %ebp
+  100160:      	je	0x100337 <sodium_hex2bin+0x2a7>
+  100166:      	movl	0x4(%esp), %edx
+  10016a:      	incl	%edx
+  10016b:      	cmpl	0x2c(%esp), %edx
+  10016f:      	jae	0x100345 <sodium_hex2bin+0x2b5>
+  100175:      	nop
+  100176:      	nop
+  100177:      	nop
+  100178:      	nop
+  100179:      	nop
+  10017a:      	nop
+  10017b:      	nop
+  10017c:      	nop
+  10017d:      	nop
+  10017e:      	nop
+  10017f:      	nop
+  100180:      	movl	%edx, 0x4(%esp)
+  100184:      	movzbl	(%ebp,%edx), %eax
+  100189:      	movl	%eax, %ecx
+  10018b:      	xorl	$0x30, %ecx
+  10018e:      	movl	%eax, %esi
+  100190:      	movl	%eax, %edx
+  100192:      	andb	$-0x21, %dl
+  100195:      	addb	$-0x37, %dl
+  100198:      	movzbl	%dl, %edi
+  10019b:      	leal	0xfff6(%edi), %edx
+  1001a1:      	leal	0xfff0(%edi), %ebx
+  1001a7:      	xorl	%ebx, %edx
+  1001a9:      	leal	0xfff6(%ecx), %ebx
+  1001af:      	shrl	$0x8, %ebx
+  1001b2:      	shrl	$0x8, %edx
+  1001b5:      	movl	%ebx, %eax
+  1001b7:      	orb	%dl, %al
+  1001b9:      	jne	0x1001e6 <sodium_hex2bin+0x156>
+  1001bb:      	pushl	%esi
+  1001bc:      	pushl	0x34(%esp)
+  1001c0:      	calll	0x100dc0 <strchr>
+  1001c5:      	addl	$0x8, %esp
+  1001c8:      	testl	%eax, %eax
+  1001ca:      	je	0x1002cd <sodium_hex2bin+0x23d>
+  1001d0:      	movl	0x4(%esp), %edx
+  1001d4:      	incl	%edx
+  1001d5:      	cmpl	0x2c(%esp), %edx
+  1001d9:      	jb	0x100180 <sodium_hex2bin+0xf0>
+  1001db:      	jmp	0x1002e3 <sodium_hex2bin+0x253>
+  1001e0:      	movl	0x28(%esp), %ebp
+  1001e4:      	jmp	0x1001fc <sodium_hex2bin+0x16c>
+  1001e6:      	movl	0x24(%esp), %eax
+  1001ea:      	cmpl	%eax, (%esp)
+  1001ed:      	jae	0x10034f <sodium_hex2bin+0x2bf>
+  1001f3:      	andl	%ecx, %ebx
+  1001f5:      	andl	%edi, %edx
+  1001f7:      	orl	%ebx, %edx
+  1001f9:      	movl	(%esp), %ebx
+  1001fc:      	shlb	$0x4, %dl
+  1001ff:      	movb	$-0x1, %al
+  100201:      	movl	%edx, 0x8(%esp)
+  100205:      	movl	0x4(%esp), %edx
+  100209:      	incl	%edx
+  10020a:      	cmpl	0x2c(%esp), %edx
+  10020e:      	jb	0x1000c7 <sodium_hex2bin+0x37>
+  100214:      	movb	$0x1, %cl
+  100216:      	movl	%ecx, (%esp)
+  100219:      	movl	0x38(%esp), %ecx
+  10021d:      	testb	%al, %al
+  10021f:      	jne	0x100371 <sodium_hex2bin+0x2e1>
+  100225:      	jmp	0x100311 <sodium_hex2bin+0x281>
+  10022a:      	xorl	%ebx, %ebx
+  10022c:      	testl	%ecx, %ecx
+  10022e:      	movl	$0x0, %esi
+  100233:      	movl	$0x0, %edx
+  100238:      	jne	0x10038f <sodium_hex2bin+0x2ff>
+  10023e:      	jmp	0x100393 <sodium_hex2bin+0x303>
+  100243:      	movl	$0x0, 0x8(%esp)
+  10024b:      	jmp	0x10026d <sodium_hex2bin+0x1dd>
+  10024d:      	nop
+  10024e:      	nop
+  10024f:      	nop
+  100250:      	orb	0x8(%esp), %dl
+  100254:      	movl	0x20(%esp), %ecx
+  100258:      	movb	%dl, (%ecx,%ebx)
+  10025b:      	incl	%ebx
+  10025c:      	notb	%al
+  10025e:      	movl	0x4(%esp), %edx
+  100262:      	incl	%edx
+  100263:      	cmpl	%edx, 0x2c(%esp)
+  100267:      	je	0x100305 <sodium_hex2bin+0x275>
+  10026d:      	movl	%ebx, %ebp
+  10026f:      	movl	0x28(%esp), %ecx
+  100273:      	movl	%edx, 0x4(%esp)
+  100277:      	movzbl	(%ecx,%edx), %ecx
+  10027b:      	movl	%ecx, %esi
+  10027d:      	xorl	$0x30, %esi
+  100280:      	leal	0xfff6(%esi), %edx
+  100286:      	shrl	$0x8, %edx
+  100289:      	andb	$-0x21, %cl
+  10028c:      	addb	$-0x37, %cl
+  10028f:      	movzbl	%cl, %edi
+  100292:      	leal	0xfff6(%edi), %ecx
+  100298:      	leal	0xfff0(%edi), %ebx
+  10029e:      	xorl	%ebx, %ecx
+  1002a0:      	shrl	$0x8, %ecx
+  1002a3:      	movl	%edx, %ebx
+  1002a5:      	orb	%cl, %bl
+  1002a7:      	movb	$0x1, %bl
+  1002a9:      	movl	%ebx, (%esp)
+  1002ac:      	je	0x1002f5 <sodium_hex2bin+0x265>
+  1002ae:      	movl	%ebp, %ebx
+  1002b0:      	cmpl	0x24(%esp), %ebp
+  1002b4:      	jae	0x100354 <sodium_hex2bin+0x2c4>
+  1002ba:      	andl	%edi, %ecx
+  1002bc:      	andl	%esi, %edx
+  1002be:      	orl	%ecx, %edx
+  1002c0:      	testb	%al, %al
+  1002c2:      	jne	0x100250 <sodium_hex2bin+0x1c0>
+  1002c4:      	shlb	$0x4, %dl
+  1002c7:      	movl	%edx, 0x8(%esp)
+  1002cb:      	jmp	0x10025c <sodium_hex2bin+0x1cc>
+  1002cd:      	movl	0x34(%esp), %eax
+  1002d1:      	movl	0x38(%esp), %ecx
+  1002d5:      	movl	(%esp), %ebx
+  1002d8:      	movl	0x4(%esp), %edx
+  1002dc:      	xorl	%esi, %esi
+  1002de:      	jmp	0x10038b <sodium_hex2bin+0x2fb>
+  1002e3:      	movl	0x34(%esp), %eax
+  1002e7:      	movl	0x38(%esp), %ecx
+  1002eb:      	movl	(%esp), %ebx
+  1002ee:      	xorl	%esi, %esi
+  1002f0:      	jmp	0x10038b <sodium_hex2bin+0x2fb>
+  1002f5:      	movl	0x38(%esp), %ecx
+  1002f9:      	movl	%ebp, %ebx
+  1002fb:      	movl	0x4(%esp), %edx
+  1002ff:      	testb	%al, %al
+  100301:      	jne	0x100371 <sodium_hex2bin+0x2e1>
+  100303:      	jmp	0x100311 <sodium_hex2bin+0x281>
+  100305:      	movl	0x2c(%esp), %edx
+  100309:      	movl	0x38(%esp), %ecx
+  10030d:      	testb	%al, %al
+  10030f:      	jne	0x100371 <sodium_hex2bin+0x2e1>
+  100311:      	movl	(%esp), %eax
+  100314:      	movzbl	%al, %esi
+  100317:      	decl	%esi
+  100318:      	xorl	%edi, %edi
+  10031a:      	testb	%al, %al
+  10031c:      	cmovel	%edi, %ebx
+  10031f:      	movl	0x34(%esp), %eax
+  100323:      	movl	0x28(%esp), %ebp
+  100327:      	jmp	0x10038b <sodium_hex2bin+0x2fb>
+  100329:      	movl	0x34(%esp), %eax
+  10032d:      	movl	0x38(%esp), %ecx
+  100331:      	movl	0x4(%esp), %edx
+  100335:      	jmp	0x100375 <sodium_hex2bin+0x2e5>
+  100337:      	movl	0x34(%esp), %eax
+  10033b:      	movl	0x38(%esp), %ecx
+  10033f:      	movl	0x4(%esp), %edx
+  100343:      	jmp	0x10038b <sodium_hex2bin+0x2fb>
+  100345:      	movl	0x34(%esp), %eax
+  100349:      	movl	0x38(%esp), %ecx
+  10034d:      	jmp	0x10038b <sodium_hex2bin+0x2fb>
+  10034f:      	xorl	%eax, %eax
+  100351:      	movl	(%esp), %ebx
+  100354:      	movl	$0x22, 0x100de4
+  10035e:      	movl	$0x0, (%esp)
+  100365:      	movl	0x38(%esp), %ecx
+  100369:      	movl	0x4(%esp), %edx
+  10036d:      	testb	%al, %al
+  10036f:      	je	0x100311 <sodium_hex2bin+0x281>
+  100371:      	movl	0x34(%esp), %eax
+  100375:      	movl	0x28(%esp), %ebp
+  100379:      	decl	%edx
+  10037a:      	movl	$0x16, 0x100de4
+  100384:      	xorl	%ebx, %ebx
+  100386:      	movl	$0xffffffff, %esi       # imm = 0xFFFFFFFF
+  10038b:      	testl	%ecx, %ecx
+  10038d:      	je	0x1003a3 <sodium_hex2bin+0x313>
+  10038f:      	addl	%edx, %ebp
+  100391:      	movl	%ebp, (%ecx)
+  100393:      	testl	%eax, %eax
+  100395:      	je	0x100399 <sodium_hex2bin+0x309>
+  100397:      	movl	%ebx, (%eax)
+  100399:      	movl	%esi, %eax
+  10039b:      	addl	$0xc, %esp
+  10039e:      	popl	%esi
+  10039f:      	popl	%edi
+  1003a0:      	popl	%ebx
+  1003a1:      	popl	%ebp
+  1003a2:      	retl
+  1003a3:      	cmpl	0x2c(%esp), %edx
+  1003a7:      	je	0x100393 <sodium_hex2bin+0x303>
+  1003a9:      	movl	$0x16, 0x100de4
+  1003b3:      	movl	$0xffffffff, %esi       # imm = 0xFFFFFFFF
+  1003b8:      	jmp	0x100393 <sodium_hex2bin+0x303>
+  1003ba:      	int3
+  1003bb:      	int3
+  1003bc:      	int3
+  1003bd:      	int3
+  1003be:      	int3
+  1003bf:      	int3
+
+001003c0 <sodium_base64_check_variant>:
+  1003c0:      	andl	$-0x7, %ecx
+  1003c3:      	cmpl	$0x1, %ecx
+  1003c6:      	jne	0x1003c9 <sodium_base64_check_variant+0x9>
+  1003c8:      	retl
+  1003c9:      	calll	0x100db6 <sodium_misuse>
+  1003ce:      	int3
+  1003cf:      	int3
+
+001003d0 <sodium_bin2base64>:
+  1003d0:      	pushl	%ebp
+  1003d1:      	pushl	%ebx
+  1003d2:      	pushl	%edi
+  1003d3:      	pushl	%esi
+  1003d4:      	subl	$0xc, %esp
+  1003d7:      	movl	0x30(%esp), %ebx
+  1003db:      	movl	0x2c(%esp), %esi
+  1003df:      	movl	%ebx, %ecx
+  1003e1:      	calll	0x1003c0 <sodium_base64_check_variant>
+  1003e6:      	cmpl	$0xbffffffd, %esi       # imm = 0xBFFFFFFD
+  1003ec:      	jae	0x10059d <sodium_bin2base64+0x1cd>
+  1003f2:      	movl	0x24(%esp), %edi
+  1003f6:      	movl	$0xaaaaaaab, %ecx       # imm = 0xAAAAAAAB
+  1003fb:      	movl	%esi, %eax
+  1003fd:      	mull	%ecx
+  1003ff:      	shrl	%edx
+  100401:      	leal	(%edx,%edx,2), %ecx
+  100404:      	shll	$0x2, %edx
+  100407:      	movl	%esi, %eax
+  100409:      	subl	%ecx, %eax
+  10040b:      	je	0x10041d <sodium_bin2base64+0x4d>
+  10040d:      	testb	$0x2, %bl
+  100410:      	jne	0x100417 <sodium_bin2base64+0x47>
+  100412:      	addl	$0x4, %edx
+  100415:      	jmp	0x10041d <sodium_bin2base64+0x4d>
+  100417:      	shrl	%eax
+  100419:      	leal	0x2(%eax,%edx), %edx
+  10041d:      	cmpl	%edx, %edi
+  10041f:      	jbe	0x10059d <sodium_bin2base64+0x1cd>
+  100425:      	movl	0x20(%esp), %ecx
+  100429:      	testb	$0x4, %bl
+  10042c:      	jne	0x1004bc <sodium_bin2base64+0xec>
+  100432:      	testl	%esi, %esi
+  100434:      	je	0x100558 <sodium_bin2base64+0x188>
+  10043a:      	movl	%edx, (%esp)
+  10043d:      	xorl	%ebp, %ebp
+  10043f:      	xorl	%edi, %edi
+  100441:      	xorl	%edx, %edx
+  100443:      	xorl	%esi, %esi
+  100445:      	nop
+  100446:      	nop
+  100447:      	nop
+  100448:      	nop
+  100449:      	nop
+  10044a:      	nop
+  10044b:      	nop
+  10044c:      	nop
+  10044d:      	nop
+  10044e:      	nop
+  10044f:      	nop
+  100450:      	shll	$0x8, %ebp
+  100453:      	movl	0x28(%esp), %eax
+  100457:      	movl	%edx, 0x8(%esp)
+  10045b:      	movzbl	(%eax,%edx), %eax
+  10045f:      	movl	%eax, 0x4(%esp)
+  100463:      	orl	%eax, %ebp
+  100465:      	leal	0x8(%edi), %eax
+  100468:      	addl	$0x2, %edi
+  10046b:      	movl	%edi, %ebx
+  10046d:      	movl	%eax, %edi
+  10046f:      	nop
+  100470:      	addl	$-0x6, %edi
+  100473:      	movl	%ebp, %eax
+  100475:      	movl	%ebx, %ecx
+  100477:      	shrl	%cl, %eax
+  100479:      	andl	$0x3f, %eax
+  10047c:      	movl	%eax, %ecx
+  10047e:      	calll	0x100620 <b64_byte_to_char>
+  100483:      	movl	0x20(%esp), %ecx
+  100487:      	movb	%al, (%ecx,%esi)
+  10048a:      	incl	%esi
+  10048b:      	addl	$-0x6, %ebx
+  10048e:      	cmpl	$0x5, %edi
+  100491:      	ja	0x100470 <sodium_bin2base64+0xa0>
+  100493:      	movl	0x8(%esp), %edx
+  100497:      	incl	%edx
+  100498:      	cmpl	0x2c(%esp), %edx
+  10049c:      	jne	0x100450 <sodium_bin2base64+0x80>
+  10049e:      	testl	%edi, %edi
+  1004a0:      	je	0x10054b <sodium_bin2base64+0x17b>
+  1004a6:      	negb	%bl
+  1004a8:      	movl	%ebx, %ecx
+  1004aa:      	movl	0x4(%esp), %eax
+  1004ae:      	shll	%cl, %eax
+  1004b0:      	andl	$0x3f, %eax
+  1004b3:      	movl	%eax, %ecx
+  1004b5:      	calll	0x100620 <b64_byte_to_char>
+  1004ba:      	jmp	0x100536 <sodium_bin2base64+0x166>
+  1004bc:      	testl	%esi, %esi
+  1004be:      	je	0x100593 <sodium_bin2base64+0x1c3>
+  1004c4:      	movl	%edx, (%esp)
+  1004c7:      	xorl	%ebp, %ebp
+  1004c9:      	xorl	%edi, %edi
+  1004cb:      	xorl	%edx, %edx
+  1004cd:      	xorl	%esi, %esi
+  1004cf:      	nop
+  1004d0:      	shll	$0x8, %ebp
+  1004d3:      	movl	0x28(%esp), %eax
+  1004d7:      	movl	%edx, 0x8(%esp)
+  1004db:      	movzbl	(%eax,%edx), %eax
+  1004df:      	movl	%eax, 0x4(%esp)
+  1004e3:      	orl	%eax, %ebp
+  1004e5:      	leal	0x8(%edi), %eax
+  1004e8:      	addl	$0x2, %edi
+  1004eb:      	movl	%edi, %ebx
+  1004ed:      	movl	%eax, %edi
+  1004ef:      	nop
+  1004f0:      	addl	$-0x6, %edi
+  1004f3:      	movl	%ebp, %eax
+  1004f5:      	movl	%ebx, %ecx
+  1004f7:      	shrl	%cl, %eax
+  1004f9:      	andl	$0x3f, %eax
+  1004fc:      	movl	%eax, %ecx
+  1004fe:      	calll	0x1005b0 <b64_byte_to_urlsafe_char>
+  100503:      	movl	0x20(%esp), %ecx
+  100507:      	movb	%al, (%ecx,%esi)
+  10050a:      	incl	%esi
+  10050b:      	addl	$-0x6, %ebx
+  10050e:      	cmpl	$0x5, %edi
+  100511:      	ja	0x1004f0 <sodium_bin2base64+0x120>
+  100513:      	movl	0x8(%esp), %edx
+  100517:      	incl	%edx
+  100518:      	cmpl	0x2c(%esp), %edx
+  10051c:      	jne	0x1004d0 <sodium_bin2base64+0x100>
+  10051e:      	testl	%edi, %edi
+  100520:      	je	0x10054b <sodium_bin2base64+0x17b>
+  100522:      	negb	%bl
+  100524:      	movl	%ebx, %ecx
+  100526:      	movl	0x4(%esp), %eax
+  10052a:      	shll	%cl, %eax
+  10052c:      	andl	$0x3f, %eax
+  10052f:      	movl	%eax, %ecx
+  100531:      	calll	0x1005b0 <b64_byte_to_urlsafe_char>
+  100536:      	movl	0x24(%esp), %edi
+  10053a:      	movl	0x20(%esp), %ecx
+  10053e:      	movb	%al, (%ecx,%esi)
+  100541:      	incl	%esi
+  100542:      	movl	(%esp), %edx
+  100545:      	cmpl	%edx, %esi
+  100547:      	jbe	0x10055a <sodium_bin2base64+0x18a>
+  100549:      	jmp	0x100556 <sodium_bin2base64+0x186>
+  10054b:      	movl	0x24(%esp), %edi
+  10054f:      	movl	(%esp), %edx
+  100552:      	cmpl	%edx, %esi
+  100554:      	jbe	0x10055a <sodium_bin2base64+0x18a>
+  100556:      	ud2
+  100558:      	xorl	%esi, %esi
+  10055a:      	movl	%edx, %eax
+  10055c:      	subl	%esi, %eax
+  10055e:      	jbe	0x100580 <sodium_bin2base64+0x1b0>
+  100560:      	addl	%ecx, %esi
+  100562:      	nop
+  100563:      	nop
+  100564:      	nop
+  100565:      	nop
+  100566:      	nop
+  100567:      	nop
+  100568:      	nop
+  100569:      	nop
+  10056a:      	nop
+  10056b:      	nop
+  10056c:      	nop
+  10056d:      	nop
+  10056e:      	nop
+  10056f:      	nop
+  100570:      	movb	$0x3d, (%esi)
+  100573:      	incl	%esi
+  100574:      	decl	%eax
+  100575:      	jne	0x100570 <sodium_bin2base64+0x1a0>
+  100577:      	movl	%edx, %esi
+  100579:      	nop
+  10057a:      	nop
+  10057b:      	nop
+  10057c:      	nop
+  10057d:      	nop
+  10057e:      	nop
+  10057f:      	nop
+  100580:      	movb	$0x0, (%ecx,%esi)
+  100584:      	incl	%esi
+  100585:      	cmpl	%edi, %esi
+  100587:      	jb	0x100580 <sodium_bin2base64+0x1b0>
+  100589:      	movl	%ecx, %eax
+  10058b:      	addl	$0xc, %esp
+  10058e:      	popl	%esi
+  10058f:      	popl	%edi
+  100590:      	popl	%ebx
+  100591:      	popl	%ebp
+  100592:      	retl
+  100593:      	xorl	%esi, %esi
+  100595:      	movl	%edx, %eax
+  100597:      	subl	%esi, %eax
+  100599:      	jbe	0x100580 <sodium_bin2base64+0x1b0>
+  10059b:      	jmp	0x100560 <sodium_bin2base64+0x190>
+  10059d:      	calll	0x100db6 <sodium_misuse>
+  1005a2:      	int3
+  1005a3:      	int3
+  1005a4:      	int3
+  1005a5:      	int3
+  1005a6:      	int3
+  1005a7:      	int3
+  1005a8:      	int3
+  1005a9:      	int3
+  1005aa:      	int3
+  1005ab:      	int3
+  1005ac:      	int3
+  1005ad:      	int3
+  1005ae:      	int3
+  1005af:      	int3
+
+001005b0 <b64_byte_to_urlsafe_char>:
+  1005b0:      	pushl	%ebx
+  1005b1:      	pushl	%edi
+  1005b2:      	pushl	%esi
+  1005b3:      	leal	0xffe6(%ecx), %esi
+  1005b9:      	shrl	$0x8, %esi
+  1005bc:      	leal	0x41(%ecx), %edi
+  1005bf:      	andl	%esi, %edi
+  1005c1:      	notl	%esi
+  1005c3:      	leal	0xffcc(%ecx), %eax
+  1005c9:      	shrl	$0x8, %eax
+  1005cc:      	leal	0x47(%ecx), %edx
+  1005cf:      	andl	%eax, %edx
+  1005d1:      	notl	%eax
+  1005d3:      	andl	%esi, %edx
+  1005d5:      	orl	%edi, %edx
+  1005d7:      	leal	0xffc2(%ecx), %esi
+  1005dd:      	shrl	$0x8, %esi
+  1005e0:      	leal	0xfc(%ecx), %ebx
+  1005e6:      	andl	%esi, %ebx
+  1005e8:      	andl	%eax, %ebx
+  1005ea:      	movzbl	%bl, %esi
+  1005ed:      	leal	0x7fc1(%ecx), %eax
+  1005f3:      	xorl	$0x3fc1, %ecx           # imm = 0x3FC1
+  1005f9:      	incl	%ecx
+  1005fa:      	notl	%ecx
+  1005fc:      	shrl	$0x8, %ecx
+  1005ff:      	andl	$0x2d, %ecx
+  100602:      	orl	%esi, %ecx
+  100604:      	notl	%eax
+  100606:      	shrl	$0x8, %eax
+  100609:      	andl	$0x5f, %eax
+  10060c:      	orl	%edx, %eax
+  10060e:      	orl	%ecx, %eax
+  100610:      	popl	%esi
+  100611:      	popl	%edi
+  100612:      	popl	%ebx
+  100613:      	retl
+  100614:      	int3
+  100615:      	int3
+  100616:      	int3
+  100617:      	int3
+  100618:      	int3
+  100619:      	int3
+  10061a:      	int3
+  10061b:      	int3
+  10061c:      	int3
+  10061d:      	int3
+  10061e:      	int3
+  10061f:      	int3
+
+00100620 <b64_byte_to_char>:
+  100620:      	pushl	%ebx
+  100621:      	pushl	%edi
+  100622:      	pushl	%esi
+  100623:      	leal	0xffe6(%ecx), %esi
+  100629:      	shrl	$0x8, %esi
+  10062c:      	leal	0x41(%ecx), %edi
+  10062f:      	andl	%esi, %edi
+  100631:      	notl	%esi
+  100633:      	leal	0xffcc(%ecx), %eax
+  100639:      	shrl	$0x8, %eax
+  10063c:      	leal	0x47(%ecx), %edx
+  10063f:      	andl	%eax, %edx
+  100641:      	notl	%eax
+  100643:      	andl	%esi, %edx
+  100645:      	orl	%edi, %edx
+  100647:      	leal	0xffc2(%ecx), %esi
+  10064d:      	shrl	$0x8, %esi
+  100650:      	leal	0xfc(%ecx), %ebx
+  100656:      	andl	%esi, %ebx
+  100658:      	andl	%eax, %ebx
+  10065a:      	movzbl	%bl, %esi
+  10065d:      	leal	0x3fc1(%ecx), %eax
+  100663:      	xorl	$0x3fc1, %ecx           # imm = 0x3FC1
+  100669:      	incl	%ecx
+  10066a:      	notl	%ecx
+  10066c:      	shrl	$0x8, %ecx
+  10066f:      	andl	$0x2b, %ecx
+  100672:      	orl	%esi, %ecx
+  100674:      	notl	%eax
+  100676:      	shrl	$0x8, %eax
+  100679:      	andl	$0x2f, %eax
+  10067c:      	orl	%edx, %eax
+  10067e:      	orl	%ecx, %eax
+  100680:      	popl	%esi
+  100681:      	popl	%edi
+  100682:      	popl	%ebx
+  100683:      	retl
+  100684:      	int3
+  100685:      	int3
+  100686:      	int3
+  100687:      	int3
+  100688:      	int3
+  100689:      	int3
+  10068a:      	int3
+  10068b:      	int3
+  10068c:      	int3
+  10068d:      	int3
+  10068e:      	int3
+  10068f:      	int3
+
+00100690 <sodium_base642bin>:
+  100690:      	pushl	%ebp
+  100691:      	pushl	%ebx
+  100692:      	pushl	%edi
+  100693:      	pushl	%esi
+  100694:      	subl	$0x8, %esp
+  100697:      	movl	0x38(%esp), %ebx
+  10069b:      	movl	%ebx, %ecx
+  10069d:      	calll	0x1003c0 <sodium_base64_check_variant>
+  1006a2:      	cmpl	$0x0, 0x28(%esp)
+  1006a7:      	je	0x100757 <sodium_base642bin+0xc7>
+  1006ad:      	movl	0x20(%esp), %ebp
+  1006b1:      	cmpl	$0x0, 0x2c(%esp)
+  1006b6:      	je	0x10080e <sodium_base642bin+0x17e>
+  1006bc:      	testb	$0x4, %bl
+  1006bf:      	jne	0x100892 <sodium_base642bin+0x202>
+  1006c5:      	xorl	%ebx, %ebx
+  1006c7:      	movl	$0x0, (%esp)
+  1006ce:      	xorl	%esi, %esi
+  1006d0:      	xorl	%eax, %eax
+  1006d2:      	movl	%eax, %edi
+  1006d4:      	nop
+  1006d5:      	nop
+  1006d6:      	nop
+  1006d7:      	nop
+  1006d8:      	nop
+  1006d9:      	nop
+  1006da:      	nop
+  1006db:      	nop
+  1006dc:      	nop
+  1006dd:      	nop
+  1006de:      	nop
+  1006df:      	nop
+  1006e0:      	movl	0x24(%esp), %eax
+  1006e4:      	movsbl	(%eax,%edi), %ebp
+  1006e8:      	movl	%ebp, %ecx
+  1006ea:      	calll	0x100ab0 <b64_char_to_byte>
+  1006ef:      	cmpl	$0xff, %eax
+  1006f4:      	jne	0x100710 <sodium_base642bin+0x80>
+  1006f6:      	pushl	%ebp
+  1006f7:      	pushl	0x30(%esp)
+  1006fb:      	calll	0x100dc0 <strchr>
+  100700:      	addl	$0x8, %esp
+  100703:      	testl	%eax, %eax
+  100705:      	je	0x100764 <sodium_base642bin+0xd4>
+  100707:      	incl	%edi
+  100708:      	cmpl	0x28(%esp), %edi
+  10070c:      	jb	0x1006e0 <sodium_base642bin+0x50>
+  10070e:      	jmp	0x100764 <sodium_base642bin+0xd4>
+  100710:      	movl	(%esp), %ecx
+  100713:      	shll	$0x6, %ecx
+  100716:      	addl	%ecx, %eax
+  100718:      	movl	%eax, (%esp)
+  10071b:      	cmpl	$0x1, %ebx
+  10071e:      	jbe	0x100742 <sodium_base642bin+0xb2>
+  100720:      	addl	$-0x2, %ebx
+  100723:      	movl	0x20(%esp), %eax
+  100727:      	cmpl	%eax, %esi
+  100729:      	jae	0x1009c2 <sodium_base642bin+0x332>
+  10072f:      	movl	%esi, %edx
+  100731:      	movl	(%esp), %eax
+  100734:      	movl	%ebx, %ecx
+  100736:      	shrl	%cl, %eax
+  100738:      	movl	0x1c(%esp), %ecx
+  10073c:      	movb	%al, (%ecx,%esi)
+  10073f:      	incl	%edx
+  100740:      	jmp	0x100747 <sodium_base642bin+0xb7>
+  100742:      	addl	$0x6, %ebx
+  100745:      	movl	%esi, %edx
+  100747:      	movl	%edx, %esi
+  100749:      	leal	0x1(%edi), %eax
+  10074c:      	cmpl	0x28(%esp), %eax
+  100750:      	jb	0x1006d2 <sodium_base642bin+0x42>
+  100752:      	jmp	0x10093c <sodium_base642bin+0x2ac>
+  100757:      	xorl	%edi, %edi
+  100759:      	xorl	%esi, %esi
+  10075b:      	movl	$0x0, (%esp)
+  100762:      	xorl	%ebx, %ebx
+  100764:      	movl	%edi, 0x4(%esp)
+  100768:      	xorl	%edx, %edx
+  10076a:      	xorl	%ebp, %ebp
+  10076c:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  100771:      	cmpl	$0x4, %ebx
+  100774:      	ja	0x1009e2 <sodium_base642bin+0x352>
+  10077a:      	movl	$0xffffffff, %edi       # imm = 0xFFFFFFFF
+  10077f:      	movl	%ebx, %ecx
+  100781:      	shll	%cl, %edi
+  100783:      	notl	%edi
+  100785:      	testl	%edi, (%esp)
+  100788:      	setne	%cl
+  10078b:      	orb	%cl, %dl
+  10078d:      	jne	0x1009e2 <sodium_base642bin+0x352>
+  100793:      	movl	0x38(%esp), %eax
+  100797:      	testb	$0x2, %al
+  100799:      	movl	0x2c(%esp), %edi
+  10079d:      	jne	0x1007c7 <sodium_base642bin+0x137>
+  10079f:      	shrl	%ebx
+  1007a1:      	leal	0x4(%esp), %eax
+  1007a5:      	movl	0x24(%esp), %ecx
+  1007a9:      	movl	0x28(%esp), %edx
+  1007ad:      	pushl	%ebx
+  1007ae:      	pushl	%edi
+  1007af:      	pushl	%eax
+  1007b0:      	calll	0x100b40 <_sodium_base642bin_skip_padding>
+  1007b5:      	addl	$0xc, %esp
+  1007b8:      	movl	%eax, %ecx
+  1007ba:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  1007bf:      	testl	%ecx, %ecx
+  1007c1:      	jne	0x1009e2 <sodium_base642bin+0x352>
+  1007c7:      	xorl	%eax, %eax
+  1007c9:      	testl	%edi, %edi
+  1007cb:      	je	0x1009be <sodium_base642bin+0x32e>
+  1007d1:      	movl	0x4(%esp), %ebx
+  1007d5:      	cmpl	0x28(%esp), %ebx
+  1007d9:      	jae	0x100803 <sodium_base642bin+0x173>
+  1007db:      	nop
+  1007dc:      	nop
+  1007dd:      	nop
+  1007de:      	nop
+  1007df:      	nop
+  1007e0:      	movl	0x24(%esp), %eax
+  1007e4:      	movsbl	(%eax,%ebx), %eax
+  1007e8:      	pushl	%eax
+  1007e9:      	pushl	%edi
+  1007ea:      	calll	0x100dc0 <strchr>
+  1007ef:      	addl	$0x8, %esp
+  1007f2:      	testl	%eax, %eax
+  1007f4:      	je	0x100801 <sodium_base642bin+0x171>
+  1007f6:      	incl	%ebx
+  1007f7:      	cmpl	%ebx, 0x28(%esp)
+  1007fb:      	jne	0x1007e0 <sodium_base642bin+0x150>
+  1007fd:      	movl	0x28(%esp), %ebx
+  100801:      	xorl	%eax, %eax
+  100803:      	movl	%esi, %ebp
+  100805:      	movl	%ebx, 0x4(%esp)
+  100809:      	jmp	0x1009e2 <sodium_base642bin+0x352>
+  10080e:      	testb	$0x4, %bl
+  100811:      	jne	0x100942 <sodium_base642bin+0x2b2>
+  100817:      	xorl	%ebx, %ebx
+  100819:      	movl	$0x0, (%esp)
+  100820:      	xorl	%esi, %esi
+  100822:      	xorl	%edi, %edi
+  100824:      	jmp	0x100840 <sodium_base642bin+0x1b0>
+  100826:      	nop
+  100827:      	nop
+  100828:      	nop
+  100829:      	nop
+  10082a:      	nop
+  10082b:      	nop
+  10082c:      	nop
+  10082d:      	nop
+  10082e:      	nop
+  10082f:      	nop
+  100830:      	addl	$0x6, %ebx
+  100833:      	movl	%edx, %esi
+  100835:      	incl	%edi
+  100836:      	cmpl	%edi, 0x28(%esp)
+  10083a:      	je	0x1009b5 <sodium_base642bin+0x325>
+  100840:      	movl	0x24(%esp), %eax
+  100844:      	movsbl	(%eax,%edi), %ecx
+  100848:      	calll	0x100ab0 <b64_char_to_byte>
+  10084d:      	cmpl	$0xff, %eax
+  100852:      	je	0x100764 <sodium_base642bin+0xd4>
+  100858:      	movl	(%esp), %ecx
+  10085b:      	shll	$0x6, %ecx
+  10085e:      	addl	%ecx, %eax
+  100860:      	movl	%eax, (%esp)
+  100863:      	cmpl	$0x1, %ebx
+  100866:      	movl	%esi, %edx
+  100868:      	jbe	0x100830 <sodium_base642bin+0x1a0>
+  10086a:      	addl	$-0x2, %ebx
+  10086d:      	cmpl	%ebp, %edx
+  10086f:      	jae	0x1009c2 <sodium_base642bin+0x332>
+  100875:      	movl	(%esp), %eax
+  100878:      	movl	%ebx, %ecx
+  10087a:      	shrl	%cl, %eax
+  10087c:      	movl	0x1c(%esp), %ecx
+  100880:      	movb	%al, (%ecx,%edx)
+  100883:      	incl	%edx
+  100884:      	movl	%edx, %esi
+  100886:      	incl	%edi
+  100887:      	cmpl	%edi, 0x28(%esp)
+  10088b:      	jne	0x100840 <sodium_base642bin+0x1b0>
+  10088d:      	jmp	0x1009b5 <sodium_base642bin+0x325>
+  100892:      	xorl	%ebx, %ebx
+  100894:      	movl	$0x0, (%esp)
+  10089b:      	xorl	%esi, %esi
+  10089d:      	xorl	%eax, %eax
+  10089f:      	movl	%eax, %edi
+  1008a1:      	nop
+  1008a2:      	nop
+  1008a3:      	nop
+  1008a4:      	nop
+  1008a5:      	nop
+  1008a6:      	nop
+  1008a7:      	nop
+  1008a8:      	nop
+  1008a9:      	nop
+  1008aa:      	nop
+  1008ab:      	nop
+  1008ac:      	nop
+  1008ad:      	nop
+  1008ae:      	nop
+  1008af:      	nop
+  1008b0:      	movl	0x24(%esp), %eax
+  1008b4:      	movsbl	(%eax,%edi), %ebp
+  1008b8:      	movl	%ebp, %ecx
+  1008ba:      	calll	0x100a20 <b64_urlsafe_char_to_byte>
+  1008bf:      	cmpl	$0xff, %eax
+  1008c4:      	jne	0x1008e7 <sodium_base642bin+0x257>
+  1008c6:      	pushl	%ebp
+  1008c7:      	pushl	0x30(%esp)
+  1008cb:      	calll	0x100dc0 <strchr>
+  1008d0:      	addl	$0x8, %esp
+  1008d3:      	testl	%eax, %eax
+  1008d5:      	je	0x100764 <sodium_base642bin+0xd4>
+  1008db:      	incl	%edi
+  1008dc:      	cmpl	0x28(%esp), %edi
+  1008e0:      	jb	0x1008b0 <sodium_base642bin+0x220>
+  1008e2:      	jmp	0x100764 <sodium_base642bin+0xd4>
+  1008e7:      	movl	(%esp), %ecx
+  1008ea:      	shll	$0x6, %ecx
+  1008ed:      	addl	%ecx, %eax
+  1008ef:      	movl	%eax, (%esp)
+  1008f2:      	cmpl	$0x2, %ebx
+  1008f5:      	jb	0x100928 <sodium_base642bin+0x298>
+  1008f7:      	addl	$-0x2, %ebx
+  1008fa:      	movl	0x20(%esp), %eax
+  1008fe:      	cmpl	%eax, %esi
+  100900:      	jae	0x1009c2 <sodium_base642bin+0x332>
+  100906:      	movl	%esi, %edx
+  100908:      	movl	(%esp), %eax
+  10090b:      	movl	%ebx, %ecx
+  10090d:      	shrl	%cl, %eax
+  10090f:      	movl	0x1c(%esp), %ecx
+  100913:      	movb	%al, (%ecx,%esi)
+  100916:      	incl	%edx
+  100917:      	movl	%edx, %esi
+  100919:      	leal	0x1(%edi), %eax
+  10091c:      	cmpl	0x28(%esp), %eax
+  100920:      	jb	0x10089f <sodium_base642bin+0x20f>
+  100926:      	jmp	0x10093c <sodium_base642bin+0x2ac>
+  100928:      	addl	$0x6, %ebx
+  10092b:      	movl	%esi, %edx
+  10092d:      	movl	%edx, %esi
+  10092f:      	leal	0x1(%edi), %eax
+  100932:      	cmpl	0x28(%esp), %eax
+  100936:      	jb	0x10089f <sodium_base642bin+0x20f>
+  10093c:      	incl	%edi
+  10093d:      	jmp	0x100764 <sodium_base642bin+0xd4>
+  100942:      	xorl	%ebx, %ebx
+  100944:      	movl	$0x0, (%esp)
+  10094b:      	xorl	%esi, %esi
+  10094d:      	xorl	%edi, %edi
+  10094f:      	jmp	0x10096c <sodium_base642bin+0x2dc>
+  100951:      	nop
+  100952:      	nop
+  100953:      	nop
+  100954:      	nop
+  100955:      	nop
+  100956:      	nop
+  100957:      	nop
+  100958:      	nop
+  100959:      	nop
+  10095a:      	nop
+  10095b:      	nop
+  10095c:      	nop
+  10095d:      	nop
+  10095e:      	nop
+  10095f:      	nop
+  100960:      	addl	$0x6, %ebx
+  100963:      	movl	%edx, %esi
+  100965:      	incl	%edi
+  100966:      	cmpl	%edi, 0x28(%esp)
+  10096a:      	je	0x1009b5 <sodium_base642bin+0x325>
+  10096c:      	movl	0x24(%esp), %eax
+  100970:      	movsbl	(%eax,%edi), %ecx
+  100974:      	calll	0x100a20 <b64_urlsafe_char_to_byte>
+  100979:      	cmpl	$0xff, %eax
+  10097e:      	je	0x100764 <sodium_base642bin+0xd4>
+  100984:      	movl	(%esp), %ecx
+  100987:      	shll	$0x6, %ecx
+  10098a:      	addl	%ecx, %eax
+  10098c:      	movl	%eax, (%esp)
+  10098f:      	cmpl	$0x1, %ebx
+  100992:      	movl	%esi, %edx
+  100994:      	jbe	0x100960 <sodium_base642bin+0x2d0>
+  100996:      	addl	$-0x2, %ebx
+  100999:      	cmpl	%ebp, %edx
+  10099b:      	jae	0x1009c2 <sodium_base642bin+0x332>
+  10099d:      	movl	(%esp), %eax
+  1009a0:      	movl	%ebx, %ecx
+  1009a2:      	shrl	%cl, %eax
+  1009a4:      	movl	0x1c(%esp), %ecx
+  1009a8:      	movb	%al, (%ecx,%edx)
+  1009ab:      	incl	%edx
+  1009ac:      	movl	%edx, %esi
+  1009ae:      	incl	%edi
+  1009af:      	cmpl	%edi, 0x28(%esp)
+  1009b3:      	jne	0x10096c <sodium_base642bin+0x2dc>
+  1009b5:      	movl	0x28(%esp), %edi
+  1009b9:      	jmp	0x100764 <sodium_base642bin+0xd4>
+  1009be:      	movl	%esi, %ebp
+  1009c0:      	jmp	0x1009e2 <sodium_base642bin+0x352>
+  1009c2:      	movl	%edi, 0x4(%esp)
+  1009c6:      	movl	$0x22, 0x100de4
+  1009d0:      	movb	$0x1, %dl
+  1009d2:      	xorl	%ebp, %ebp
+  1009d4:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  1009d9:      	cmpl	$0x4, %ebx
+  1009dc:      	jbe	0x10077a <sodium_base642bin+0xea>
+  1009e2:      	movl	0x30(%esp), %ecx
+  1009e6:      	movl	0x34(%esp), %edi
+  1009ea:      	testl	%edi, %edi
+  1009ec:      	movl	0x4(%esp), %edx
+  1009f0:      	je	0x1009fc <sodium_base642bin+0x36c>
+  1009f2:      	movl	0x24(%esp), %esi
+  1009f6:      	addl	%edx, %esi
+  1009f8:      	movl	%esi, (%edi)
+  1009fa:      	jmp	0x100a11 <sodium_base642bin+0x381>
+  1009fc:      	cmpl	0x28(%esp), %edx
+  100a00:      	je	0x100a11 <sodium_base642bin+0x381>
+  100a02:      	movl	$0x16, 0x100de4
+  100a0c:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  100a11:      	testl	%ecx, %ecx
+  100a13:      	je	0x100a17 <sodium_base642bin+0x387>
+  100a15:      	movl	%ebp, (%ecx)
+  100a17:      	addl	$0x8, %esp
+  100a1a:      	popl	%esi
+  100a1b:      	popl	%edi
+  100a1c:      	popl	%ebx
+  100a1d:      	popl	%ebp
+  100a1e:      	retl
+  100a1f:      	int3
+
+00100a20 <b64_urlsafe_char_to_byte>:
+  100a20:      	pushl	%ebx
+  100a21:      	pushl	%edi
+  100a22:      	pushl	%esi
+  100a23:      	movzbl	%cl, %eax
+  100a26:      	leal	-0x41(%eax), %edx
+  100a29:      	movl	%edx, %esi
+  100a2b:      	notl	%esi
+  100a2d:      	leal	-0x5b(%eax), %ebx
+  100a30:      	andl	%esi, %ebx
+  100a32:      	shrl	$0x8, %ebx
+  100a35:      	andl	%edx, %ebx
+  100a37:      	movzbl	%bl, %esi
+  100a3a:      	leal	0xff9f(%eax), %edx
+  100a40:      	notl	%edx
+  100a42:      	leal	-0x7b(%eax), %edi
+  100a45:      	andl	%edx, %edi
+  100a47:      	shrl	$0x8, %edi
+  100a4a:      	leal	0xb9(%ecx), %edx
+  100a50:      	andl	%edi, %edx
+  100a52:      	movzbl	%dl, %edx
+  100a55:      	leal	0xffd0(%eax), %edi
+  100a5b:      	notl	%edi
+  100a5d:      	leal	-0x3a(%eax), %ebx
+  100a60:      	andl	%edi, %ebx
+  100a62:      	shrl	$0x8, %ebx
+  100a65:      	addl	$0x4, %ecx
+  100a68:      	andl	%ebx, %ecx
+  100a6a:      	movzbl	%cl, %ecx
+  100a6d:      	orl	%esi, %ecx
+  100a6f:      	movl	%eax, %edi
+  100a71:      	xorl	$0x3fd2, %edi           # imm = 0x3FD2
+  100a77:      	incl	%edi
+  100a78:      	notl	%edi
+  100a7a:      	shrl	$0x8, %edi
+  100a7d:      	andl	$0x3e, %edi
+  100a80:      	movl	%eax, %esi
+  100a82:      	xorl	$0x3fa0, %esi           # imm = 0x3FA0
+  100a88:      	incl	%esi
+  100a89:      	notl	%esi
+  100a8b:      	shrl	$0x8, %esi
+  100a8e:      	andl	$0x3f, %esi
+  100a91:      	orl	%edi, %esi
+  100a93:      	orl	%edx, %esi
+  100a95:      	orl	%ecx, %esi
+  100a97:      	leal	-0x1(%esi), %ecx
+  100a9a:      	xorl	$0xffbe, %eax           # imm = 0xFFBE
+  100a9f:      	incl	%eax
+  100aa0:      	andl	%ecx, %eax
+  100aa2:      	movzbl	%ah, %eax
+  100aa5:      	orl	%esi, %eax
+  100aa7:      	popl	%esi
+  100aa8:      	popl	%edi
+  100aa9:      	popl	%ebx
+  100aaa:      	retl
+  100aab:      	int3
+  100aac:      	int3
+  100aad:      	int3
+  100aae:      	int3
+  100aaf:      	int3
+
+00100ab0 <b64_char_to_byte>:
+  100ab0:      	pushl	%ebx
+  100ab1:      	pushl	%edi
+  100ab2:      	pushl	%esi
+  100ab3:      	movzbl	%cl, %eax
+  100ab6:      	leal	-0x41(%eax), %edx
+  100ab9:      	movl	%edx, %esi
+  100abb:      	notl	%esi
+  100abd:      	leal	-0x5b(%eax), %ebx
+  100ac0:      	andl	%esi, %ebx
+  100ac2:      	shrl	$0x8, %ebx
+  100ac5:      	andl	%edx, %ebx
+  100ac7:      	movzbl	%bl, %esi
+  100aca:      	leal	0xff9f(%eax), %edx
+  100ad0:      	notl	%edx
+  100ad2:      	leal	-0x7b(%eax), %edi
+  100ad5:      	andl	%edx, %edi
+  100ad7:      	shrl	$0x8, %edi
+  100ada:      	leal	0xb9(%ecx), %edx
+  100ae0:      	andl	%edi, %edx
+  100ae2:      	movzbl	%dl, %edx
+  100ae5:      	leal	0xffd0(%eax), %edi
+  100aeb:      	notl	%edi
+  100aed:      	leal	-0x3a(%eax), %ebx
+  100af0:      	andl	%edi, %ebx
+  100af2:      	shrl	$0x8, %ebx
+  100af5:      	addl	$0x4, %ecx
+  100af8:      	andl	%ebx, %ecx
+  100afa:      	movzbl	%cl, %ecx
+  100afd:      	orl	%esi, %ecx
+  100aff:      	movl	%eax, %edi
+  100b01:      	xorl	$0x3fd4, %edi           # imm = 0x3FD4
+  100b07:      	incl	%edi
+  100b08:      	notl	%edi
+  100b0a:      	shrl	$0x8, %edi
+  100b0d:      	andl	$0x3e, %edi
+  100b10:      	movl	%eax, %esi
+  100b12:      	xorl	$0x3fd0, %esi           # imm = 0x3FD0
+  100b18:      	incl	%esi
+  100b19:      	notl	%esi
+  100b1b:      	shrl	$0x8, %esi
+  100b1e:      	andl	$0x3f, %esi
+  100b21:      	orl	%edi, %esi
+  100b23:      	orl	%edx, %esi
+  100b25:      	orl	%ecx, %esi
+  100b27:      	leal	-0x1(%esi), %ecx
+  100b2a:      	xorl	$0xffbe, %eax           # imm = 0xFFBE
+  100b2f:      	incl	%eax
+  100b30:      	andl	%ecx, %eax
+  100b32:      	movzbl	%ah, %eax
+  100b35:      	orl	%esi, %eax
+  100b37:      	popl	%esi
+  100b38:      	popl	%edi
+  100b39:      	popl	%ebx
+  100b3a:      	retl
+  100b3b:      	int3
+  100b3c:      	int3
+  100b3d:      	int3
+  100b3e:      	int3
+  100b3f:      	int3
+
+00100b40 <_sodium_base642bin_skip_padding>:
+  100b40:      	pushl	%ebp
+  100b41:      	pushl	%ebx
+  100b42:      	pushl	%edi
+  100b43:      	pushl	%esi
+  100b44:      	movl	0x1c(%esp), %esi
+  100b48:      	xorl	%eax, %eax
+  100b4a:      	testl	%esi, %esi
+  100b4c:      	je	0x100bed <_sodium_base642bin_skip_padding+0xad>
+  100b52:      	movl	%edx, %ebx
+  100b54:      	movl	%ecx, %edi
+  100b56:      	movl	0x14(%esp), %ebp
+  100b5a:      	cmpl	$0x0, 0x18(%esp)
+  100b5f:      	movl	(%ebp), %eax
+  100b62:      	jne	0x100ba9 <_sodium_base642bin_skip_padding+0x69>
+  100b64:      	cmpl	%ebx, %eax
+  100b66:      	cmoval	%eax, %ebx
+  100b69:      	movl	$0x22, %ecx
+  100b6e:      	jae	0x100be2 <_sodium_base642bin_skip_padding+0xa2>
+  100b70:      	cmpb	$0x3d, (%edi,%eax)
+  100b74:      	jne	0x100bdd <_sodium_base642bin_skip_padding+0x9d>
+  100b76:      	leal	0x1(%eax), %edx
+  100b79:      	cmpl	$0x1, %esi
+  100b7c:      	movl	%edx, (%ebp)
+  100b7f:      	je	0x100bd2 <_sodium_base642bin_skip_padding+0x92>
+  100b81:      	cmpl	%ebx, %edx
+  100b83:      	je	0x100be2 <_sodium_base642bin_skip_padding+0xa2>
+  100b85:      	cmpb	$0x3d, 0x1(%edi,%eax)
+  100b8a:      	movl	$0x16, %ecx
+  100b8f:      	jne	0x100be2 <_sodium_base642bin_skip_padding+0xa2>
+  100b91:      	addl	$0x2, %eax
+  100b94:      	movl	%eax, (%ebp)
+  100b97:      	jmp	0x100bd2 <_sodium_base642bin_skip_padding+0x92>
+  100b99:      	nop
+  100b9a:      	nop
+  100b9b:      	nop
+  100b9c:      	nop
+  100b9d:      	nop
+  100b9e:      	nop
+  100b9f:      	nop
+  100ba0:      	decl	%esi
+  100ba1:      	incl	%eax
+  100ba2:      	movl	%eax, (%ebp)
+  100ba5:      	testl	%esi, %esi
+  100ba7:      	je	0x100bd2 <_sodium_base642bin_skip_padding+0x92>
+  100ba9:      	cmpl	%ebx, %eax
+  100bab:      	jae	0x100bd6 <_sodium_base642bin_skip_padding+0x96>
+  100bad:      	movsbl	(%edi,%eax), %ecx
+  100bb1:      	cmpl	$0x3d, %ecx
+  100bb4:      	je	0x100ba0 <_sodium_base642bin_skip_padding+0x60>
+  100bb6:      	pushl	%ecx
+  100bb7:      	pushl	0x1c(%esp)
+  100bbb:      	calll	0x100dc0 <strchr>
+  100bc0:      	addl	$0x8, %esp
+  100bc3:      	testl	%eax, %eax
+  100bc5:      	je	0x100bdd <_sodium_base642bin_skip_padding+0x9d>
+  100bc7:      	movl	(%ebp), %eax
+  100bca:      	incl	%eax
+  100bcb:      	movl	%eax, (%ebp)
+  100bce:      	testl	%esi, %esi
+  100bd0:      	jne	0x100ba9 <_sodium_base642bin_skip_padding+0x69>
+  100bd2:      	xorl	%eax, %eax
+  100bd4:      	jmp	0x100bed <_sodium_base642bin_skip_padding+0xad>
+  100bd6:      	movl	$0x22, %ecx
+  100bdb:      	jmp	0x100be2 <_sodium_base642bin_skip_padding+0xa2>
+  100bdd:      	movl	$0x16, %ecx
+  100be2:      	movl	%ecx, 0x100de4
+  100be8:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  100bed:      	popl	%esi
+  100bee:      	popl	%edi
+  100bef:      	popl	%ebx
+  100bf0:      	popl	%ebp
+  100bf1:      	retl
+  100bf2:      	int3
+  100bf3:      	int3
+  100bf4:      	int3
+  100bf5:      	int3
+  100bf6:      	int3
+  100bf7:      	int3
+  100bf8:      	int3
+  100bf9:      	int3
+  100bfa:      	int3
+  100bfb:      	int3
+  100bfc:      	int3
+  100bfd:      	int3
+  100bfe:      	int3
+  100bff:      	int3
+
+00100c00 <sodium_memzero>:
+  100c00:      	pushl	%eax
+  100c01:      	movl	0xc(%esp), %eax
+  100c05:      	movl	0x8(%esp), %ecx
+  100c09:      	movl	%ecx, (%esp)
+  100c0c:      	testl	%eax, %eax
+  100c0e:      	je	0x100c2c <sodium_memzero+0x2c>
+  100c10:      	xorl	%ecx, %ecx
+  100c12:      	nop
+  100c13:      	nop
+  100c14:      	nop
+  100c15:      	nop
+  100c16:      	nop
+  100c17:      	nop
+  100c18:      	nop
+  100c19:      	nop
+  100c1a:      	nop
+  100c1b:      	nop
+  100c1c:      	nop
+  100c1d:      	nop
+  100c1e:      	nop
+  100c1f:      	nop
+  100c20:      	movl	(%esp), %edx
+  100c23:      	movb	$0x0, (%edx,%ecx)
+  100c27:      	incl	%ecx
+  100c28:      	cmpl	%ecx, %eax
+  100c2a:      	jne	0x100c20 <sodium_memzero+0x20>
+  100c2c:      	popl	%eax
+  100c2d:      	retl
+  100c2e:      	int3
+  100c2f:      	int3
+
+00100c30 <sodium_memcmp>:
+  100c30:      	pushl	%esi
+  100c31:      	subl	$0xc, %esp
+  100c34:      	movl	0x1c(%esp), %eax
+  100c38:      	movl	0x18(%esp), %ecx
+  100c3c:      	movl	0x14(%esp), %edx
+  100c40:      	movl	%edx, 0x8(%esp)
+  100c44:      	movl	%ecx, 0x4(%esp)
+  100c48:      	movb	$0x0, 0x3(%esp)
+  100c4d:      	testl	%eax, %eax
+  100c4f:      	je	0x100c78 <sodium_memcmp+0x48>
+  100c51:      	xorl	%ecx, %ecx
+  100c53:      	nop
+  100c54:      	nop
+  100c55:      	nop
+  100c56:      	nop
+  100c57:      	nop
+  100c58:      	nop
+  100c59:      	nop
+  100c5a:      	nop
+  100c5b:      	nop
+  100c5c:      	nop
+  100c5d:      	nop
+  100c5e:      	nop
+  100c5f:      	nop
+  100c60:      	movl	0x8(%esp), %edx
+  100c64:      	movzbl	(%edx,%ecx), %edx
+  100c68:      	movl	0x4(%esp), %esi
+  100c6c:      	xorb	(%esi,%ecx), %dl
+  100c6f:      	orb	%dl, 0x3(%esp)
+  100c73:      	incl	%ecx
+  100c74:      	cmpl	%ecx, %eax
+  100c76:      	jne	0x100c60 <sodium_memcmp+0x30>
+  100c78:      	movzbl	0x3(%esp), %ecx
+  100c7d:      	decl	%ecx
+  100c7e:      	xorl	%eax, %eax
+  100c80:      	btl	$0x8, %ecx
+  100c84:      	adcl	$-0x1, %eax
+  100c87:      	addl	$0xc, %esp
+  100c8a:      	popl	%esi
+  100c8b:      	retl
+  100c8c:      	int3
+  100c8d:      	int3
+  100c8e:      	int3
+  100c8f:      	int3
+
+00100c90 <sodium_pad>:
+  100c90:      	pushl	%ebp
+  100c91:      	pushl	%ebx
+  100c92:      	pushl	%edi
+  100c93:      	pushl	%esi
+  100c94:      	pushl	%eax
+  100c95:      	movl	0x24(%esp), %edi
+  100c99:      	movl	$0xffffffff, %ebp       # imm = 0xFFFFFFFF
+  100c9e:      	testl	%edi, %edi
+  100ca0:      	je	0x100d12 <sodium_pad+0x82>
+  100ca2:      	movl	0x20(%esp), %esi
+  100ca6:      	leal	-0x1(%edi), %ebx
+  100ca9:      	movl	%esi, %eax
+  100cab:      	testl	%ebx, %edi
+  100cad:      	je	0x100d1c <sodium_pad+0x8c>
+  100caf:      	xorl	%edx, %edx
+  100cb1:      	divl	%edi
+  100cb3:      	subl	%edx, %ebx
+  100cb5:      	movl	%esi, %eax
+  100cb7:      	notl	%eax
+  100cb9:      	cmpl	%eax, %ebx
+  100cbb:      	jae	0x100d24 <sodium_pad+0x94>
+  100cbd:      	addl	%ebx, %esi
+  100cbf:      	cmpl	0x28(%esp), %esi
+  100cc3:      	jae	0x100d12 <sodium_pad+0x82>
+  100cc5:      	movl	0x1c(%esp), %eax
+  100cc9:      	movl	0x18(%esp), %ecx
+  100ccd:      	testl	%ecx, %ecx
+  100ccf:      	je	0x100cd6 <sodium_pad+0x46>
+  100cd1:      	leal	0x1(%esi), %edx
+  100cd4:      	movl	%edx, (%ecx)
+  100cd6:      	addl	%esi, %eax
+  100cd8:      	movb	$0x0, 0x3(%esp)
+  100cdd:      	xorl	%ebp, %ebp
+  100cdf:      	xorl	%esi, %esi
+  100ce1:      	nop
+  100ce2:      	nop
+  100ce3:      	nop
+  100ce4:      	nop
+  100ce5:      	nop
+  100ce6:      	nop
+  100ce7:      	nop
+  100ce8:      	nop
+  100ce9:      	nop
+  100cea:      	nop
+  100ceb:      	nop
+  100cec:      	nop
+  100ced:      	nop
+  100cee:      	nop
+  100cef:      	nop
+  100cf0:      	movl	%esi, %edx
+  100cf2:      	xorl	%ebx, %edx
+  100cf4:      	decl	%edx
+  100cf5:      	shrl	$0x18, %edx
+  100cf8:      	movzbl	(%eax), %ecx
+  100cfb:      	andb	0x3(%esp), %cl
+  100cff:      	movb	%dl, %ch
+  100d01:      	andb	$-0x80, %ch
+  100d04:      	orb	%cl, %ch
+  100d06:      	movb	%ch, (%eax)
+  100d08:      	orb	%dl, 0x3(%esp)
+  100d0c:      	incl	%esi
+  100d0d:      	decl	%eax
+  100d0e:      	cmpl	%esi, %edi
+  100d10:      	jne	0x100cf0 <sodium_pad+0x60>
+  100d12:      	movl	%ebp, %eax
+  100d14:      	addl	$0x4, %esp
+  100d17:      	popl	%esi
+  100d18:      	popl	%edi
+  100d19:      	popl	%ebx
+  100d1a:      	popl	%ebp
+  100d1b:      	retl
+  100d1c:      	notl	%eax
+  100d1e:      	andl	%eax, %ebx
+  100d20:      	cmpl	%eax, %ebx
+  100d22:      	jb	0x100cbd <sodium_pad+0x2d>
+  100d24:      	calll	0x100db6 <sodium_misuse>
+  100d29:      	int3
+  100d2a:      	int3
+  100d2b:      	int3
+  100d2c:      	int3
+  100d2d:      	int3
+  100d2e:      	int3
+  100d2f:      	int3
+
+00100d30 <sodium_unpad>:
+  100d30:      	pushl	%ebp
+  100d31:      	pushl	%ebx
+  100d32:      	pushl	%edi
+  100d33:      	pushl	%esi
+  100d34:      	subl	$0x8, %esp
+  100d37:      	movl	0x28(%esp), %eax
+  100d3b:      	movl	0x24(%esp), %ecx
+  100d3f:      	movl	$0x0, (%esp)
+  100d46:      	leal	-0x1(%eax), %esi
+  100d49:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  100d4e:      	cmpl	%ecx, %esi
+  100d50:      	jae	0x100dae <sodium_unpad+0x7e>
+  100d52:      	movl	0x20(%esp), %eax
+  100d56:      	leal	-0x1(%eax,%ecx), %edi
+  100d5a:      	decl	%ecx
+  100d5b:      	movl	%ecx, 0x4(%esp)
+  100d5f:      	xorl	%eax, %eax
+  100d61:      	xorl	%ebx, %ebx
+  100d63:      	xorl	%ebp, %ebp
+  100d65:      	nop
+  100d66:      	nop
+  100d67:      	nop
+  100d68:      	nop
+  100d69:      	nop
+  100d6a:      	nop
+  100d6b:      	nop
+  100d6c:      	nop
+  100d6d:      	nop
+  100d6e:      	nop
+  100d6f:      	nop
+  100d70:      	movzbl	(%edi), %esi
+  100d73:      	movl	(%esp), %edx
+  100d76:      	decl	%edx
+  100d77:      	leal	-0x1(%ebp), %ecx
+  100d7a:      	andl	%ecx, %edx
+  100d7c:      	orl	%esi, %ebp
+  100d7e:      	xorl	$0x80, %esi
+  100d84:      	decl	%esi
+  100d85:      	andl	%edx, %esi
+  100d87:      	movl	0x28(%esp), %ecx
+  100d8b:      	shrl	$0x8, %esi
+  100d8e:      	andl	$0x1, %esi
+  100d91:      	orl	%esi, %eax
+  100d93:      	negl	%esi
+  100d95:      	andl	%ebx, %esi
+  100d97:      	orl	%esi, (%esp)
+  100d9a:      	incl	%ebx
+  100d9b:      	decl	%edi
+  100d9c:      	cmpl	%ebx, %ecx
+  100d9e:      	jne	0x100d70 <sodium_unpad+0x40>
+  100da0:      	decl	%eax
+  100da1:      	movl	0x4(%esp), %ecx
+  100da5:      	subl	(%esp), %ecx
+  100da8:      	movl	0x1c(%esp), %edx
+  100dac:      	movl	%ecx, (%edx)
+  100dae:      	addl	$0x8, %esp
+  100db1:      	popl	%esi
+  100db2:      	popl	%edi
+  100db3:      	popl	%ebx
+  100db4:      	popl	%ebp
+  100db5:      	retl
+
+00100db6 <sodium_misuse>:
+  100db6:      	ud2
+  100db8:      	int3
+  100db9:      	int3
+  100dba:      	int3
+  100dbb:      	int3
+  100dbc:      	int3
+  100dbd:      	int3
+  100dbe:      	int3
+  100dbf:      	int3
+
+00100dc0 <strchr>:
+  100dc0:      	movl	0x4(%esp), %eax
+  100dc4:      	movsbl	0x8(%esp), %ecx
+  100dc9:      	movsbl	(%eax), %edx
+  100dcc:      	cmpl	%edx, %ecx
+  100dce:      	je	0x100ddd <strchr+0x1d>
+  100dd0:      	testb	%dl, %dl
+  100dd2:      	je	0x100dde <strchr+0x1e>
+  100dd4:      	movsbl	0x1(%eax), %edx
+  100dd8:      	incl	%eax
+  100dd9:      	cmpl	%edx, %ecx
+  100ddb:      	jne	0x100dd0 <strchr+0x10>
+  100ddd:      	retl
+  100dde:      	xorl	%eax, %eax
+  100de0:      	retl
+
+00100de1 <halt>:
+  100de1:      	hlt

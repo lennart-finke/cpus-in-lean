@@ -1,0 +1,9 @@
+{
+  "lib": "Sodium",
+  "upstream": "https://raw.githubusercontent.com/jedisct1/libsodium/1.0.22-RELEASE/",
+  "module": "Utils",
+  "sources": ["vendor/src/libsodium/sodium/codecs.c", "vendor/src/libsodium/sodium/utils.c", "libc.c"],
+  "roots": ["sodium_bin2hex", "sodium_hex2bin", "sodium_bin2base64", "sodium_base642bin",
+            "sodium_memcmp", "sodium_memzero", "sodium_pad", "sodium_unpad"],
+  "cflags": ["-Iinclude", "-Ivendor/src/libsodium/include/sodium", "-DCONFIGURED=1", "-fno-zero-initialized-in-bss"]
+}

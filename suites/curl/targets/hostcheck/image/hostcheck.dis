@@ -1,0 +1,885 @@
+
+hostcheck.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+00100000 <Curl_cert_hostcheck>:
+  100000:      	movl	0x10(%esp), %edx
+  100004:      	cmpl	$0x0, 0x8(%esp)
+  100009:      	sete	%al
+  10000c:      	testl	%edx, %edx
+  10000e:      	sete	%cl
+  100011:      	orb	%al, %cl
+  100013:      	jne	0x10001e <Curl_cert_hostcheck+0x1e>
+  100015:      	movl	0xc(%esp), %ecx
+  100019:      	jmp	0x100030 <hostmatch>
+  10001e:      	xorl	%eax, %eax
+  100020:      	retl
+  100021:      	int3
+  100022:      	int3
+  100023:      	int3
+  100024:      	int3
+  100025:      	int3
+  100026:      	int3
+  100027:      	int3
+  100028:      	int3
+  100029:      	int3
+  10002a:      	int3
+  10002b:      	int3
+  10002c:      	int3
+  10002d:      	int3
+  10002e:      	int3
+  10002f:      	int3
+
+00100030 <hostmatch>:
+  100030:      	pushl	%ebp
+  100031:      	pushl	%ebx
+  100032:      	pushl	%edi
+  100033:      	pushl	%esi
+  100034:      	pushl	%eax
+  100035:      	movl	%edx, %esi
+  100037:      	movl	%ecx, %edi
+  100039:      	movl	0x18(%esp), %ebx
+  10003d:      	movl	0x1c(%esp), %ebp
+  100041:      	xorl	%eax, %eax
+  100043:      	cmpb	$0x2e, -0x1(%ecx,%edx)
+  100048:      	sete	%al
+  10004b:      	subl	%eax, %esi
+  10004d:      	xorl	%eax, %eax
+  10004f:      	cmpb	$0x2e, -0x1(%ebx,%ebp)
+  100054:      	sete	%al
+  100057:      	subl	%eax, %ebp
+  100059:      	cmpl	$0x3, %ebp
+  10005c:      	jb	0x100072 <hostmatch+0x42>
+  10005e:      	pushl	$0x2
+  100060:      	pushl	$0x10080c               # imm = 0x10080C
+  100065:      	pushl	%ebx
+  100066:      	calll	0x100760 <strncmp>
+  10006b:      	addl	$0xc, %esp
+  10006e:      	testl	%eax, %eax
+  100070:      	jne	0x1000d7 <hostmatch+0xa7>
+  100072:      	pushl	%edi
+  100073:      	calll	0x100110 <Curl_host_is_ipnum>
+  100078:      	addl	$0x4, %esp
+  10007b:      	testb	%al, %al
+  10007d:      	jne	0x1000d0 <hostmatch+0xa0>
+  10007f:      	testl	%esi, %esi
+  100081:      	je	0x100088 <hostmatch+0x58>
+  100083:      	cmpb	$0x2e, (%edi)
+  100086:      	je	0x1000d0 <hostmatch+0xa0>
+  100088:      	pushl	%ebp
+  100089:      	pushl	$0x2e
+  10008b:      	pushl	%ebx
+  10008c:      	calll	0x100730 <memchr>
+  100091:      	addl	$0xc, %esp
+  100094:      	testl	%eax, %eax
+  100096:      	je	0x1000d7 <hostmatch+0xa7>
+  100098:      	pushl	%ebp
+  100099:      	pushl	$0x2e
+  10009b:      	pushl	%ebx
+  10009c:      	movl	%eax, 0xc(%esp)
+  1000a0:      	calll	0x1006f0 <Curl_memrchr>
+  1000a5:      	addl	$0xc, %esp
+  1000a8:      	cmpl	(%esp), %eax
+  1000ab:      	je	0x1000d7 <hostmatch+0xa7>
+  1000ad:      	pushl	%esi
+  1000ae:      	pushl	$0x2e
+  1000b0:      	pushl	%edi
+  1000b1:      	calll	0x100730 <memchr>
+  1000b6:      	addl	$0xc, %esp
+  1000b9:      	testl	%eax, %eax
+  1000bb:      	je	0x1000d0 <hostmatch+0xa0>
+  1000bd:      	addl	%edi, %esi
+  1000bf:      	subl	%eax, %esi
+  1000c1:      	addl	%ebx, %ebp
+  1000c3:      	movl	(%esp), %edi
+  1000c6:      	subl	%edi, %ebp
+  1000c8:      	movl	%eax, %ecx
+  1000ca:      	movl	%esi, %edx
+  1000cc:      	pushl	%ebp
+  1000cd:      	pushl	%edi
+  1000ce:      	jmp	0x1000dd <hostmatch+0xad>
+  1000d0:      	xorl	%eax, %eax
+  1000d2:      	addl	$0x4, %esp
+  1000d5:      	jmp	0x1000e5 <hostmatch+0xb5>
+  1000d7:      	movl	%edi, %ecx
+  1000d9:      	movl	%esi, %edx
+  1000db:      	pushl	%ebp
+  1000dc:      	pushl	%ebx
+  1000dd:      	calll	0x1000f0 <pmatch>
+  1000e2:      	addl	$0xc, %esp
+  1000e5:      	popl	%esi
+  1000e6:      	popl	%edi
+  1000e7:      	popl	%ebx
+  1000e8:      	popl	%ebp
+  1000e9:      	retl
+  1000ea:      	int3
+  1000eb:      	int3
+  1000ec:      	int3
+  1000ed:      	int3
+  1000ee:      	int3
+  1000ef:      	int3
+
+001000f0 <pmatch>:
+  1000f0:      	cmpl	0x8(%esp), %edx
+  1000f4:      	jne	0x10010a <pmatch+0x1a>
+  1000f6:      	pushl	%edx
+  1000f7:      	pushl	0x8(%esp)
+  1000fb:      	pushl	%ecx
+  1000fc:      	calll	0x100600 <curl_strnequal>
+  100101:      	addl	$0xc, %esp
+  100104:      	testl	%eax, %eax
+  100106:      	setne	%al
+  100109:      	retl
+  10010a:      	xorl	%eax, %eax
+  10010c:      	retl
+  10010d:      	int3
+  10010e:      	int3
+  10010f:      	int3
+
+00100110 <Curl_host_is_ipnum>:
+  100110:      	pushl	%esi
+  100111:      	subl	$0x14, %esp
+  100114:      	movl	0x1c(%esp), %esi
+  100118:      	movl	%esp, %eax
+  10011a:      	pushl	%eax
+  10011b:      	pushl	%esi
+  10011c:      	pushl	$0x2
+  10011e:      	calll	0x100150 <curlx_inet_pton>
+  100123:      	addl	$0xc, %esp
+  100126:      	movl	%eax, %ecx
+  100128:      	movb	$0x1, %al
+  10012a:      	testl	%ecx, %ecx
+  10012c:      	jle	0x100133 <Curl_host_is_ipnum+0x23>
+  10012e:      	addl	$0x14, %esp
+  100131:      	popl	%esi
+  100132:      	retl
+  100133:      	leal	0x4(%esp), %eax
+  100137:      	pushl	%eax
+  100138:      	pushl	%esi
+  100139:      	pushl	$0xa
+  10013b:      	calll	0x100150 <curlx_inet_pton>
+  100140:      	addl	$0xc, %esp
+  100143:      	testl	%eax, %eax
+  100145:      	setg	%al
+  100148:      	addl	$0x14, %esp
+  10014b:      	popl	%esi
+  10014c:      	retl
+  10014d:      	int3
+  10014e:      	int3
+  10014f:      	int3
+
+00100150 <curlx_inet_pton>:
+  100150:      	movl	0xc(%esp), %edx
+  100154:      	movl	0x8(%esp), %ecx
+  100158:      	movl	0x4(%esp), %eax
+  10015c:      	cmpl	$0xa, %eax
+  10015f:      	je	0x100260 <inet_pton6>
+  100165:      	cmpl	$0x2, %eax
+  100168:      	je	0x100180 <inet_pton4>
+  10016e:      	movl	$0xffffffff, %eax       # imm = 0xFFFFFFFF
+  100173:      	retl
+  100174:      	int3
+  100175:      	int3
+  100176:      	int3
+  100177:      	int3
+  100178:      	int3
+  100179:      	int3
+  10017a:      	int3
+  10017b:      	int3
+  10017c:      	int3
+  10017d:      	int3
+  10017e:      	int3
+  10017f:      	int3
+
+00100180 <inet_pton4>:
+  100180:      	pushl	%ebp
+  100181:      	pushl	%ebx
+  100182:      	pushl	%edi
+  100183:      	pushl	%esi
+  100184:      	subl	$0x10, %esp
+  100187:      	movb	$0x0, 0x8(%esp)
+  10018c:      	movzbl	(%ecx), %ebx
+  10018f:      	testb	%bl, %bl
+  100191:      	je	0x10023c <inet_pton4+0xbc>
+  100197:      	movl	%edx, 0xc(%esp)
+  10019b:      	incl	%ecx
+  10019c:      	xorl	%esi, %esi
+  10019e:      	leal	0x8(%esp), %edi
+  1001a2:      	xorl	%edx, %edx
+  1001a4:      	movl	$0x0, 0x4(%esp)
+  1001ac:      	jmp	0x1001b8 <inet_pton4+0x38>
+  1001ae:      	incl	%esi
+  1001af:      	nop
+  1001b0:      	movzbl	(%ecx), %ebx
+  1001b3:      	incl	%ecx
+  1001b4:      	testb	%bl, %bl
+  1001b6:      	je	0x100237 <inet_pton4+0xb7>
+  1001b8:      	movl	%ebx, %eax
+  1001ba:      	addb	$-0x30, %al
+  1001bc:      	cmpb	$0x9, %al
+  1001be:      	ja	0x100210 <inet_pton4+0x90>
+  1001c0:      	cmpl	$0x0, 0x4(%esp)
+  1001c5:      	setne	0x3(%esp)
+  1001ca:      	testb	%dl, %dl
+  1001cc:      	sete	%bh
+  1001cf:      	xorl	%eax, %eax
+  1001d1:      	testb	%bh, 0x3(%esp)
+  1001d5:      	jne	0x100258 <inet_pton4+0xd8>
+  1001db:      	movzbl	%bl, %ebp
+  1001de:      	movzbl	%dl, %ebx
+  1001e1:      	leal	(%ebx,%ebx,4), %ebx
+  1001e4:      	leal	-0x30(%ebp,%ebx,2), %edx
+  1001e8:      	cmpl	$0xff, %edx
+  1001ee:      	ja	0x100258 <inet_pton4+0xd8>
+  1001f0:      	cmpl	$0x0, 0x4(%esp)
+  1001f5:      	movb	%dl, (%edi)
+  1001f7:      	movl	$0x1, 0x4(%esp)
+  1001ff:      	jne	0x1001b0 <inet_pton4+0x30>
+  100201:      	cmpl	$0x3, %esi
+  100204:      	jle	0x1001ae <inet_pton4+0x2e>
+  100206:      	jmp	0x100258 <inet_pton4+0xd8>
+  100208:      	nop
+  100209:      	nop
+  10020a:      	nop
+  10020b:      	nop
+  10020c:      	nop
+  10020d:      	nop
+  10020e:      	nop
+  10020f:      	nop
+  100210:      	xorl	%eax, %eax
+  100212:      	cmpl	$0x0, 0x4(%esp)
+  100217:      	je	0x100258 <inet_pton4+0xd8>
+  100219:      	cmpb	$0x2e, %bl
+  10021c:      	jne	0x100258 <inet_pton4+0xd8>
+  10021e:      	cmpl	$0x4, %esi
+  100221:      	je	0x100258 <inet_pton4+0xd8>
+  100223:      	movb	$0x0, 0x1(%edi)
+  100227:      	incl	%edi
+  100228:      	xorl	%edx, %edx
+  10022a:      	movl	$0x0, 0x4(%esp)
+  100232:      	jmp	0x1001b0 <inet_pton4+0x30>
+  100237:      	cmpl	$0x4, %esi
+  10023a:      	jge	0x100240 <inet_pton4+0xc0>
+  10023c:      	xorl	%eax, %eax
+  10023e:      	jmp	0x100258 <inet_pton4+0xd8>
+  100240:      	leal	0x8(%esp), %eax
+  100244:      	pushl	$0x4
+  100246:      	pushl	%eax
+  100247:      	pushl	0x14(%esp)
+  10024b:      	calll	0x1007b0 <memcpy>
+  100250:      	addl	$0xc, %esp
+  100253:      	movl	$0x1, %eax
+  100258:      	addl	$0x10, %esp
+  10025b:      	popl	%esi
+  10025c:      	popl	%edi
+  10025d:      	popl	%ebx
+  10025e:      	popl	%ebp
+  10025f:      	retl
+
+00100260 <inet_pton6>:
+  100260:      	pushl	%ebp
+  100261:      	pushl	%ebx
+  100262:      	pushl	%edi
+  100263:      	pushl	%esi
+  100264:      	subl	$0x14, %esp
+  100267:      	movl	%edx, %esi
+  100269:      	movl	%ecx, %edi
+  10026b:      	movl	%esp, %eax
+  10026d:      	pushl	$0x10
+  10026f:      	pushl	$0x0
+  100271:      	pushl	%eax
+  100272:      	calll	0x1007e0 <memset>
+  100277:      	addl	$0xc, %esp
+  10027a:      	movzbl	(%edi), %eax
+  10027d:      	cmpb	$0x3a, %al
+  10027f:      	jne	0x10028c <inet_pton6+0x2c>
+  100281:      	cmpb	$0x3a, 0x1(%edi)
+  100285:      	jne	0x1005de <inet_pton6+0x37e>
+  10028b:      	incl	%edi
+  10028c:      	movl	%esi, 0x10(%esp)
+  100290:      	xorl	%esi, %esi
+  100292:      	xorl	%ebp, %ebp
+  100294:      	testb	%al, %al
+  100296:      	je	0x100577 <inet_pton6+0x317>
+  10029c:      	leal	(%esp,%ebp), %ebx
+  10029f:      	movzbl	%al, %ecx
+  1002a2:      	addb	$-0x30, %al
+  1002a4:      	cmpb	$0xa, %al
+  1002a6:      	jb	0x1002bd <inet_pton6+0x5d>
+  1002a8:      	xorl	%eax, %eax
+  1002aa:      	leal	-0x2e(%ecx), %edx
+  1002ad:      	cmpl	$0x38, %edx
+  1002b0:      	ja	0x1005e0 <inet_pton6+0x380>
+  1002b6:      	jmpl	*0x100810(,%edx,4)
+  1002bd:      	movzbl	0x100f1c(%ecx), %ecx
+  1002c4:      	andl	$0xf, %ecx
+  1002c7:      	movzbl	0x1(%edi), %edx
+  1002cb:      	testl	%edx, %edx
+  1002cd:      	je	0x100567 <inet_pton6+0x307>
+  1002d3:      	movl	%edx, %eax
+  1002d5:      	addb	$-0x30, %al
+  1002d7:      	cmpb	$0xa, %al
+  1002d9:      	jb	0x1002f2 <inet_pton6+0x92>
+  1002db:      	xorl	%eax, %eax
+  1002dd:      	movl	%edx, %ebx
+  1002df:      	addl	$-0x2e, %ebx
+  1002e2:      	cmpl	$0x38, %ebx
+  1002e5:      	ja	0x1005e0 <inet_pton6+0x380>
+  1002eb:      	jmpl	*0x100ba0(,%ebx,4)
+  1002f2:      	movl	%ecx, %eax
+  1002f4:      	shll	$0x4, %eax
+  1002f7:      	movzbl	0x100f1c(%edx), %ecx
+  1002fe:      	andl	$0xf, %ecx
+  100301:      	orl	%eax, %ecx
+  100303:      	movzbl	0x2(%edi), %ebx
+  100307:      	testl	%ebx, %ebx
+  100309:      	je	0x100567 <inet_pton6+0x307>
+  10030f:      	movl	%ebx, %eax
+  100311:      	addb	$-0x30, %al
+  100313:      	cmpb	$0xa, %al
+  100315:      	jb	0x10032e <inet_pton6+0xce>
+  100317:      	xorl	%eax, %eax
+  100319:      	movl	%ebx, %edx
+  10031b:      	addl	$-0x2e, %edx
+  10031e:      	cmpl	$0x38, %edx
+  100321:      	ja	0x1005e0 <inet_pton6+0x380>
+  100327:      	jmpl	*0x100c84(,%edx,4)
+  10032e:      	movl	%ecx, %eax
+  100330:      	shll	$0x4, %eax
+  100333:      	movzbl	0x100f1c(%ebx), %ecx
+  10033a:      	andl	$0xf, %ecx
+  10033d:      	orl	%eax, %ecx
+  10033f:      	movzbl	0x3(%edi), %ebx
+  100343:      	testl	%ebx, %ebx
+  100345:      	je	0x100567 <inet_pton6+0x307>
+  10034b:      	movl	%ebx, %eax
+  10034d:      	addb	$-0x30, %al
+  10034f:      	cmpb	$0xa, %al
+  100351:      	jb	0x10036a <inet_pton6+0x10a>
+  100353:      	xorl	%eax, %eax
+  100355:      	movl	%ebx, %edx
+  100357:      	addl	$-0x2e, %edx
+  10035a:      	cmpl	$0x38, %edx
+  10035d:      	ja	0x1005e0 <inet_pton6+0x380>
+  100363:      	jmpl	*0x100d68(,%edx,4)
+  10036a:      	movl	%ecx, %eax
+  10036c:      	shll	$0x4, %eax
+  10036f:      	movzbl	0x100f1c(%ebx), %ecx
+  100376:      	andl	$0xf, %ecx
+  100379:      	orl	%eax, %ecx
+  10037b:      	movzbl	0x4(%edi), %ebx
+  10037f:      	testb	%bl, %bl
+  100381:      	je	0x100567 <inet_pton6+0x307>
+  100387:      	movl	%ebx, %edx
+  100389:      	addb	$-0x30, %dl
+  10038c:      	xorl	%eax, %eax
+  10038e:      	cmpb	$0xa, %dl
+  100391:      	jb	0x1005e0 <inet_pton6+0x380>
+  100397:      	cmpb	$0x3a, %bl
+  10039a:      	jne	0x10052e <inet_pton6+0x2ce>
+  1003a0:      	addl	$0x5, %edi
+  1003a3:      	xorl	%eax, %eax
+  1003a5:      	cmpb	$0x0, (%edi)
+  1003a8:      	je	0x1005e0 <inet_pton6+0x380>
+  1003ae:      	cmpl	$0xe, %ebp
+  1003b1:      	ja	0x1005e0 <inet_pton6+0x380>
+  1003b7:      	rolw	$0x8, %cx
+  1003bb:      	movw	%cx, (%esp,%ebp)
+  1003bf:      	addl	$0x2, %ebp
+  1003c2:      	movzbl	(%edi), %eax
+  1003c5:      	testb	%al, %al
+  1003c7:      	jne	0x10029c <inet_pton6+0x3c>
+  1003cd:      	jmp	0x100577 <inet_pton6+0x317>
+  1003d2:      	testl	%esi, %esi
+  1003d4:      	jne	0x1005e0 <inet_pton6+0x380>
+  1003da:      	movzbl	0x1(%edi), %ecx
+  1003de:      	testl	%ecx, %ecx
+  1003e0:      	je	0x1005b8 <inet_pton6+0x358>
+  1003e6:      	leal	0x1(%edi), %esi
+  1003e9:      	movl	%ecx, %edx
+  1003eb:      	addb	$-0x30, %dl
+  1003ee:      	cmpb	$0xa, %dl
+  1003f1:      	jb	0x100409 <inet_pton6+0x1a9>
+  1003f3:      	movl	%ecx, %edx
+  1003f5:      	addl	$-0x41, %edx
+  1003f8:      	cmpl	$0x6, %edx
+  1003fb:      	jb	0x100409 <inet_pton6+0x1a9>
+  1003fd:      	leal	-0x61(%ecx), %edx
+  100400:      	cmpl	$0x6, %edx
+  100403:      	jae	0x1005e8 <inet_pton6+0x388>
+  100409:      	movzbl	0x100f1c(%ecx), %ecx
+  100410:      	andl	$0xf, %ecx
+  100413:      	movzbl	0x2(%edi), %ebx
+  100417:      	testl	%ebx, %ebx
+  100419:      	je	0x100564 <inet_pton6+0x304>
+  10041f:      	movl	%ebx, %edx
+  100421:      	addb	$-0x30, %dl
+  100424:      	cmpb	$0xa, %dl
+  100427:      	jb	0x10043e <inet_pton6+0x1de>
+  100429:      	movl	%ebx, %edx
+  10042b:      	addl	$-0x2e, %edx
+  10042e:      	cmpl	$0x38, %edx
+  100431:      	ja	0x1005e0 <inet_pton6+0x380>
+  100437:      	jmpl	*0x1008f4(,%edx,4)
+  10043e:      	movl	%ecx, %edx
+  100440:      	shll	$0x4, %edx
+  100443:      	movzbl	0x100f1c(%ebx), %ecx
+  10044a:      	andl	$0xf, %ecx
+  10044d:      	orl	%edx, %ecx
+  10044f:      	movzbl	0x3(%edi), %ebx
+  100453:      	testl	%ebx, %ebx
+  100455:      	je	0x100564 <inet_pton6+0x304>
+  10045b:      	movl	%ebx, %edx
+  10045d:      	addb	$-0x30, %dl
+  100460:      	cmpb	$0xa, %dl
+  100463:      	jb	0x10047a <inet_pton6+0x21a>
+  100465:      	movl	%ebx, %edx
+  100467:      	addl	$-0x2e, %edx
+  10046a:      	cmpl	$0x38, %edx
+  10046d:      	ja	0x1005e0 <inet_pton6+0x380>
+  100473:      	jmpl	*0x1009d8(,%edx,4)
+  10047a:      	movl	%ecx, %edx
+  10047c:      	shll	$0x4, %edx
+  10047f:      	movzbl	0x100f1c(%ebx), %ecx
+  100486:      	andl	$0xf, %ecx
+  100489:      	orl	%edx, %ecx
+  10048b:      	movzbl	0x4(%edi), %ebx
+  10048f:      	testl	%ebx, %ebx
+  100491:      	je	0x100564 <inet_pton6+0x304>
+  100497:      	movl	%ebx, %edx
+  100499:      	addb	$-0x30, %dl
+  10049c:      	cmpb	$0xa, %dl
+  10049f:      	jb	0x1004b6 <inet_pton6+0x256>
+  1004a1:      	movl	%ebx, %edx
+  1004a3:      	addl	$-0x2e, %edx
+  1004a6:      	cmpl	$0x38, %edx
+  1004a9:      	ja	0x1005e0 <inet_pton6+0x380>
+  1004af:      	jmpl	*0x100abc(,%edx,4)
+  1004b6:      	movl	%ecx, %edx
+  1004b8:      	shll	$0x4, %edx
+  1004bb:      	movzbl	0x100f1c(%ebx), %ecx
+  1004c2:      	andl	$0xf, %ecx
+  1004c5:      	orl	%edx, %ecx
+  1004c7:      	movzbl	0x5(%edi), %ebx
+  1004cb:      	testb	%bl, %bl
+  1004cd:      	je	0x100564 <inet_pton6+0x304>
+  1004d3:      	movl	%ebx, %edx
+  1004d5:      	addb	$-0x30, %dl
+  1004d8:      	cmpb	$0xa, %dl
+  1004db:      	jb	0x1005e0 <inet_pton6+0x380>
+  1004e1:      	cmpb	$0x3a, %bl
+  1004e4:      	jne	0x1005a2 <inet_pton6+0x342>
+  1004ea:      	addl	$0x6, %edi
+  1004ed:      	leal	(%esp,%ebp), %esi
+  1004f0:      	jmp	0x1003a3 <inet_pton6+0x143>
+  1004f5:      	addl	$0x2, %edi
+  1004f8:      	jmp	0x1003a3 <inet_pton6+0x143>
+  1004fd:      	addl	$0x3, %edi
+  100500:      	jmp	0x1003a3 <inet_pton6+0x143>
+  100505:      	addl	$0x4, %edi
+  100508:      	jmp	0x1003a3 <inet_pton6+0x143>
+  10050d:      	addl	$0x3, %edi
+  100510:      	leal	(%esp,%ebp), %esi
+  100513:      	jmp	0x1003a3 <inet_pton6+0x143>
+  100518:      	addl	$0x4, %edi
+  10051b:      	leal	(%esp,%ebp), %esi
+  10051e:      	jmp	0x1003a3 <inet_pton6+0x143>
+  100523:      	addl	$0x5, %edi
+  100526:      	leal	(%esp,%ebp), %esi
+  100529:      	jmp	0x1003a3 <inet_pton6+0x143>
+  10052e:      	movzbl	%bl, %ecx
+  100531:      	cmpl	$0x2e, %ecx
+  100534:      	jne	0x1005e0 <inet_pton6+0x380>
+  10053a:      	xorl	%eax, %eax
+  10053c:      	cmpl	$0xc, %ebp
+  10053f:      	ja	0x1005e0 <inet_pton6+0x380>
+  100545:      	movl	%edi, %ecx
+  100547:      	leal	(%esp,%ebp), %edx
+  10054a:      	calll	0x100180 <inet_pton4>
+  10054f:      	movl	%eax, %ecx
+  100551:      	xorl	%eax, %eax
+  100553:      	testl	%ecx, %ecx
+  100555:      	je	0x1005e0 <inet_pton6+0x380>
+  10055b:      	addl	$0x4, %ebp
+  10055e:      	testl	%esi, %esi
+  100560:      	jne	0x10057b <inet_pton6+0x31b>
+  100562:      	jmp	0x1005bf <inet_pton6+0x35f>
+  100564:      	leal	(%esp,%ebp), %esi
+  100567:      	cmpl	$0xe, %ebp
+  10056a:      	ja	0x1005de <inet_pton6+0x37e>
+  10056c:      	rolw	$0x8, %cx
+  100570:      	movw	%cx, (%esp,%ebp)
+  100574:      	addl	$0x2, %ebp
+  100577:      	testl	%esi, %esi
+  100579:      	je	0x1005bf <inet_pton6+0x35f>
+  10057b:      	cmpl	$0x10, %ebp
+  10057e:      	je	0x1005de <inet_pton6+0x37e>
+  100580:      	leal	(%esp,%ebp), %eax
+  100583:      	subl	%esi, %eax
+  100585:      	testl	%eax, %eax
+  100587:      	jle	0x1005c4 <inet_pton6+0x364>
+  100589:      	leal	0xf(%esp), %ecx
+  10058d:      	nop
+  10058e:      	nop
+  10058f:      	nop
+  100590:      	movzbl	-0x1(%esi,%eax), %edx
+  100595:      	movb	%dl, (%ecx)
+  100597:      	movb	$0x0, -0x1(%esi,%eax)
+  10059c:      	decl	%ecx
+  10059d:      	decl	%eax
+  10059e:      	jne	0x100590 <inet_pton6+0x330>
+  1005a0:      	jmp	0x1005c4 <inet_pton6+0x364>
+  1005a2:      	movzbl	%bl, %ecx
+  1005a5:      	cmpl	$0x2e, %ecx
+  1005a8:      	jne	0x1005e0 <inet_pton6+0x380>
+  1005aa:      	movl	%esi, %edi
+  1005ac:      	leal	(%esp,%ebp), %esi
+  1005af:      	xorl	%eax, %eax
+  1005b1:      	cmpl	$0xc, %ebp
+  1005b4:      	jbe	0x100545 <inet_pton6+0x2e5>
+  1005b6:      	jmp	0x1005e0 <inet_pton6+0x380>
+  1005b8:      	leal	(%esp,%ebp), %esi
+  1005bb:      	testl	%esi, %esi
+  1005bd:      	jne	0x10057b <inet_pton6+0x31b>
+  1005bf:      	cmpl	$0x10, %ebp
+  1005c2:      	jne	0x1005de <inet_pton6+0x37e>
+  1005c4:      	pushl	$0x10
+  1005c6:      	leal	0x4(%esp), %eax
+  1005ca:      	pushl	%eax
+  1005cb:      	pushl	0x18(%esp)
+  1005cf:      	calll	0x1007b0 <memcpy>
+  1005d4:      	addl	$0xc, %esp
+  1005d7:      	movl	$0x1, %eax
+  1005dc:      	jmp	0x1005e0 <inet_pton6+0x380>
+  1005de:      	xorl	%eax, %eax
+  1005e0:      	addl	$0x14, %esp
+  1005e3:      	popl	%esi
+  1005e4:      	popl	%edi
+  1005e5:      	popl	%ebx
+  1005e6:      	popl	%ebp
+  1005e7:      	retl
+  1005e8:      	cmpl	$0x2e, %ecx
+  1005eb:      	movl	%esi, %edi
+  1005ed:      	movl	%ebx, %esi
+  1005ef:      	je	0x10053a <inet_pton6+0x2da>
+  1005f5:      	jmp	0x1005e0 <inet_pton6+0x380>
+  1005f7:      	int3
+  1005f8:      	int3
+  1005f9:      	int3
+  1005fa:      	int3
+  1005fb:      	int3
+  1005fc:      	int3
+  1005fd:      	int3
+  1005fe:      	int3
+  1005ff:      	int3
+
+00100600 <curl_strnequal>:
+  100600:      	pushl	%ebx
+  100601:      	movl	0x10(%esp), %eax
+  100605:      	movl	0xc(%esp), %edx
+  100609:      	movl	0x8(%esp), %ecx
+  10060d:      	testl	%ecx, %ecx
+  10060f:      	sete	%bl
+  100612:      	testl	%edx, %edx
+  100614:      	sete	%bh
+  100617:      	orb	%bl, %bh
+  100619:      	jne	0x100626 <curl_strnequal+0x26>
+  10061b:      	pushl	%eax
+  10061c:      	calll	0x100640 <ncasecompare>
+  100621:      	addl	$0x4, %esp
+  100624:      	popl	%ebx
+  100625:      	retl
+  100626:      	orl	%edx, %ecx
+  100628:      	sete	%cl
+  10062b:      	testl	%eax, %eax
+  10062d:      	setne	%al
+  100630:      	andb	%cl, %al
+  100632:      	movzbl	%al, %eax
+  100635:      	popl	%ebx
+  100636:      	retl
+  100637:      	int3
+  100638:      	int3
+  100639:      	int3
+  10063a:      	int3
+  10063b:      	int3
+  10063c:      	int3
+  10063d:      	int3
+  10063e:      	int3
+  10063f:      	int3
+
+00100640 <ncasecompare>:
+  100640:      	pushl	%ebp
+  100641:      	pushl	%ebx
+  100642:      	pushl	%edi
+  100643:      	pushl	%esi
+  100644:      	pushl	%eax
+  100645:      	movl	%edx, %esi
+  100647:      	movl	%ecx, %edi
+  100649:      	movl	0x18(%esp), %ebx
+  10064d:      	movzbl	(%ecx), %eax
+  100650:      	testb	%al, %al
+  100652:      	sete	%cl
+  100655:      	testl	%ebx, %ebx
+  100657:      	sete	%dl
+  10065a:      	orb	%cl, %dl
+  10065c:      	jne	0x1006a2 <ncasecompare+0x62>
+  10065e:      	leal	-0x1(%ebx), %ecx
+  100661:      	movl	%ecx, (%esp)
+  100664:      	xorl	%ebp, %ebp
+  100666:      	nop
+  100667:      	nop
+  100668:      	nop
+  100669:      	nop
+  10066a:      	nop
+  10066b:      	nop
+  10066c:      	nop
+  10066d:      	nop
+  10066e:      	nop
+  10066f:      	nop
+  100670:      	movsbl	%al, %ecx
+  100673:      	calll	0x1006e0 <Curl_raw_toupper>
+  100678:      	movl	%eax, %ebx
+  10067a:      	movsbl	(%esi,%ebp), %ecx
+  10067e:      	calll	0x1006e0 <Curl_raw_toupper>
+  100683:      	cmpb	%al, %bl
+  100685:      	jne	0x1006cb <ncasecompare+0x8b>
+  100687:      	movzbl	0x1(%edi,%ebp), %eax
+  10068c:      	leal	0x1(%ebp), %ecx
+  10068f:      	testb	%al, %al
+  100691:      	je	0x10069a <ncasecompare+0x5a>
+  100693:      	cmpl	%ebp, (%esp)
+  100696:      	movl	%ecx, %ebp
+  100698:      	jne	0x100670 <ncasecompare+0x30>
+  10069a:      	movl	0x18(%esp), %ebx
+  10069e:      	subl	%ecx, %ebx
+  1006a0:      	addl	%ecx, %esi
+  1006a2:      	testl	%ebx, %ebx
+  1006a4:      	je	0x1006c4 <ncasecompare+0x84>
+  1006a6:      	movsbl	%al, %ecx
+  1006a9:      	calll	0x1006e0 <Curl_raw_toupper>
+  1006ae:      	movl	%eax, %ebx
+  1006b0:      	movsbl	(%esi), %ecx
+  1006b3:      	calll	0x1006e0 <Curl_raw_toupper>
+  1006b8:      	cmpb	%al, %bl
+  1006ba:      	movl	$0x0, %eax
+  1006bf:      	sete	%al
+  1006c2:      	jmp	0x1006cd <ncasecompare+0x8d>
+  1006c4:      	movl	$0x1, %eax
+  1006c9:      	jmp	0x1006cd <ncasecompare+0x8d>
+  1006cb:      	xorl	%eax, %eax
+  1006cd:      	addl	$0x4, %esp
+  1006d0:      	popl	%esi
+  1006d1:      	popl	%edi
+  1006d2:      	popl	%ebx
+  1006d3:      	popl	%ebp
+  1006d4:      	retl
+  1006d5:      	int3
+  1006d6:      	int3
+  1006d7:      	int3
+  1006d8:      	int3
+  1006d9:      	int3
+  1006da:      	int3
+  1006db:      	int3
+  1006dc:      	int3
+  1006dd:      	int3
+  1006de:      	int3
+  1006df:      	int3
+
+001006e0 <Curl_raw_toupper>:
+  1006e0:      	movzbl	%cl, %eax
+  1006e3:      	movzbl	0x100e4c(%eax), %eax
+  1006ea:      	retl
+  1006eb:      	int3
+  1006ec:      	int3
+  1006ed:      	int3
+  1006ee:      	int3
+  1006ef:      	int3
+
+001006f0 <Curl_memrchr>:
+  1006f0:      	pushl	%edi
+  1006f1:      	pushl	%esi
+  1006f2:      	movl	0x14(%esp), %esi
+  1006f6:      	xorl	%eax, %eax
+  1006f8:      	testl	%esi, %esi
+  1006fa:      	je	0x100720 <Curl_memrchr+0x30>
+  1006fc:      	movl	0x10(%esp), %ecx
+  100700:      	movl	0xc(%esp), %edx
+  100704:      	leal	-0x1(%esi,%edx), %esi
+  100708:      	nop
+  100709:      	nop
+  10070a:      	nop
+  10070b:      	nop
+  10070c:      	nop
+  10070d:      	nop
+  10070e:      	nop
+  10070f:      	nop
+  100710:      	cmpl	%edx, %esi
+  100712:      	jb	0x100720 <Curl_memrchr+0x30>
+  100714:      	leal	-0x1(%esi), %edi
+  100717:      	cmpb	%cl, (%esi)
+  100719:      	movl	%edi, %esi
+  10071b:      	jne	0x100710 <Curl_memrchr+0x20>
+  10071d:      	incl	%edi
+  10071e:      	movl	%edi, %eax
+  100720:      	popl	%esi
+  100721:      	popl	%edi
+  100722:      	retl
+  100723:      	int3
+  100724:      	int3
+  100725:      	int3
+  100726:      	int3
+  100727:      	int3
+  100728:      	int3
+  100729:      	int3
+  10072a:      	int3
+  10072b:      	int3
+  10072c:      	int3
+  10072d:      	int3
+  10072e:      	int3
+  10072f:      	int3
+
+00100730 <memchr>:
+  100730:      	pushl	%ebx
+  100731:      	movl	0x10(%esp), %ecx
+  100735:      	xorl	%eax, %eax
+  100737:      	testl	%ecx, %ecx
+  100739:      	je	0x100758 <memchr+0x28>
+  10073b:      	movl	0xc(%esp), %ebx
+  10073f:      	movl	0x8(%esp), %edx
+  100743:      	nop
+  100744:      	nop
+  100745:      	nop
+  100746:      	nop
+  100747:      	nop
+  100748:      	nop
+  100749:      	nop
+  10074a:      	nop
+  10074b:      	nop
+  10074c:      	nop
+  10074d:      	nop
+  10074e:      	nop
+  10074f:      	nop
+  100750:      	cmpb	%bl, (%edx)
+  100752:      	je	0x10075a <memchr+0x2a>
+  100754:      	incl	%edx
+  100755:      	decl	%ecx
+  100756:      	jne	0x100750 <memchr+0x20>
+  100758:      	popl	%ebx
+  100759:      	retl
+  10075a:      	movl	%edx, %eax
+  10075c:      	popl	%ebx
+  10075d:      	retl
+  10075e:      	int3
+  10075f:      	int3
+
+00100760 <strncmp>:
+  100760:      	pushl	%ebx
+  100761:      	pushl	%edi
+  100762:      	pushl	%esi
+  100763:      	movl	0x18(%esp), %ecx
+  100767:      	testl	%ecx, %ecx
+  100769:      	je	0x10079a <strncmp+0x3a>
+  10076b:      	movl	0x14(%esp), %edx
+  10076f:      	movl	0x10(%esp), %esi
+  100773:      	decl	%ecx
+  100774:      	xorl	%edi, %edi
+  100776:      	nop
+  100777:      	nop
+  100778:      	nop
+  100779:      	nop
+  10077a:      	nop
+  10077b:      	nop
+  10077c:      	nop
+  10077d:      	nop
+  10077e:      	nop
+  10077f:      	nop
+  100780:      	movzbl	(%esi,%edi), %ebx
+  100784:      	cmpb	(%edx,%edi), %bl
+  100787:      	jne	0x1007a0 <strncmp+0x40>
+  100789:      	xorl	%eax, %eax
+  10078b:      	testb	%bl, %bl
+  10078d:      	je	0x100796 <strncmp+0x36>
+  10078f:      	cmpl	%edi, %ecx
+  100791:      	leal	0x1(%edi), %edi
+  100794:      	jne	0x100780 <strncmp+0x20>
+  100796:      	popl	%esi
+  100797:      	popl	%edi
+  100798:      	popl	%ebx
+  100799:      	retl
+  10079a:      	xorl	%eax, %eax
+  10079c:      	popl	%esi
+  10079d:      	popl	%edi
+  10079e:      	popl	%ebx
+  10079f:      	retl
+  1007a0:      	setae	%al
+  1007a3:      	movzbl	%al, %eax
+  1007a6:      	leal	-0x1(%eax,%eax), %eax
+  1007aa:      	popl	%esi
+  1007ab:      	popl	%edi
+  1007ac:      	popl	%ebx
+  1007ad:      	retl
+  1007ae:      	int3
+  1007af:      	int3
+
+001007b0 <memcpy>:
+  1007b0:      	pushl	%ebx
+  1007b1:      	pushl	%esi
+  1007b2:      	movl	0x14(%esp), %ecx
+  1007b6:      	movl	0xc(%esp), %eax
+  1007ba:      	testl	%ecx, %ecx
+  1007bc:      	je	0x1007dc <memcpy+0x2c>
+  1007be:      	movl	0x10(%esp), %edx
+  1007c2:      	xorl	%esi, %esi
+  1007c4:      	nop
+  1007c5:      	nop
+  1007c6:      	nop
+  1007c7:      	nop
+  1007c8:      	nop
+  1007c9:      	nop
+  1007ca:      	nop
+  1007cb:      	nop
+  1007cc:      	nop
+  1007cd:      	nop
+  1007ce:      	nop
+  1007cf:      	nop
+  1007d0:      	movzbl	(%edx,%esi), %ebx
+  1007d4:      	movb	%bl, (%eax,%esi)
+  1007d7:      	incl	%esi
+  1007d8:      	cmpl	%esi, %ecx
+  1007da:      	jne	0x1007d0 <memcpy+0x20>
+  1007dc:      	popl	%esi
+  1007dd:      	popl	%ebx
+  1007de:      	retl
+  1007df:      	int3
+
+001007e0 <memset>:
+  1007e0:      	pushl	%esi
+  1007e1:      	movl	0x10(%esp), %ecx
+  1007e5:      	movl	0x8(%esp), %eax
+  1007e9:      	testl	%ecx, %ecx
+  1007eb:      	je	0x100806 <memset+0x26>
+  1007ed:      	movl	0xc(%esp), %edx
+  1007f1:      	movl	%eax, %esi
+  1007f3:      	nop
+  1007f4:      	nop
+  1007f5:      	nop
+  1007f6:      	nop
+  1007f7:      	nop
+  1007f8:      	nop
+  1007f9:      	nop
+  1007fa:      	nop
+  1007fb:      	nop
+  1007fc:      	nop
+  1007fd:      	nop
+  1007fe:      	nop
+  1007ff:      	nop
+  100800:      	movb	%dl, (%esi)
+  100802:      	incl	%esi
+  100803:      	decl	%ecx
+  100804:      	jne	0x100800 <memset+0x20>
+  100806:      	popl	%esi
+  100807:      	retl
+
+00100808 <halt>:
+  100808:      	hlt

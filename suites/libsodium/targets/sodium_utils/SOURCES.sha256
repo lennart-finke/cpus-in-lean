@@ -1,0 +1,7 @@
+692c9a03eb49591a3ccacbef293f473c619cc86ef5dd4776a6e2e4321426fb07  ./src/libsodium/include/sodium/core.h
+acc6ee537f831d535b0607be90f05150103765b7ca82170fd61a85bd5e6f73ff  ./src/libsodium/include/sodium/export.h
+9a652cc7be3ca2137e6126819bb403887c4d152b618be652be4708a618f18d3a  ./src/libsodium/include/sodium/private/common.h
+a53f6a47df2c7792f8762fd4ab0671e167e22fc60ad0307e7abd63f65217bc6d  ./src/libsodium/include/sodium/randombytes.h
+c9a2e873da8d4c5fdfd004a821a2ec0550160d8b0bebd67517d53fe29d7269a8  ./src/libsodium/include/sodium/utils.h
+77e675be30ecd8776e0924596bbf305cbc44f41d8df3238fd65c03aa99091b3e  ./src/libsodium/sodium/codecs.c
+54ed27fd5542d2f5d819b6104323a8c44c6c95e4e5c5766888b64f9dc67fc28d  ./src/libsodium/sodium/utils.c

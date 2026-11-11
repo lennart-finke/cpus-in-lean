@@ -1,0 +1,16 @@
+name = "libsodium_tasks"
+version = "0.1.0"
+defaultTargets = ["Sodium", "check"]
+
+# The call harness (`Ssl.Harness`), the test support (`Check.Support`) and, through it, the CPU model.
+[[require]]
+name = "openssl_tasks"
+path = "../openssl"
+
+[[lean_lib]]
+name = "Sodium"
+globs = ["Sodium.+"]
+
+[[lean_exe]]
+name = "check"
+root = "SodiumCheck"
