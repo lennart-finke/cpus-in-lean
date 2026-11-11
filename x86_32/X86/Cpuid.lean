@@ -207,7 +207,8 @@ def implemented : Feature → Bool
   -- X86/Ext/Crypto.lean
   | .aes => true
   | .pclmulqdq => true
-  | .sha => true
+  -- SHA instructions are implemented (Crypto.shaAvail); the bit waits for SSSE3, see there
+  | .sha => false
   -- X86/Ext/Xsave.lean
   | .xsave => false
   | .xsaveopt => false

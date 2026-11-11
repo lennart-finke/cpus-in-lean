@@ -571,8 +571,8 @@ theorem gcm_tag : gcmTag = blk 0xab6e47d42cec13bdf53a67b21257bddf := by decide +
 
 /-- Another mandatory prefix (or none, for AES/PCLMULQDQ; any, for SHA) is #UD, before anything
 else is checked or changed. -/
-theorem xmmOp_prefix {m : Machine} {i : Inst} {pp : UInt8} {feat : Feature} {f : V128 → V128 → V128}
-    (h : i.pp ≠ pp) : xmmOp i pp feat f m = .error (.exc Vec.UD none 0) m := by
+theorem xmmOp_prefix {m : Machine} {i : Inst} {pp : UInt8} {avail : Bool} {f : V128 → V128 → V128}
+    (h : i.pp ≠ pp) : xmmOp i pp avail f m = .error (.exc Vec.UD none 0) m := by
   simp [xmmOp, h, bind, EStateM.bind, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
 theorem sha256rnds2Op_prefix {m : Machine} {i : Inst} (h : i.pp ≠ 0) :
@@ -580,32 +580,32 @@ theorem sha256rnds2Op_prefix {m : Machine} {i : Inst} (h : i.pp ≠ 0) :
   simp [sha256rnds2Op, h, bind, EStateM.bind, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
 /-- With the right prefix: #UD while CR4.OSFXSR = 0 (SSE not enabled by the OS), state unchanged. -/
-theorem xmmOp_noosfxsr {m : Machine} {i : Inst} {pp : UInt8} {feat : Feature} {f : V128 → V128 → V128}
-    (hf : implemented feat = true) (h : m.cpu.cr4 &&& CR4.OSFXSR = 0) :
-    xmmOp i pp feat f m = .error (.exc Vec.UD none 0) m := by
+theorem xmmOp_noosfxsr {m : Machine} {i : Inst} {pp : UInt8} {avail : Bool} {f : V128 → V128 → V128}
+    (hf : avail = true) (h : m.cpu.cr4 &&& CR4.OSFXSR = 0) :
+    xmmOp i pp avail f m = .error (.exc Vec.UD none 0) m := by
   by_cases hp : i.pp = pp
   · simp [xmmOp, hp, hf, sseCheck, cpu, h, bind, EStateM.bind, ud, throw, throwThe,
       MonadExceptOf.throw, EStateM.throw]
   · exact xmmOp_prefix hp
 
 /-- With the right prefix, CR0.EM = 0 and CR4.OSFXSR = 1: #NM while CR0.TS = 1, state unchanged. -/
-theorem xmmOp_ts {m : Machine} {i : Inst} {pp : UInt8} {feat : Feature} {f : V128 → V128 → V128}
-    (hp : i.pp = pp) (hf : implemented feat = true) (he : m.cpu.cr0 &&& CR0.EM = 0)
+theorem xmmOp_ts {m : Machine} {i : Inst} {pp : UInt8} {avail : Bool} {f : V128 → V128 → V128}
+    (hp : i.pp = pp) (hf : avail = true) (he : m.cpu.cr0 &&& CR0.EM = 0)
     (ho : m.cpu.cr4 &&& CR4.OSFXSR ≠ 0) (h : m.cpu.cr0 &&& CR0.TS ≠ 0) :
-    xmmOp i pp feat f m = .error (.exc Vec.NM none 0) m := by
+    xmmOp i pp avail f m = .error (.exc Vec.NM none 0) m := by
   simp [xmmOp, hp, hf, sseCheck, cpu, he, ho, h, bind, EStateM.bind, exc, throw, throwThe,
     MonadExceptOf.throw, EStateM.throw]
 
-theorem aes_implemented : implemented .aes = true ∧ implemented .pclmulqdq = true ∧
-    implemented .sha = true := ⟨rfl, rfl, rfl⟩
+theorem crypto_available : implemented .aes = true ∧ implemented .pclmulqdq = true ∧
+    shaAvail = true := ⟨rfl, rfl, rfl⟩
 
 /-- The 0F 38 hook takes AES and SHA opcodes only (legacy encodings), each with its own prefix. -/
 theorem map2?_forms (i : Inst) (h : i.vex = false) :
-    (i.byte = 0xDC → map2? i = some (xmmOp i 1 .aes aesenc)) ∧
-    (i.byte = 0xDD → map2? i = some (xmmOp i 1 .aes aesenclast)) ∧
-    (i.byte = 0xDE → map2? i = some (xmmOp i 1 .aes aesdec)) ∧
-    (i.byte = 0xDF → map2? i = some (xmmOp i 1 .aes aesdeclast)) ∧
-    (i.byte = 0xC8 → map2? i = some (xmmOp i 0 .sha sha1nexte)) ∧
+    (i.byte = 0xDC → map2? i = some (xmmOp i 1 (implemented .aes) aesenc)) ∧
+    (i.byte = 0xDD → map2? i = some (xmmOp i 1 (implemented .aes) aesenclast)) ∧
+    (i.byte = 0xDE → map2? i = some (xmmOp i 1 (implemented .aes) aesdec)) ∧
+    (i.byte = 0xDF → map2? i = some (xmmOp i 1 (implemented .aes) aesdeclast)) ∧
+    (i.byte = 0xC8 → map2? i = some (xmmOp i 0 shaAvail sha1nexte)) ∧
     (i.byte = 0xCB → map2? i = some (sha256rnds2Op i)) ∧
     (i.byte < 0xC8 → map2? i = none) ∧ (0xCD < i.byte → i.byte < 0xDB → map2? i = none) := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro hb <;> (try intro hb2) <;>

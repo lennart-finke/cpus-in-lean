@@ -287,9 +287,11 @@ static void fips_line(void) {
 void test_crypto(void) {
 	cr0set(0);
 	cr4sse(1);
-	int aes = has_feature(1, 0, 2, 25), pcl = has_feature(1, 0, 2, 1), sha = has_feature(7, 0, 1, 29);
-	kprintf("crypto.cpuid: aes=%d pclmulqdq=%d sha=%d\n", aes, pcl, sha);
-	if (!aes || !pcl || !sha) return;
+	/* the model does not report SHA yet (it waits for SSSE3, X86/Ext/Crypto.lean shaAvail) but
+	   executes the SHA instructions; QEMU's EPYC-Rome reports and executes them */
+	int aes = has_feature(1, 0, 2, 25), pcl = has_feature(1, 0, 2, 1);
+	kprintf("crypto.cpuid: aes=%d pclmulqdq=%d\n", aes, pcl);
+	if (!aes || !pcl) return;
 	for (int k = 0; k < 48; k++) CM[k] = (u8)(k * 37 + 11);
 	for (int k = 0; k < 12; k++) CX[k] = 0x01010101u * (u32)(k + 1);
 	for (u32 f = 0; f < NCFORMS; f++) exc_line(&cforms[f]);

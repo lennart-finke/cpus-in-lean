@@ -35,11 +35,12 @@ figures 7 and 14; `X86/Proofs/ExtCrypto.lean` proves them equal to the algebraic
 * 66 0F 38 DB..DF AESIMC, AESENC, AESENCLAST, AESDEC, AESDECLAST; 66 0F 3A DF AESKEYGENASSIST
   (CPUID.1:ECX.AES); 66 0F 3A 44 PCLMULQDQ (CPUID.1:ECX.PCLMULQDQ).
 * 0F 38 C8..CD SHA1NEXTE, SHA1MSG1, SHA1MSG2, SHA256RNDS2, SHA256MSG1, SHA256MSG2; 0F 3A CC SHA1RNDS4
-  (CPUID.7.0:EBX.SHA).
+  (CPUID.7.0:EBX.SHA; not reported yet, see `shaAvail`).
 
 Exceptions (SDM vol. 2, table 2-21 "Type 4"; AMD APM vol. 4, the instruction pages): #UD with any
 other mandatory prefix (AES/PCLMULQDQ need 66; the SHA instructions are "NP": a 66, F2 or F3 prefix
-is #UD, as in Bochs' decoder; QEMU's TCG executes them, see `validation/README.md`), with LOCK
+is #UD, as in Bochs' decoder; QEMU's TCG executes them, see `validation/README.md`; not yet confirmed
+on a Zen 2, which the native campaign's `sha_prefix` cases probe), with LOCK
 (`Step.lockOk`), CR0.EM = 1 or CR4.OSFXSR = 0; then #NM with CR0.TS = 1 (`sseCheck`); then the
 memory operand: segment checks, #GP(0) unless 16-byte aligned (`vecAddr`; AMD's MisalignSse mode is
 the Sse workstream's), #PF. No flags, no MXCSR effect, YMM bits 255:128 unchanged (legacy SSE). The
@@ -311,11 +312,18 @@ def sha256msg2 (a b : V128) : V128 :=
 
 /-! ## Instructions -/
 
-/-- `xmm1 := f xmm1 (xmm2/m128)` with mandatory prefix `pp` (`Inst.pp`) and CPUID feature `feat`:
-#UD for another prefix or an unreported feature, then the SSE checks (#UD/#NM), then the aligned
-128-bit source. -/
-@[inline] def xmmOp (i : Inst) (pp : UInt8) (feat : Feature) (f : V128 → V128 → V128) : M Unit := do
-  if i.pp != pp || !implemented feat then ud
+/-- Whether the SHA instructions execute. They do whether or not CPUID reports SHA: the CPUID bit
+(`implemented .sha`) stays clear until SSSE3 is implemented (the Sse workstream), because software
+selects its SHA code by the SHA bit alone and that code also uses SSSE3 (BusyBox's sha256sum, part of
+the Linux workload, runs PSHUFB before SHA256RNDS2). Masking a CPUID bit does not disable an
+instruction on hardware either. -/
+def shaAvail : Bool := true
+
+/-- `xmm1 := f xmm1 (xmm2/m128)` with mandatory prefix `pp` (`Inst.pp`), executable if `avail` (the
+CPUID feature): #UD for another prefix or an unavailable instruction, then the SSE checks (#UD/#NM),
+then the aligned 128-bit source. -/
+@[inline] def xmmOp (i : Inst) (pp : UInt8) (avail : Bool) (f : V128 → V128 → V128) : M Unit := do
+  if i.pp != pp || !avail then ud
   sseCheck
   let a ← getXmm i.reg
   let b ← rdXE i 16 true
@@ -323,7 +331,7 @@ def sha256msg2 (a b : V128) : V128 :=
 
 /-- SHA256RNDS2 xmm1, xmm2/m128, <XMM0>. -/
 def sha256rnds2Op (i : Inst) : M Unit := do
-  if i.pp != 0 || !implemented .sha then ud
+  if i.pp != 0 || !shaAvail then ud
   sseCheck
   let a ← getXmm i.reg
   let b ← rdXE i 16 true
@@ -334,17 +342,17 @@ def sha256rnds2Op (i : Inst) : M Unit := do
 def map2? (i : Inst) : Option (M Unit) :=
   if i.vex then none else
   match i.byte with
-  | 0xC8 => some (xmmOp i 0 .sha sha1nexte)
-  | 0xC9 => some (xmmOp i 0 .sha sha1msg1)
-  | 0xCA => some (xmmOp i 0 .sha sha1msg2)
+  | 0xC8 => some (xmmOp i 0 shaAvail sha1nexte)
+  | 0xC9 => some (xmmOp i 0 shaAvail sha1msg1)
+  | 0xCA => some (xmmOp i 0 shaAvail sha1msg2)
   | 0xCB => some (sha256rnds2Op i)
-  | 0xCC => some (xmmOp i 0 .sha sha256msg1)
-  | 0xCD => some (xmmOp i 0 .sha sha256msg2)
-  | 0xDB => some (xmmOp i 1 .aes fun _ b => aesimc b)
-  | 0xDC => some (xmmOp i 1 .aes aesenc)
-  | 0xDD => some (xmmOp i 1 .aes aesenclast)
-  | 0xDE => some (xmmOp i 1 .aes aesdec)
-  | 0xDF => some (xmmOp i 1 .aes aesdeclast)
+  | 0xCC => some (xmmOp i 0 shaAvail sha256msg1)
+  | 0xCD => some (xmmOp i 0 shaAvail sha256msg2)
+  | 0xDB => some (xmmOp i 1 (implemented .aes) fun _ b => aesimc b)
+  | 0xDC => some (xmmOp i 1 (implemented .aes) aesenc)
+  | 0xDD => some (xmmOp i 1 (implemented .aes) aesenclast)
+  | 0xDE => some (xmmOp i 1 (implemented .aes) aesdec)
+  | 0xDF => some (xmmOp i 1 (implemented .aes) aesdeclast)
   | _ => none
 
 /-- 0F 3A map (imm8 in `imm`): PCLMULQDQ (66 44), AESKEYGENASSIST (66 DF), SHA1RNDS4 (NP CC). -/
@@ -352,9 +360,9 @@ def map3? (i : Inst) : Option (M Unit) :=
   if i.vex then none else
   let imm := i.imm.toUInt8
   match i.byte with
-  | 0x44 => some (xmmOp i 1 .pclmulqdq fun a b => pclmulqdq a b imm)
-  | 0xDF => some (xmmOp i 1 .aes fun _ b => aeskeygenassist b imm)
-  | 0xCC => some (xmmOp i 0 .sha fun a b => sha1rnds4 a b imm)
+  | 0x44 => some (xmmOp i 1 (implemented .pclmulqdq) fun a b => pclmulqdq a b imm)
+  | 0xDF => some (xmmOp i 1 (implemented .aes) fun _ b => aeskeygenassist b imm)
+  | 0xCC => some (xmmOp i 0 shaAvail fun a b => sha1rnds4 a b imm)
   | _ => none
 
 end Crypto

@@ -14,46 +14,22 @@ import X86.Proofs.Basic
 namespace X86
 
 /-- The former CPUID (`Exec.cpuidVals` with `addSimd`), for reference, restated for the features
-implemented since: AES and PCLMULQDQ (CPUID 1:ECX bits 25, 1) and SHA (CPUID 7.0:EBX bit 29), which
-raises the highest basic leaf to 7 (leaves 2..6 are zero except as below; out-of-range leaves
-return leaf 7, Intel's rule, so their value depends on the subleaf). Leaf 6 with a subleaf other
-than 0 reports the dump's ARAT and EffFreq bits, which `Cpuid` masks only at subleaf 0 (their
-`Feature.loc`); leaf 6 ignores ECX on hardware. -/
-def formerCpuid (leaf sub : UInt32) : Regs :=
+implemented since: AES and PCLMULQDQ (CPUID 1:ECX bits 25 and 1). -/
+def formerCpuid (leaf : UInt32) : Regs :=
   match leaf with
-  | 0 => (7, 0x756E6547, 0x6C65746E, 0x49656E69)
-  | 1 => (0x00000619, 0, 0x02000002, 0x07808365)
+  | 0 => (1, 0x756E6547, 0x6C65746E, 0x49656E69)
   | 0x80000000 => (0x80000001, 0, 0, 0)
   | 0x80000001 => (0, 0, 0, 1 <<< 20)
-  | 2 | 3 | 4 | 5 => (0, 0, 0, 0)
-  | 6 => if sub = 0 then (0, 0, 0, 0) else (4, 0, 1, 0)
-  | _ => if sub = 0 then (0, 1 <<< 29, 0, 0) else (0, 0, 0, 0)
+  | _ => (0x00000619, 0, 0x02000002, 0x07808365)
 
-theorem legacyMax_former : Cpuid.legacyMax = (7, 0x80000001) := by decide
+theorem legacyMax_former : Cpuid.legacyMax = (1, 0x80000001) := by decide
 
-private theorem amdLeaf_former (c : Cpu) (sub : UInt32) :
-    Cpuid.amdLeaf c 5 sub = (0, 0, 0, 0) ∧
-    Cpuid.amdLeaf c 6 sub = (if sub = 0 then (0, 0, 0, 0) else (4, 0, 1, 0)) ∧
-    Cpuid.amdLeaf c 7 sub = if sub = 0 then (0, 1 <<< 29, 0, 0) else (0, 0, 0, 0) := by
-  refine ⟨by simp [Cpuid.amdLeaf, Cpuid.leafGate, implemented], ?_, ?_⟩
-  · by_cases h : sub = 0
-    · subst h; simp [Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw]; decide
-    · have h' : ¬ ((0 : UInt32) = sub) := fun e => h e.symm
-      simp [h, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, Cpuid.maskReg, Cpuid.featBits, Feature.all,
-        Feature.loc, h', implemented]
-      decide
-  · by_cases h : sub = 0
-    · subst h; simp [Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw]; decide
-    · have h' : (sub == 0) = false := by simpa using h
-      simp [h, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, h']
-
-theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCpuid leaf sub := by
+theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCpuid leaf := by
   have h12 : Cpuid.featBits 1 0 2 true = 0x02000002 := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x07808365 := by decide
   have he2 : Cpuid.featBits 0x80000001 0 2 true = 0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 1 <<< 20 := by decide
   have hx : implemented .xsave = false := rfl
-  obtain ⟨h5, h6, h7⟩ := amdLeaf_former c sub
   simp only [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, formerCpuid]
   by_cases h0 : leaf = 0
   · subst h0; simp
@@ -63,34 +39,15 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCp
   · subst h8; simp
   by_cases h9 : leaf = 0x80000001
   · subst h9; simp [he2, he3]
-  by_cases l2 : leaf = 2
-  · subst l2; simp
-  by_cases l3 : leaf = 3
-  · subst l3; simp
-  by_cases l4 : leaf = 4
-  · subst l4; simp
-  by_cases l5 : leaf = 5
-  · subst l5; simp [h5]
-  by_cases l6 : leaf = 6
-  · subst l6; simp [h6]
-  by_cases l7 : leaf = 7
-  · subst l7; simp [h7]
-  have hr : (leaf ≤ 7 || (0x80000000 ≤ leaf && leaf ≤ 0x80000001)) = false := by
+  have hr : (leaf ≤ 1 || (0x80000000 ≤ leaf && leaf ≤ 0x80000001)) = false := by
     simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not, Bool.and_eq_false_iff]
     constructor
     · intro hle
-      have : leaf.toNat ≤ 7 := hle
-      have : leaf.toNat = 0 ∨ leaf.toNat = 1 ∨ leaf.toNat = 2 ∨ leaf.toNat = 3 ∨ leaf.toNat = 4 ∨
-          leaf.toNat = 5 ∨ leaf.toNat = 6 ∨ leaf.toNat = 7 := by omega
-      rcases this with h | h | h | h | h | h | h | h
+      have : leaf.toNat ≤ 1 := hle
+      have : leaf.toNat = 0 ∨ leaf.toNat = 1 := by omega
+      rcases this with h | h
       · exact h0 (UInt32.toNat_inj.mp (by simpa using h))
       · exact h1 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l2 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l3 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l4 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l5 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l6 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact l7 (UInt32.toNat_inj.mp (by simpa using h))
     · by_cases hlo : 0x80000000 ≤ leaf
       · right; intro hhi
         have a : (0x80000000 : UInt32).toNat ≤ leaf.toNat := hlo
@@ -101,7 +58,8 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCp
         · exact h8 (UInt32.toNat_inj.mp (by simpa using h))
         · exact h9 (UInt32.toNat_inj.mp (by simpa using h))
       · left; simpa using hlo
-  simp only [hr, Bool.false_eq_true, ↓reduceIte, h7]
+  simp only [hr, Bool.false_eq_true, ↓reduceIte, h0, h1, h8, h9]
+  simp [h12, h13, hx]
 
 theorem cr4Writable_former : Cpuid.cr4Writable = 0x07FC := by decide
 
