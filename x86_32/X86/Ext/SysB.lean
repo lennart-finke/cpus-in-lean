@@ -16,6 +16,13 @@ the event priorities in `X86/Step.lean`. This module has what those use and the 
 
 State: `SysBState` (`Cpu.sysbx`) in `X86/State.lean`.
 
+Machine checks: the model has no error sources, so #MC (vector 18) is never raised and needs no
+delivery path. CR4.MCE is stored only; with CR4.MCE = 0 a machine check would put the processor in
+the shutdown state ("A machine-check condition that occurs while CR4[MCE] is cleared will result in
+the processor core entering the shutdown state", AMD APM vol. 2, 9.4). Shutdown itself (after a
+triple fault) stops the simulation (`Fault.shutdown`); AMD lets an NMI, INIT or RESET restart a
+processor in shutdown (8.2.9), which the model does not do.
+
 ## IRPerf: what counts as retired
 
 `IRPerfCount` counts the instructions that retire while HWCR.IRPerfEn = 1 (AMD APM vol. 2, 13.2.1,
