@@ -172,9 +172,9 @@ theorem cpuid_leaf7_gpr (c : Cpu) : cpuid c 7 0 = (0, 0x218C0108, 0x00400000, 0)
     h0, h1, h2, h3]
   decide
 
-/-- CPUID 8000_0008h EBX (legacy identity): CLZERO, RDPRU, MCOMMIT, WBNOINVD. -/
-theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x311 := by
-  have h1 : Cpuid.maskReg 0x80000008 0 1 0x018EF757 = 0x311 := by decide
+/-- CPUID 8000_0008h EBX (legacy identity): CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of the XSAVE work). -/
+theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x315 := by
+  have h1 : Cpuid.maskReg 0x80000008 0 1 0x018EF757 = 0x315 := by decide
   simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, h1]
   rfl
 
