@@ -198,12 +198,12 @@ def implemented : Feature → Bool
   | .rdpru => false
   | .irPerf => false
   -- X86/Ext/Sse.lean
-  | .sse3 => false
-  | .ssse3 => false
-  | .sse41 => false
-  | .sse42 => false
-  | .sse4a => false
-  | .misalignSse => false
+  | .sse3 => true
+  | .ssse3 => true
+  | .sse41 => true
+  | .sse42 => true
+  | .sse4a => true
+  | .misalignSse => true
   -- X86/Ext/Crypto.lean
   | .aes => false
   | .pclmulqdq => false

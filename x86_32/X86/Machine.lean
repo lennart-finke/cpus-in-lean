@@ -415,10 +415,11 @@ def linWr (lin n v : UInt32) (user : Bool) : M Unit := do
       let p := if a &&& 0xFFFFF000 == lin1 then p1 + (a &&& 0xFFF).toUInt64 else p0 + (a - lin).toUInt64
       physWr p 1 (v >>> (k.toUInt32 * 8))
 
-/-- Check that a linear range is writable (used by instructions with several writes). -/
+/-- Check that a linear range is writable (used by instructions with several writes). A fault on the
+second page reports its first byte in CR2, as `linWr` does. -/
 def linProbeWr (lin n : UInt32) (user : Bool) : M Unit := do
   let _ ← translate lin true user
-  let _ ← translate (lin + n - 1) true user
+  let _ ← translate ((lin + n - 1) &&& 0xFFFFF000) true user
 
 /-! ## Segmentation -/
 

@@ -187,6 +187,25 @@ def convert (src dst : Format) (a mxcsr : UInt64) : UInt64 × UInt64 :=
     let (r,fl) := pack dst (sign src a) n 1 e mxcsr
     (r, fl ||| flags)
 
+/-- Round to an integral value in the same format (ROUNDPS/PD/SS/SD; IEEE 754 roundToIntegral):
+`mode` is the rounding mode (0 nearest-even, 1 down, 2 up, 3 toward zero); the MXCSR argument
+supplies only DAZ. An SNaN gives the quieted NaN and IE, a QNaN is returned unchanged; zeros and
+infinities are exact; the result keeps the operand's sign (so -0.3 rounds to -0). An inexact result
+reports PE unless `suppressPE` (ROUND* imm8 bit 3). Denormal operands do not report DE (the ROUND*
+instructions list only #I and #P: SDM ROUNDPS, AMD APM vol. 4 ROUNDPS); with DAZ they are zeros. -/
+def roundToIntegral (f : Format) (a mode mxcsr : UInt64) (suppressPE : Bool) : UInt64 × UInt64 :=
+  let (a, _) := prepare f mxcsr a
+  if isNaN f a then (a ||| f.quietBit, if isSNaN f a then 1 else 0)
+  else if isInf f a || isZero f a then (a, 0)
+  else
+    let (n, e) := dyadic f a
+    if e ≥ 0 then (a, 0)
+    else
+      let (q, inexact) := roundQuotient n (2^(-e).toNat) (sign f a) mode
+      -- q < 2^(fraction+2) is exactly representable: pack is exact (no flags)
+      let r := if q == 0 then signedBits f (sign f a) 0 else (pack f (sign f a) q 1 0 0x1F80).1
+      (r, if inexact && !suppressPE then 0x20 else 0)
+
 def fromInt (f : Format) (a : Int) (mxcsr : UInt64) : UInt64 × UInt64 :=
   pack f (a < 0) a.natAbs 1 0 mxcsr
 

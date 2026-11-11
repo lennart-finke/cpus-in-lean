@@ -18,15 +18,15 @@ def formerCpuid (leaf : UInt32) : Regs :=
   match leaf with
   | 0 => (1, 0x756E6547, 0x6C65746E, 0x49656E69)
   | 0x80000000 => (0x80000001, 0, 0, 0)
-  | 0x80000001 => (0, 0, 0, 1 <<< 20)
-  | _ => (0x00000619, 0, 0, 0x07808365)
+  | 0x80000001 => (0, 0, 0xC0, 1 <<< 20)  -- Sse: SSE4A, MisAlignSse
+  | _ => (0x00000619, 0, 0x00180201, 0x07808365)  -- Sse: SSE3, SSSE3, SSE4.1, SSE4.2
 
 theorem legacyMax_former : Cpuid.legacyMax = (1, 0x80000001) := by decide
 
 theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCpuid leaf := by
-  have h12 : Cpuid.featBits 1 0 2 true = 0 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x00180201 := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x07808365 := by decide
-  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0 := by decide
+  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0xC0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 1 <<< 20 := by decide
   have hx : implemented .xsave = false := rfl
   simp only [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, formerCpuid]
