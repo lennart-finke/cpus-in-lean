@@ -147,5 +147,7 @@ void test_long(void);
 void test_long_model(void);
 void test_avx(void);
 void test_avx_model(void);
+void test_avx2(void);
+void test_avx2_model(void);
 
 #endif

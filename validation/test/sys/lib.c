@@ -199,6 +199,7 @@ void sys_main(void) {
 	test_apic_errors();
 	test_ioapic();
 	test_x2apic();
+	test_avx2();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -217,5 +218,6 @@ void sys_main(void) {
 	test_apic_model();
 	test_ioapic_model();
 	test_x2apic_model();
+	test_avx2_model();
 	sys_exit();
 }

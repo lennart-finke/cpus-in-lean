@@ -206,6 +206,81 @@ def roundToIntegral (f : Format) (a mode mxcsr : UInt64) (suppressPE : Bool) : U
       let r := if q == 0 then signedBits f (sign f a) 0 else (pack f (sign f a) q 1 0 0x1F80).1
       (r, if inexact && !suppressPE then 0x20 else 0)
 
+/-! ## Fused multiply-add and binary16 (owner: Avx2; FMA3 and F16C) -/
+
+/-- IEEE 754 binary16 (half precision): 10 fraction bits, 5 exponent bits, bias 15 (F16C). -/
+def binary16 : Format := ⟨10, 5, 15⟩
+
+/-- Fused multiply-add `±(a·b) ± c` with a single rounding (FMA3: VFMADD*, VFMSUB*, VFNMADD*,
+VFNMSUB*, VFMADDSUB*, VFMSUBADD*): `negProd` negates the product, `negAdd` the addend. The exact
+value `a·b + c` is formed as an integer times a power of two and rounded once by `pack` (MXCSR.RC,
+FTZ with tininess after rounding, the unmasked-underflow response), so the result is the correctly
+rounded exact value.
+
+Special cases (Intel SDM vol. 1, 14.5.2 "FMA numeric behavior", table 14-17; AMD APM vol. 1, 4.10
+and vol. 4 VFMADDPS: IE "A source operand was an SNaN value" / "Undefined operation"):
+* DAZ makes denormal operands zeros; otherwise each denormal operand reports DE (unless the result is
+  a NaN or the operation is invalid, as for the two-operand instructions, `binary`).
+* NaN operands: the result is the first NaN of `a`, `b`, `c` (in this order, the x·y + z order of
+  the table, not the encoding order), quieted; IE if any operand is an SNaN. The negations do not
+  apply to a NaN result.
+* `0·∞` (either order) with a non-NaN addend: the default NaN (QNaN indefinite) and IE. With a QNaN
+  addend the NaN rule above applies and IE is NOT signaled: Intel's table lists `(0, INF, NaN)` as
+  `Q(z)`, "signal invalid exception if z is SNaN"; IEEE 754-2008 7.2 leaves the QNaN case to the
+  implementation; AMD's manuals do not single it out (open doubt for Zen 2, recorded by the native
+  campaign family `fma_special`).
+* `∞ - ∞` (an infinite product and an infinite addend of opposite effective signs): IE.
+* An exact zero sum: +0 except in round-down, where -0; `(±0) + (±0)` with equal signs keeps the
+  sign (IEEE 754 6.3).
+The MXCSR argument supplies RC, DAZ, FTZ and the UM/OM masks, as for `binary`. -/
+def fma (f : Format) (a b c : UInt64) (negProd negAdd : Bool) (mxcsr : UInt64) : UInt64 × UInt64 :=
+  Id.run do
+  let (a, da) := prepare f mxcsr a
+  let (b, db) := prepare f mxcsr b
+  let (c, dc) := prepare f mxcsr c
+  if isNaN f a || isNaN f b || isNaN f c then
+    let r := (if isNaN f a then a else if isNaN f b then b else c) ||| f.quietBit
+    return (r, if isSNaN f a || isSNaN f b || isSNaN f c then 1 else 0)
+  let ia := isInf f a
+  let ib := isInf f b
+  let ic := isInf f c
+  if (ia && isZero f b) || (ib && isZero f a) then return (indefinite f, 1)
+  let sp := (sign f a != sign f b) != negProd
+  let sc := sign f c != negAdd
+  let flags := da ||| db ||| dc
+  if ia || ib then
+    if ic && sc != sp then return (indefinite f, 1)
+    return (signedBits f sp f.infinity, flags)
+  if ic then return (signedBits f sc f.infinity, flags)
+  let (na, ea) := dyadic f a
+  let (nb, eb) := dyadic f b
+  let (nc, ec) := dyadic f c
+  let ep := ea + eb
+  let e := min ep ec
+  let p : Int := (if sp then -1 else 1) * (na * nb * 2^(ep - e).toNat : Nat)
+  let q : Int := (if sc then -1 else 1) * (nc * 2^(ec - e).toNat : Nat)
+  let sum := p + q
+  let negative := if sum == 0 then (sp && sc) || (sp != sc && (mxcsr >>> 13) &&& 3 == 1) else sum < 0
+  let (v, fl) := pack f negative sum.natAbs 1 e mxcsr
+  return (v, fl ||| flags)
+
+/-- VCVTPH2PS lane: binary16 → binary32, exact. MXCSR.DAZ is ignored and no DE is reported (AMD APM
+vol. 4 VCVTPH2PS: "A denormal source operand is converted to a normal result ... MXCSR.DAZ is
+ignored and no MXCSR denormal exception is reported"); an SNaN gives the quieted NaN (payload
+extended by zeros) and IE. -/
+def halfToSingle (h mxcsr : UInt64) : UInt64 × UInt64 :=
+  let (r, fl) := convert binary16 binary32 (h &&& 0xFFFF) (mxcsr &&& ~~~0x40)
+  (r, fl &&& ~~~2)
+
+/-- VCVTPS2PH lane: binary32 → binary16 rounded in mode `rc` (0 nearest-even, 1 down, 2 up, 3 toward
+zero). MXCSR.FTZ has no effect, tiny results are denormals (AMD APM vol. 4 VCVTPS2PH: "MXCSR[FTZ]
+has no effect on this instruction. Values within the half-precision denormal range are
+unconditionally converted to denormals"); DAZ applies to denormal binary32 inputs (Intel SDM
+VCVTPS2PH: "Denormal (if MXCSR.DAZ=0)"); IE, DE, OE, UE, PE as for the other conversions; a NaN keeps
+its sign and the high 10 fraction bits, quieted. -/
+def singleToHalf (s rc mxcsr : UInt64) : UInt64 × UInt64 :=
+  convert binary32 binary16 (s &&& 0xFFFFFFFF) ((mxcsr &&& ~~~0xE000) ||| ((rc &&& 3) <<< 13))
+
 def fromInt (f : Format) (a : Int) (mxcsr : UInt64) : UInt64 × UInt64 :=
   pack f (a < 0) a.natAbs 1 0 mxcsr
 
