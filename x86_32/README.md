@@ -23,7 +23,9 @@ Not modelled (execution stops with `Fault.unsupported`, or the feature is absent
 ## Files
 - `X86/Word.lean`, `State.lean`: operand sizes, bit names, CPU state.
 - `X86/Machine.lean`: physical memory and APIC decoding, paging (32-bit and PAE), TLB, breakpoint matching, segmentation checks, the semantic monad `M`.
-- `X86/Decode.lean`, `Alu.lean`, `Exec.lean`: decoder, flags and arithmetic, instruction semantics.
+- `X86/Decode.lean`, `Alu.lean`, `Exec.lean`: decoder (one-byte, 0F, 0F 38, 0F 3A maps and VEX), flags and arithmetic, instruction semantics.
+- `X86/Cpuid.lean`: table-driven CPUID with the leaves of an EPYC 7742, reporting only the implemented features (`implemented`); the identity is still the former one (`identity := .legacy`).
+- `X86/Dispatch.lean`, `X86/Ext/*.lean`: instruction dispatch with hooks into one module per extension workstream (stubs today); see [`EXTENDING.md`](EXTENDING.md).
 - `X86/Float80.lean`, `Transcendental.lean`, `Fpu.lean`: extended-precision arithmetic, transcendental functions and x87 instructions.
 - `X86/Float.lean`, `Simd.lean`: binary32/64 arithmetic, MMX, SSE, SSE2 and FXSAVE.
 - `X86/Sys.lean`, `Step.lean`: descriptors, task switches, gates, interrupt delivery, virtual-8086 mode, one architectural step (including debug traps).
