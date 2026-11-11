@@ -5,3 +5,6 @@
 # instructions (SSE3..SSE4.2, SSE4a, AES, SHA, AVX, AVX2, FMA, F16C, BMI, ...) that the model may not
 # implement yet; generators skip those forms (test/isa_forms.py, NOT_YET_IMPLEMENTED).
 QEMU_CPU=${QEMU_CPU:-EPYC-Rome,-fxsr-opt,-lm,-misalignsse,-osvw,-topoext,-perfctr-core,-clzero,-ibpb,-amd-stibp,-nrip-save,-xsavec,-xsaves}
+# SMP workstream: the 7742 has x2APIC (CPUID 1:ECX[21]), which the model reports; TCG implements x2APIC mode
+# but its EPYC-Rome model leaves the bit clear, so it is requested explicitly.
+QEMU_CPU="$QEMU_CPU,+x2apic"

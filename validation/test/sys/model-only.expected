@@ -67,7 +67,7 @@ sysa.global: 00000015 cr3=0000000a/0000000d invlpg=0000000c cr3=0000000c pge_off
 sysa.tsc: hi=00012345 msr_hi=00012345
 sysa.msr: mcg_cap=0000ffff/00000117 mcg_cap_wr=0000000d mcg_status=0000ffff/00000007 mcg_ctl=0000ffff/ffffffff mc0_status_wr=0000000d mc0_status_0=0000ffff mcstatuswren=0000000d/00000000_00000000 mc23=0000000d
 sysa.msr.mtrr: cap_wr=0000000d type2=0000000d type7=0000000d base_rsvd=0000000d mask_rsvd=0000000d base_hi=0000000d fix_rsvd=0000000d fix_type3=0000000d fix_hidden=06060606 fix_moden=06060606/1e1e1e1e fix_after=06060606
-sysa.msr.amd: syscfg=0000ffff/00020601 rsvd=0000000d hwcr=0000ffff/01000000 top_mem=0000ffff/04000000 rsvd=0000000d osvw_len=0000ffff/00000000 cpuid1=0000ffff/4ed8020b_078bfbfd virt_spec_ctrl=0000000d
+sysa.msr.amd: syscfg=0000ffff/00020601 rsvd=0000000d hwcr=0000ffff/01000000 top_mem=0000ffff/04000000 rsvd=0000000d osvw_len=0000ffff/00000000 cpuid1=0000ffff/4ef8020b_078bfbfd virt_spec_ctrl=0000000d
 sysa.msr.spec: spec_ctrl=0000ffff/00000007 spec_rsvd=0000000d ibpb=0000ffff pred_rsvd=0000000d pred_rd=0000000d lstar=0000ffff lstar_nc=0000000d cstar_nc=0000000d lstar_rd=ffff8000_00000000 sfmask=00000000_00004700 aperf_runs=1
 sysa.sysenter.null3: 0000000d/00000000
 ssem.cpuid: sse4a=1 misalignsse=1
@@ -90,4 +90,54 @@ gpr.mwait.ibe: vec=0000ffff hits=0 after_sti=1 unarmed=0000ffff stored=0000ffff
 gpr.monitorx: cpl3=00000040 ecx=0000000d mwaitx.timer=0000ffff waited=1 ecx4=0000000d
 gpr.clflush.paging: ro=0000ffff a=1 d=0 np.clwb=0000000e err=00000000 cr2_ok=1 np.prefetchw=0000ffff np.nta=0000ffff np.monitor=0000000e ro.clzero=0000000e err=00000003
 gpr.clflush.seg: last=0000ffff beyond=0000000d monitor.beyond=0000000d clzero.line=0000ffff null=0000000d null.clzero=0000000d
+apicm.version: 80050010 extfeat=00040007 extctl=00000000 ier7=ffffffff xlvt=00000000 00000000 00000000 00000000
+apicm.apr.tpr: apr=00000035 ppr=00000035
+apicm.apr.irr: apr=00000070 ppr=00000035
+apicm.apr.int: n=1 00000071
+apicm.rr.self: icr=00020300 rrr=00000042
+apicm.rr.absent: icr=00000300
+apicm.rr.invalid: icr=00000300
+apicm.esr.sae: 00000004
+apicm.esr.ivec: 00000060
+apicm.esr.timerivec: 00000040 irr0=00000000
+apicm.esr.rowrite: 00000000 version=80050010
+apicm.esr.badwrite: 00000080
+apicm.seoi.taken: n=2 00000081 00000091
+apicm.seoi.off: isr=00020002 00000000
+apicm.seoi.on: extctl=00000002 isr=00020000 00000000 ppr=00000090
+apicm.seoi.on2: isr=00000000 00000000 ppr=00000000
+apicm.ier.noiern: ier2=ffffffff
+apicm.ier.masked: n=1 00000046
+apicm.ier.pending: irr2=00000020 ppr=00000000
+apicm.ier.released: n=1 00000045
+apicm.xlvt: 00010345 000107ff
+apicm.xlvt.swdisable: 00010345 000107ff
+apicm.lint0.fixed: n=1 00000066
+apicm.lint0.state: lvt0=00000066 pic_irr=00000001
+ioapicm.version: 00170011
+ioapicm.polarity.low: n=3 0000006f 0000006f 0000006f
+ioapicm.polarity.entry: 0001a06f
+ioapicm.rirr.edge: 0001206f
+ioapicm.extint: n=1 00000030
+x2apicm.cpuid1: ebx=00000800 htt=0 x2apic=1
+x2apicm.cpuidb.0: 00000001 00000001 00000100 00000000
+x2apicm.cpuidb.1: 00000007 00000001 00000201 00000000
+x2apicm.cpuidb.2: 00000000 00000000 00000002 00000000
+x2apicm.cpuid81: cmplegacy=0 extapic=1 topoext=1
+x2apicm.cpuid88: ecx=00007000
+x2apicm.id: 00000005 ldr=00000020
+x2apicm.icr.lowpri: gp
+x2apicm.icr.remoteread: gp
+x2apicm.icr.extint: gp
+x2apicm.icr.ds: gp
+x2apicm.icr.rrs: gp
+x2apicm.svr.bit12: gp
+x2apicm.lvt.tscdeadline: gp
+x2apicm.lvt.ro_ds: ok
+x2apicm.ext: feat=00040007 ctl=00000000
+x2apicm.extfeat.write: gp
+x2apicm.extctl.rsvd: gp
+x2apicm.xlvt.rsvd: gp
+x2apicm.unimpl.8ff: gp
+x2apicm.esr: 00000060
 END

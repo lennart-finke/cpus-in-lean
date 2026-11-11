@@ -1,0 +1,16 @@
+MODEL-ONLY
+smpm.lowpri.apr: bsp=0 ap=1 00000070
+smpm.lowpri.tie: bsp=0 ap=1 00000071
+smpm.lowpri.focus: bsp=1 00000072 ap=0
+smpm.lowpri.nofocus: bsp=1 00000073 ap=1 00000073
+smpm.rr.tpr: rrs=00000002 rrr=00000037
+smpm.rr.apr: rrs=00000002 rrr=00000037
+smpm.ipi.extint: bsp=0 ap=1 00000037
+smpm.ipi.smi: count=1 ap_alive=1
+smpm.esr.sae: 00000004
+smpm.cpuid1: bsp_ebx=00020800 htt=1 ap_ebx=01020800 ap_htt=1
+smpm.cpuidb.0: bsp=00000001 00000002 00000100 00000000 ap=00000001 00000002 00000100 00000001
+smpm.cpuidb.1: bsp=00000007 00000002 00000201 00000000 ap=00000007 00000002 00000201 00000001
+smpm.cpuid81: cmplegacy=1
+smpm.cpuid88: ecx=00007001
+END
