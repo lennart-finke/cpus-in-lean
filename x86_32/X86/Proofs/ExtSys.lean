@@ -125,38 +125,47 @@ theorem sysenter_real {m : Machine} (h : m.cpu.pe = false) :
     sysenter m = .error (.exc Vec.UD none 0) m := by
   simp [sysenter, cpu, bind, EStateM.bind, h, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
-theorem sysenter_null {m : Machine} (hp : m.cpu.pe = true) (h : m.cpu.sysx.sysenterCs &&& 0xFFFC = 0) :
+/-- Outside long mode (in long mode SYSENTER is #UD: `LongMode.sysenter_long` in `ExtLongMode.lean`). -/
+theorem sysenter_null {m : Machine} (hp : m.cpu.pe = true) (hl : LongMode.lma m.cpu = false)
+    (h : m.cpu.sysx.sysenterCs &&& 0xFFFC = 0) :
     sysenter m = .error (.exc Vec.GP (some 0) 0) m := by
-  simp [sysenter, cpu, bind, EStateM.bind, hp, h, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
+  simp [sysenter, cpu, bind, EStateM.bind, hp, hl, h, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
 /-- SYSENTER enters CPL 0 (the RPL of the new CS is 0) with interrupts disabled, outside virtual-8086
 mode, at SYSENTER_EIP. -/
 theorem sysenter_cpl0 {m m' : Machine} (h : sysenter m = .ok () m') :
     m'.cpu.cs.sel.toUInt32 &&& 3 = 0 ∧ m'.cpu.eflags &&& (Flag.IF ||| Flag.VM) = 0 ∧
       m'.cpu.eip = m.cpu.sysx.sysenterEip ∧ m'.cpu.esp = m.cpu.sysx.sysenterEsp := by
+  by_cases hl : LongMode.lma m.cpu = true
+  · simp [sysenter, cpu, bind, EStateM.bind, hl, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
+  simp only [Bool.not_eq_true] at hl
   by_cases hp : m.cpu.pe = true
   · by_cases hn : m.cpu.sysx.sysenterCs &&& 0xFFFC = 0
-    · simp [sysenter, cpu, bind, EStateM.bind, hp, hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
-    · simp [sysenter, cpu, bind, EStateM.bind, hp, hn, modCpu] at h
+    · simp [sysenter, cpu, bind, EStateM.bind, hp, hl, hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
+    · simp [sysenter, cpu, bind, EStateM.bind, hp, hl, hn, modCpu] at h
       subst h
       simp only [flatCode]
       refine ⟨?_, ?_, ?_, ?_⟩ <;> (try trivial) <;> (try simp only [Flag.IF, Flag.VM, Flag.RF]) <;> bv_decide
   · simp [sysenter, cpu, bind, EStateM.bind, hp, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
 
-theorem sysexit_cpl {m : Machine} (h : m.cpu.cpl ≠ 0) :
+/-- Outside long mode (in long mode SYSEXIT is #UD). -/
+theorem sysexit_cpl {m : Machine} (hl : LongMode.lma m.cpu = false) (h : m.cpu.cpl ≠ 0) :
     sysexit m = .error (.exc Vec.GP (some 0) 0) m := by
-  simp [sysexit, cpu, bind, EStateM.bind, h, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
+  simp [sysexit, cpu, bind, EStateM.bind, hl, h, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
 /-- SYSEXIT returns to CPL 3 (RPL 3 of the new CS and SS) at EDX with ESP = ECX. -/
 theorem sysexit_cpl3 {m m' : Machine} (h : sysexit m = .ok () m') :
     m'.cpu.cs.sel.toUInt32 &&& 3 = 3 ∧ m'.cpu.ss.sel.toUInt32 &&& 3 = 3 ∧ m'.cpu.eip = m.cpu.edx ∧
       m'.cpu.esp = m.cpu.ecx := by
+  by_cases hl : LongMode.lma m.cpu = true
+  · simp [sysexit, cpu, bind, EStateM.bind, hl, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
+  simp only [Bool.not_eq_true] at hl
   by_cases hp : (!m.cpu.pe || m.cpu.vm86 || m.cpu.cpl != 0) = true
-  · simp [sysexit, cpu, bind, EStateM.bind, hp, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
+  · simp [sysexit, cpu, bind, EStateM.bind, hl, hp, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
   · by_cases hn : m.cpu.sysx.sysenterCs &&& 0xFFFC = 0
-    · simp [sysexit, cpu, bind, EStateM.bind, hp, hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
+    · simp [sysexit, cpu, bind, EStateM.bind, hl, hp, hn, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
     · simp only [Bool.not_eq_true] at hp
-      simp [sysexit, cpu, bind, EStateM.bind, hp, hn, modCpu] at h
+      simp [sysexit, cpu, bind, EStateM.bind, hl, hp, hn, modCpu] at h
       subst h
       simp only [flatCode, flatStack]
       refine ⟨?_, ?_, ?_, ?_⟩ <;> (try trivial) <;> bv_decide
@@ -169,13 +178,14 @@ theorem sysret_nosce {m : Machine} (h : m.cpu.efer &&& EFER.SCE = 0) :
     sysret m = .error (.exc Vec.UD none 0) m := by
   simp [sysret, cpu, bind, EStateM.bind, h, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
-/-- SYSCALL enters CPL 0 at STAR[31:0] with interrupts disabled and the return address in ECX. -/
-theorem syscall_cpl0 {m m' : Machine} (h : syscall m = .ok () m') :
+/-- Legacy-mode SYSCALL enters CPL 0 at STAR[31:0] with interrupts disabled and the return address in
+ECX (in long mode: `LongMode.syscall_long` in `ExtLongMode.lean`). -/
+theorem syscall_cpl0 {m m' : Machine} (hl : LongMode.lma m.cpu = false) (h : syscall m = .ok () m') :
     m'.cpu.cs.sel.toUInt32 &&& 3 = 0 ∧ m'.cpu.eflags &&& (Flag.IF ||| Flag.VM) = 0 ∧
       m'.cpu.ecx = m.cpu.eip ∧ m'.cpu.eip = m.cpu.sysx.star.toUInt32 := by
   by_cases hs : m.cpu.efer &&& EFER.SCE = 0
   · simp [syscall, cpu, bind, EStateM.bind, hs, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw] at h
-  · simp [syscall, cpu, bind, EStateM.bind, hs, modCpu] at h
+  · simp [syscall, cpu, bind, EStateM.bind, hs, hl, modCpu] at h
     subst h
     simp only [flatCode]
     refine ⟨?_, ?_, ?_, ?_⟩ <;> (try trivial) <;> (try simp only [Flag.IF, Flag.VM, Flag.RF]) <;> bv_decide
