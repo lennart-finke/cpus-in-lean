@@ -29,3 +29,7 @@ root = "SysMain"
 [[lean_exe]]
 name = "x86fp"
 root = "FpMain"
+
+# Emulation of the 64-bit stubs of the long-mode system test (test/sys/t_long.c), used by x86sys.
+[[lean_lib]]
+name = "LongStub"
