@@ -65,11 +65,6 @@ NOT_YET_IMPLEMENTED = [
     F('sse41', 'Sse', 'legacy', 3, None, rng(0x08, 0x0E) + rng(0x14, 0x17) + rng(0x20, 0x22) + rng(0x40, 0x42)),
     F('sse42', 'Sse', 'legacy', 3, None, rng(0x60, 0x63)),
     # --- Crypto ---
-    F('aes', 'Crypto', 'legacy', 2, None, rng(0xDB, 0xDF)),
-    F('sha', 'Crypto', 'legacy', 2, None, rng(0xC8, 0xCD)),
-    F('pclmulqdq', 'Crypto', 'legacy', 3, None, [0x44]),
-    F('aes', 'Crypto', 'legacy', 3, None, [0xDF]),
-    F('sha', 'Crypto', 'legacy', 3, None, [0xCC]),
     # --- Xsave ---
     F('xsave', 'Xsave', 'legacy', 1, None, [0x01], ('reg', 2)),
     F('xsave', 'Xsave', 'legacy', 1, 0, [0xAE], ('mem', 4)),
@@ -95,6 +90,14 @@ NOT_YET_IMPLEMENTED = [
 # Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
 # hints; see gen.py (ext_form). Empty until a workstream adds its forms.
 IMPLEMENTED = [
+    # --- Crypto (gen_crypto.py): exactly the Zen 2 forms, so the 'ud' family tests the other
+    # prefixes as #UD. TCG executes the SHA opcodes with any prefix; the model raises #UD (SDM "NP",
+    # Bochs), and TestMain.qemuAsHardware accepts that for those 'ud' vectors.
+    F('aes', 'Crypto', 'legacy', 2, 1, rng(0xDB, 0xDF)),
+    F('sha', 'Crypto', 'legacy', 2, 0, rng(0xC8, 0xCD)),
+    F('pclmulqdq', 'Crypto', 'legacy', 3, 1, [0x44]),
+    F('aes', 'Crypto', 'legacy', 3, 1, [0xDF]),
+    F('sha', 'Crypto', 'legacy', 3, 0, [0xCC]),
 ]
 
 

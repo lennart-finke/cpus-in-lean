@@ -501,6 +501,10 @@ def gen_v2_family(g):
         insn = b'\x3e' * (total - len(body)) + body
         g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
         return insn[:15]
+    # 'ext' family, Crypto workstream: AES-NI, PCLMULQDQ, SHA (gen_crypto.py)
+    if r < 0.40:
+        import gen_crypto
+        return gen_crypto.gen(g)
     return None
 
 def main():

@@ -200,6 +200,11 @@ static const u8 iops[] = {
    a terminator. Example: { 0xF2, 0x7C, MEM | F32 | D32 } (HADDPS), { 0x66, 0x00, MEM, 2 } (PSHUFB),
    { 0x66, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 } (VADDPD, VEX.128/256). */
 static const struct sop xops[] = {
+	/* AES-NI, PCLMULQDQ (all imm8), SHA (Crypto) */
+	{ 0x66, 0xDB, MEM, 2 }, { 0x66, 0xDC, MEM, 2 }, { 0x66, 0xDD, MEM, 2 }, { 0x66, 0xDE, MEM, 2 },
+	{ 0x66, 0xDF, MEM, 2 }, { 0x66, 0xDF, MEM, 3 }, { 0x66, 0x44, MEM, 3 },
+	{ 0, 0xC8, MEM, 2 }, { 0, 0xC9, MEM, 2 }, { 0, 0xCA, MEM, 2 }, { 0, 0xCB, MEM, 2 }, { 0, 0xCC, MEM, 2 },
+	{ 0, 0xCD, MEM, 2 }, { 0, 0xCC, MEM, 3 },
 	{ 0, 0, 0xFFFF }
 };
 #define NXOPS (sizeof xops / sizeof xops[0] - 1)

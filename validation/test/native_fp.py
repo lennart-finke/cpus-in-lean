@@ -201,6 +201,7 @@ def prepare(args):
              ROOT/'test/native/build.py',ROOT/'test/native/signal_oracle.c',ROOT/'test/native/signal_enter.S',
              ROOT/'test/native/start.S',REPO/'x86_64/test/harness/link.py']
     sources+=[REPO/'x86_32/X86.lean']+sorted((REPO/'x86_32/X86').rglob('*.lean'))
+    sources+=[ROOT/'test/native_crypto.py']   # Crypto case families (fp_cases.FAMILIES)
     for source in sources:
         target=out/'sources'/source.relative_to(REPO)
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)

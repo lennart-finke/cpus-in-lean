@@ -18,3 +18,6 @@ qemu-system-i386 -cpu "$QEMU_CPU" -m 64 -kernel "$ROOT/test/harness/harness.elf"
 grep -q '^END' "$OUT/q$SEED.out" || { echo "QEMU run did not complete"; exit 1; }
 "$ROOT/.lake/build/bin/x86test" "$OUT/v$SEED.bin" "$OUT/v$SEED.meta" "$OUT/q$SEED.out" > "$OUT/diff$SEED.txt" || true
 tail -1 "$OUT/diff$SEED.txt"
+# Crypto workstream: QEMU's results of the AES-NI/PCLMULQDQ/SHA vectors (gen_crypto.py) against the
+# independent reference (x86test compares the model with QEMU)
+python3 "$ROOT/test/cryptoref.py" vectors "$OUT/v$SEED.bin" "$OUT/v$SEED.meta" "$OUT/q$SEED.out"

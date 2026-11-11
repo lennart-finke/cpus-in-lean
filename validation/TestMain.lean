@@ -127,6 +127,11 @@ def rmwDest (i : Inst) : Bool :=
 `qemuAsHardware i qo lo init` rewrites exactly those fields of QEMU's outcome `qo` to the model's
 `lo` when they show the TCG signature; every other field is still compared. -/
 def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome := Id.run do
+  -- (Crypto) SHA1NEXTE..SHA256MSG2 (0F 38 C8..CD) and SHA1RNDS4 (0F 3A CC) are "NP" instructions:
+  -- with a 66, F2 or F3 prefix they are #UD (SDM vol. 2, 3.1.1.1 and the instruction pages; Bochs
+  -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
+  if !i.vex && i.pp != 0 && ((0x2C8 ≤ i.op && i.op ≤ 0x2CD) || i.op == 0x3CC) && lo.vec == 6 then
+    return lo
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo
   if rmwDest i then
