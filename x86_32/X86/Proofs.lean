@@ -12,3 +12,4 @@ import X86.Proofs.ExtCrypto
 import X86.Proofs.ExtGpr
 import X86.Proofs.ExtSys
 import X86.Proofs.ExtSmp
+import X86.Proofs.ExtAvx

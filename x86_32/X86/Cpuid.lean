@@ -220,7 +220,7 @@ def implemented : Feature → Bool
   | .xsaves => true
   | .xsaveErPtr => true
   -- X86/Ext/Avx.lean
-  | .avx => false
+  | .avx => true
   -- X86/Ext/Avx2.lean
   | .avx2 => false
   | .fma => false

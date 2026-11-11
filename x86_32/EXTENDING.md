@@ -45,7 +45,8 @@ your forms, return `none` for everything else, and never edit another module or 
 
 `Dispatch.vexExec` raises #UD for every VEX instruction in real/virtual-8086 mode, after
 66/F2/F3/LOCK and for unknown maps before calling `vex?` (theorems `vexExec_*`). The SSE/AVX
-checks (CR4.OSXSAVE, XCR0[2:1], CR0.TS) are `Vex.vexCheck` in `X86/Ext/Vex.lean`, a #UD stub owned
+checks (CR4.OSXSAVE, XCR0[2:1], CR0.TS) are `Vex.vexCheck` in `X86/Ext/Vex.lean` (with `Vex.start` for the
+per-instruction encoding rules and the 256-bit operand helpers; see its documentation), owned
 by Avx; BMI does not use it.
 
 Changes outside your module that are expected (and owned): Sys A — `X86/Machine.lean` paging

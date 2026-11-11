@@ -189,6 +189,7 @@ void sys_main(void) {
 	test_sse();
 	test_crypto();
 	test_gpr();
+	test_avx();
 	test_apic_errors();
 	test_ioapic();
 	test_x2apic();
@@ -206,6 +207,7 @@ void sys_main(void) {
 	test_sysa_model();
 	test_sse_model();
 	test_gpr_model();
+	test_avx_model();
 	test_apic_model();
 	test_ioapic_model();
 	test_x2apic_model();
