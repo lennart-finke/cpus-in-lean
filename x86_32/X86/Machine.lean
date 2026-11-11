@@ -40,6 +40,8 @@ structure MachineExt where
   apic : Apic := {}
   /-- Some TLB entry may come from a large page (INVLPG then scans for its other slices). -/
   tlbLarge : Bool := false
+  /-- Some TLB entry may be global (`Tlb.G`): a CR3 load then scans for the entries it keeps. -/
+  tlbGlobal : Bool := false
   /-- DR6.B0..B3 bits of data and I/O breakpoints matched by the current instruction (or event delivery). -/
   dbHit : UInt32 := 0
   /-- Debug-trap DR6 bits held over an instruction boundary: after MOV SS / POP SS (which delay
@@ -94,6 +96,8 @@ def D  : UInt64 := 8
 def NX : UInt64 := 16
 /-- part of a 4 MiB or 2 MiB page -/
 def L  : UInt64 := 32
+/-- global translation (G = 1 in the leaf entry with CR4.PGE = 1): kept by CR3 loads -/
+def G  : UInt64 := 64
 end Tlb
 
 namespace Machine
@@ -215,15 +219,39 @@ Physical addresses are 64-bit: PAE paging reaches a 36-bit physical address spac
 
 /-! ## Paging
 
-Two paging modes: 32-bit paging (CR4.PAE = 0; 4 KiB pages and, with CR4.PSE, 4 MiB pages) and
-PAE paging (CR4.PAE = 1; four PDPTE registers, 64-bit entries, 4 KiB and 2 MiB pages, and the
-execute-disable bit when EFER.NXE = 1). MAXPHYADDR is 36. -/
+Two paging modes: 32-bit paging (CR4.PAE = 0; 4 KiB pages and, with CR4.PSE, 4 MiB pages whose PDE
+bits 20:13 hold physical-address bits 39:32, PSE-36) and PAE paging (CR4.PAE = 1; four PDPTE
+registers, 64-bit entries, 4 KiB and 2 MiB pages, and the execute-disable bit when EFER.NXE = 1).
+MAXPHYADDR is 48 (`maxPhysAddr`, CPUID Fn8000_0008_EAX[PhysAddrSize] of the EPYC 7742). Physical
+addresses at or above 4 GiB are open bus (`physRd`).
 
+Protection: the U/S and R/W bits with CR0.WP (`pageAllowed`), execute-disable (`paeAllowed`), and
+for supervisor accesses to user pages SMEP and SMAP (`smAllowed`). Global pages (G with CR4.PGE)
+survive CR3 loads (`flushTlb`); every other TLB invalidation drops them too (`flushTlbAll`). -/
+
+/-- Physical-address width (AMD APM vol. 2, 5.2.3: PAE entries hold physical-address bits up to
+the implementation's maximum, CPUID Fn8000_0008_EAX[7:0] = 0x30 on the EPYC 7742, `Cpuid.raw`). -/
+def maxPhysAddr : Nat := 48
+
+/-- Invalidate every TLB entry, including global ones (AMD APM vol. 2, 5.5.3 "Implicit
+Invalidations": changes of CR0.PG, CR4.PAE/PSE/PGE, SMM entry and RSM, MTRR writes). -/
+def flushTlbAll : M Unit := modM fun m =>
+  { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false, tlbGlobal := false }
+
+/-- A CR3 load (MOV CR3, task switch): invalidate every TLB entry except global ones (AMD APM vol. 2,
+5.5.2). Without global entries this is `flushTlbAll`. -/
 def flushTlb : M Unit := modM fun m =>
-  { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false }
+  if !m.tlbGlobal then
+    { m with tlbTag := Array.replicate tlbSize 0, tlbLarge := false }
+  else
+    { m with tlbTag := Id.run do
+        let mut t := m.tlbTag
+        for k in [0:tlbSize] do
+          if m.tlbVal[k]! &&& Tlb.G == 0 then t := t.set! k 0
+        return t }
 
-/-- INVLPG: drop the translation of the page containing `lin`, including every cached 4 KiB slice
-of a large page that contains it. -/
+/-- INVLPG: drop the translation of the page containing `lin`, global or not (AMD APM vol. 2, 5.5.2),
+including every cached 4 KiB slice of a large page that contains it. -/
 def flushTlbPage (lin : UInt32) : M Unit := modM fun m =>
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
   let m := { m with tlbTag := m.tlbTag.set! idx 0 }
@@ -238,7 +266,8 @@ def flushTlbPage (lin : UInt32) : M Unit := modM fun m =>
       return t }
 
 /-- Page-fault error code: P (protection violation), W/R, U/S, RSVD (reserved bit set in a
-paging-structure entry) and I/D (instruction fetch with PAE paging and EFER.NXE). -/
+paging-structure entry) and I/D (instruction fetch, reported with PAE paging and EFER.NXE, or with
+CR4.SMEP: see `walk32`). -/
 @[inline] def pfErr (write user : Bool) (prot : Bool) (rsvd idf : Bool := false) : UInt32 :=
   (if prot then 1 else 0) ||| (if write then 2 else 0) ||| (if user then 4 else 0) |||
   (if rsvd then 8 else 0) ||| (if idf then 0x10 else 0)
@@ -255,12 +284,27 @@ R/W set at every level, unless it is a supervisor write with CR0.WP clear. -/
   let perm := if large then pde else pde &&& pte
   !((user && perm &&& 4 == 0) || (write && perm &&& 2 == 0 && (user || wp)))
 
+/-- SMEP and SMAP for a supervisor access to a user page (AMD APM vol. 2, 5.6.5, 5.6.6): with
+CR4.SMEP no instruction fetch; with CR4.SMAP no data access, unless it is an explicit access (not
+`implicit`, i.e. not a descriptor-table, IDT or TSS access) made with EFLAGS.AC = 1. An explicit
+supervisor access is made at CPL 0..2, so this is AMD's "CPL 0, 1 or 2 and RFLAGS.AC = 0" rule;
+implicit supervisor accesses are checked regardless of AC (and of CPL). -/
+@[inline] def smPass (cr4 eflags : UInt32) (fetch implicit : Bool) : Bool :=
+  if fetch then cr4 &&& CR4.SMEP == 0
+  else cr4 &&& CR4.SMAP == 0 || (!implicit && eflags &&& Flag.AC != 0)
+
+/-- SMEP/SMAP check of an access through entries with combined U/S, R/W bits `perm`: user accesses
+and accesses to supervisor pages (U/S = 0 at some level) pass; see `smPass` for the others. -/
+@[inline] def smAllowed (perm cr4 eflags : UInt32) (user fetch implicit : Bool) : Bool :=
+  user || perm &&& 4 == 0 || smPass cr4 eflags fetch implicit
+
 /-- Store a translation in the TLB. -/
 @[inline] def tlbFill (m : Machine) (lin : UInt32) (phys : UInt64) (bits : UInt64) (large : Bool) : Machine :=
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
   { m with tlbTag := m.tlbTag.set! idx ((lin &&& 0xFFFFF000) ||| 1),
            tlbVal := m.tlbVal.set! idx (phys ||| bits ||| (if large then Tlb.L else 0)),
-           tlbLarge := m.tlbLarge || large }
+           tlbLarge := m.tlbLarge || large,
+           tlbGlobal := m.tlbGlobal || bits &&& Tlb.G != 0 }
 
 /-- TLB permission bits for combined U/S, R/W bits `perm` and the PTE (or large PDE) dirty bit. -/
 @[inline] def tlbBits (perm : UInt32) (dirty wp : Bool) : UInt64 :=
@@ -269,9 +313,19 @@ R/W set at every level, unless it is a supervisor write with CR0.WP clear. -/
   (if perm &&& 2 != 0 || !wp then Tlb.SW else 0) |||
   (if dirty then Tlb.D else 0)
 
-/-- Reserved bits of a 32-bit PDE that maps a 4 MiB page: 21:13, as CPUID reports no PSE-36
-(SDM vol. 3 table 4-4 with M = 32). -/
-def pse4mRsvd : UInt32 := 0x3FE000
+/-- Reserved bit of a 32-bit PDE that maps a 4 MiB page: bit 21. Bits 20:13 are physical-address
+bits 39:32 (PSE-36, CPUID Fn0000_0001_EDX[PSE36]; AMD APM vol. 2, 5.2.2, figure 5-8: "bits 20:13 hold
+eight additional high-order physical-address bits. Bit 21 is reserved and must be cleared to 0"). -/
+def pse4mRsvd : UInt32 := 0x200000
+
+/-- Physical page of a 4 MiB PDE: bits 31:22, and bits 39:32 from PDE bits 20:13 (PSE-36). -/
+@[inline] def pse36Base (pde : UInt32) : UInt64 :=
+  (pde &&& 0xFFC00000).toUInt64 ||| (((pde >>> 13) &&& 0xFF).toUInt64 <<< 32)
+
+/-- Global-page bit of a leaf entry (bit 8), effective with CR4.PGE (AMD APM vol. 2, 5.4.1 "Global Page
+(G) Bit"). -/
+@[inline] def globalBit (cr4 leaf : UInt32) : UInt64 :=
+  if cr4 &&& CR4.PGE != 0 && leaf &&& 0x100 != 0 then Tlb.G else 0
 
 /-- Set the accessed flag of a directory entry that references a page table, once the walk uses it
 to read the next level (SDM 4.8: "whenever the processor uses a paging-structure entry as part of
@@ -280,24 +334,27 @@ page-table entry. Leaf entries get A (and D) only for accesses that are allowed.
 @[inline] def setTableA (m : Machine) (a : UInt32) (e : UInt32) : Machine :=
   if e &&& 0x20 != 0 then m else { m with mem := wrBytes m.mem a 4 (e ||| 0x20) }
 
-/-- 32-bit paging walk; sets A/D bits and fills the TLB. -/
-def walk32 (lin : UInt32) (write user : Bool) : M UInt64 := fun m =>
+/-- 32-bit paging walk; sets A/D bits and fills the TLB. The I/D bit of the error code is set for
+instruction fetches when CR4.SMEP = 1: AMD defines it only with PAE and EFER.NXE (APM vol. 2, 8.4.2),
+Intel also with SMEP (SDM vol. 3, 4.7), which this follows (as QEMU does). -/
+def walk32 (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := fun m =>
   let c := m.cpu
   let wp := c.cr0 &&& CR0.WP != 0
+  let idf := fetch && c.cr4 &&& CR4.SMEP != 0
   let pdeA : UInt32 := pdeAddr c lin
   let pde := rdBytes m.mem pdeA 4
-  if pde &&& 1 == 0 then .error (.exc Vec.PF (some (pfErr write user false)) lin) m else
+  if pde &&& 1 == 0 then .error (.exc Vec.PF (some (pfErr write user false false idf)) lin) m else
   let large := pde &&& 0x80 != 0 && c.cr4 &&& CR4.PSE != 0
-  if large && pde &&& pse4mRsvd != 0 then .error (.exc Vec.PF (some (pfErr write user true true)) lin) m else
+  if large && pde &&& pse4mRsvd != 0 then .error (.exc Vec.PF (some (pfErr write user true true idf)) lin) m else
   let m := if large then m else setTableA m pdeA pde
   let pde := if large then pde else pde ||| 0x20
   let pteA : UInt32 := pteAddr pde lin
   let pte := if large then pde else rdBytes m.mem pteA 4
-  if pte &&& 1 == 0 then .error (.exc Vec.PF (some (pfErr write user false)) lin) m else
-  if !pageAllowed pde pte large write user wp then
-    .error (.exc Vec.PF (some (pfErr write user true)) lin) m
+  if pte &&& 1 == 0 then .error (.exc Vec.PF (some (pfErr write user false false idf)) lin) m else
+  let perm := if large then pde else pde &&& pte
+  if !pageAllowed pde pte large write user wp || !smAllowed perm c.cr4 c.eflags user fetch implicit then
+    .error (.exc Vec.PF (some (pfErr write user true false idf)) lin) m
   else
-    let perm := if large then pde else pde &&& pte
     let mem := m.mem
     let npde := pde ||| 0x20 ||| (if large && write then 0x40 else 0)
     let mem := if npde != pde then wrBytes mem pdeA 4 npde else mem
@@ -305,18 +362,19 @@ def walk32 (lin : UInt32) (write user : Bool) : M UInt64 := fun m =>
       if large then (mem, npde) else
         let npte := pte ||| 0x20 ||| (if write then 0x40 else 0)
         (if npte != pte then wrBytes mem pteA 4 npte else mem, npte)
-    let phys := if large then (pde &&& 0xFFC00000) ||| (lin &&& 0x3FF000)
-                else pte &&& 0xFFFFF000
-    .ok (phys.toUInt64 ||| (lin &&& 0xFFF).toUInt64)
-      (tlbFill { m with mem } lin phys.toUInt64 (tlbBits perm (pte &&& 0x40 != 0) wp) large)
+    let phys := if large then pse36Base pde ||| (lin &&& 0x3FF000).toUInt64
+                else (pte &&& 0xFFFFF000).toUInt64
+    let bits := tlbBits perm (pte &&& 0x40 != 0) wp ||| globalBit c.cr4 pte
+    .ok (phys ||| (lin &&& 0xFFF).toUInt64) (tlbFill { m with mem } lin phys bits large)
 
-/-- Physical-address bits 35:12 of a PAE entry. -/
-def paeAddr : UInt64 := 0xFFFFFF000
-/-- Reserved bits of PAE PDEs and PTEs (MAXPHYADDR = 36): bits 62:36, and bit 63 unless it is
-the XD bit (EFER.NXE = 1). -/
-@[inline] def paeRsvd (nxe : Bool) : UInt64 := if nxe then 0x7FFFFFF000000000 else 0xFFFFFFF000000000
-/-- Reserved bits of a present PDPTE: 2:1, 8:5 and 63:36. -/
-def pdpteRsvd : UInt64 := 0xFFFFFFF0000001E6
+/-- Physical-address bits 47:12 of a PAE entry (MAXPHYADDR = 48). -/
+def paeAddr : UInt64 := 0xFFFFFFFFF000
+/-- Reserved bits of PAE PDEs and PTEs (MAXPHYADDR = 48; AMD APM vol. 2, figures 5-11, 5-12, 5-15:
+bits 62:52 and the unimplemented address bits 51:48), and bit 63 unless it is the NX bit
+(EFER.NXE = 1). -/
+@[inline] def paeRsvd (nxe : Bool) : UInt64 := if nxe then 0x7FFF000000000000 else 0xFFFF000000000000
+/-- Reserved bits of a present PDPTE: 2:1, 8:5 and 63:48 (AMD APM vol. 2, figures 5-10, 5-14). -/
+def pdpteRsvd : UInt64 := 0xFFFF0000000001E6
 
 /-- PAE permission check: the 32-bit paging rules for U/S and R/W on the PDE (and PTE), and with
 EFER.NXE no instruction fetch from a page whose PDE or PTE has XD (bit 63) set. -/
@@ -325,12 +383,12 @@ EFER.NXE no instruction fetch from a page whose PDE or PTE has XD (bit 63) set. 
   pageAllowed pde.toUInt32 pte.toUInt32 large write user wp && !(fetch && xd)
 
 /-- PAE paging walk; sets A/D bits and fills the TLB. -/
-def walkPae (lin : UInt32) (write user fetch : Bool) : M UInt64 := fun m =>
+def walkPae (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := fun m =>
   let c := m.cpu
   let wp := c.cr0 &&& CR0.WP != 0
   let nxe := c.efer &&& EFER.NXE != 0
   let fault := fun (prot rsvd : Bool) =>
-    Fault.exc Vec.PF (some (pfErr write user prot rsvd (fetch && nxe))) lin
+    Fault.exc Vec.PF (some (pfErr write user prot rsvd (fetch && (nxe || c.cr4 &&& CR4.SMEP != 0)))) lin
   let pdpte := c.pdpte[(lin >>> 30).toNat]!
   if pdpte &&& 1 == 0 then .error (fault false false) m else
   let rsv := paeRsvd nxe
@@ -345,7 +403,9 @@ def walkPae (lin : UInt32) (write user fetch : Bool) : M UInt64 := fun m =>
   let pte := if large then pde else rd64 m.mem pteA
   if pte &&& 1 == 0 then .error (fault false false) m else
   if pte &&& rsv != 0 then .error (fault true true) m else
-  if !paeAllowed pde pte large write user wp fetch nxe then .error (fault true false) m else
+  let perm := (if large then pde else pde &&& pte).toUInt32
+  if !paeAllowed pde pte large write user wp fetch nxe || !smAllowed perm c.cr4 c.eflags user fetch implicit then
+    .error (fault true false) m else
   let mem := m.mem
   let npde := pde ||| 0x20 ||| (if large && write then 0x40 else 0)
   let mem := if npde != pde then wrBytes mem pdeA.toUInt32 4 npde.toUInt32 else mem
@@ -353,30 +413,36 @@ def walkPae (lin : UInt32) (write user fetch : Bool) : M UInt64 := fun m =>
     if large then (mem, npde) else
       let npte := pte ||| 0x20 ||| (if write then 0x40 else 0)
       (if npte != pte then wrBytes mem pteA.toUInt32 4 npte.toUInt32 else mem, npte)
-  let phys := if large then (pde &&& 0xFFFE00000) ||| (lin &&& 0x1FF000).toUInt64 else pte &&& paeAddr
-  let perm := (if large then pde else pde &&& pte).toUInt32
+  let phys := if large then (pde &&& 0xFFFFFFE00000) ||| (lin &&& 0x1FF000).toUInt64 else pte &&& paeAddr
   let xd := nxe && (if large then pde else pde ||| pte) >>> 63 != 0
-  let bits := tlbBits perm (pte &&& 0x40 != 0) wp ||| (if xd then Tlb.NX else 0)
+  let bits := tlbBits perm (pte &&& 0x40 != 0) wp ||| (if xd then Tlb.NX else 0) |||
+    globalBit c.cr4 pte.toUInt32
   .ok (phys ||| (lin &&& 0xFFF).toUInt64) (tlbFill { m with mem } lin phys bits large)
 
 /-- Page-table walk in the current paging mode. -/
-@[inline] def walk (lin : UInt32) (write user fetch : Bool) : M UInt64 := fun m =>
-  if m.cpu.cr4 &&& CR4.PAE != 0 then walkPae lin write user fetch m else walk32 lin write user m
+@[inline] def walk (lin : UInt32) (write user fetch : Bool) (implicit : Bool := false) : M UInt64 := fun m =>
+  if m.cpu.cr4 &&& CR4.PAE != 0 then walkPae lin write user fetch implicit m
+  else walk32 lin write user fetch implicit m
 
 /-- Translate a linear address. `user` selects user-mode permission checking; `fetch` marks an
-instruction fetch (checked against execute-disable). -/
-@[inline] def translate (lin : UInt32) (write user : Bool) (fetch : Bool := false) : M UInt64 := fun m =>
+instruction fetch (checked against execute-disable and SMEP); `implicit` marks an implicit
+supervisor access (descriptor tables, IDT, TSS: `sysRd`/`sysWr`), which EFLAGS.AC does not exempt
+from SMAP. A TLB hit is used only if it permits the access under the current CR4/EFLAGS; otherwise
+the walk decides (and faults). -/
+@[inline] def translate (lin : UInt32) (write user : Bool) (fetch : Bool := false) (implicit : Bool := false) :
+    M UInt64 := fun m =>
   if m.cpu.cr0 &&& CR0.PG == 0 then .ok lin.toUInt64 m else
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
   let tag := m.tlbTag[idx]!
   if tag == ((lin &&& 0xFFFFF000) ||| 1) then
     let v := m.tlbVal[idx]!
     let ok :=
-      (!user || v &&& Tlb.U != 0) &&
+      (if user then v &&& Tlb.U != 0
+       else v &&& Tlb.U == 0 || smPass m.cpu.cr4 m.cpu.eflags fetch implicit) &&
       (!write || (v &&& Tlb.D != 0 && (if user then v &&& Tlb.UW != 0 else v &&& Tlb.SW != 0))) &&
       (!fetch || v &&& Tlb.NX == 0)
-    if ok then .ok ((v &&& ~~~0xFFF) ||| (lin &&& 0xFFF).toUInt64) m else walk lin write user fetch m
-  else walk lin write user fetch m
+    if ok then .ok ((v &&& ~~~0xFFF) ||| (lin &&& 0xFFF).toUInt64) m else walk lin write user fetch implicit m
+  else walk lin write user fetch implicit m
 
 /-- The PDPTE registers for PAE paging with the given CR3: #GP(0) if a present entry has reserved bits set. -/
 def readPdptes (cr3 : UInt32) : M (Array UInt64) := fun m =>
@@ -386,14 +452,14 @@ def readPdptes (cr3 : UInt32) : M (Array UInt64) := fun m =>
   else .ok es m
 
 /-- Read `n` (1, 2 or 4) bytes at a linear address. -/
-def linRd (lin n : UInt32) (user : Bool) (write : Bool := false) : M UInt32 := do
+def linRd (lin n : UInt32) (user : Bool) (write : Bool := false) (implicit : Bool := false) : M UInt32 := do
   dbData lin n false
   if (lin &&& 0xFFF) + n ≤ 0x1000 then
-    physRd (← translate lin write user) n
+    physRd (← translate lin write user false implicit) n
   else
-    let p0 ← translate lin write user
+    let p0 ← translate lin write user false implicit
     let lin1 := (lin + n - 1) &&& 0xFFFFF000
-    let p1 ← translate lin1 write user
+    let p1 ← translate lin1 write user false implicit
     let mut v : UInt32 := 0
     for k in [0:n.toNat] do
       let a := lin + k.toUInt32
@@ -402,14 +468,14 @@ def linRd (lin n : UInt32) (user : Bool) (write : Bool := false) : M UInt32 := d
     return v
 
 /-- Write `n` (1, 2 or 4) bytes at a linear address. Both pages are checked before any byte is written. -/
-def linWr (lin n v : UInt32) (user : Bool) : M Unit := do
+def linWr (lin n v : UInt32) (user : Bool) (implicit : Bool := false) : M Unit := do
   dbData lin n true
   if (lin &&& 0xFFF) + n ≤ 0x1000 then
-    physWr (← translate lin true user) n v
+    physWr (← translate lin true user false implicit) n v
   else
-    let p0 ← translate lin true user
+    let p0 ← translate lin true user false implicit
     let lin1 := (lin + n - 1) &&& 0xFFFFF000
-    let p1 ← translate lin1 true user
+    let p1 ← translate lin1 true user false implicit
     for k in [0:n.toNat] do
       let a := lin + k.toUInt32
       let p := if a &&& 0xFFFFF000 == lin1 then p1 + (a &&& 0xFFF).toUInt64 else p0 + (a - lin).toUInt64
@@ -419,6 +485,34 @@ def linWr (lin n v : UInt32) (user : Bool) : M Unit := do
 def linProbeWr (lin n : UInt32) (user : Bool) : M Unit := do
   let _ ← translate lin true user
   let _ ← translate (lin + n - 1) true user
+
+/-! ## Alignment check
+
+#AC(0) (AMD APM vol. 2, 8.2.17): with CR0.AM = 1 and EFLAGS.AC = 1, a data access at CPL 3 to an
+operand that is not aligned to its type's boundary (table 8-7: word 2, doubleword 4, quadword 8,
+64-bit media 8, 128-bit media 16, x87 single 4, double and extended 8, x87 save areas 2 or 4, segment
+selector 2, far pointers by their parts, bit strings by the operand size). Accesses that are
+supervisor accesses regardless of CPL (descriptor tables, IDT, TSS: `sysRd`/`sysWr`) and instruction
+fetches are never checked (SDM vol. 3, 6.15: "memory references that default to privilege level 0,
+such as segment descriptor loads, do not generate alignment-check exceptions"). The check is on the
+linear address, after the segment checks and before paging (Bochs does the same; real hardware's
+order between #AC and #PF is not documented).
+
+`rdMem`/`wrMem` check an access against its own size by default (`al := n`), which is the table's
+requirement for single accesses; instructions whose operand is made of several accesses pass the
+operand's requirement for the first part and `al := 1` for the rest. Only a misaligned access at
+CPL 3 reaches `acCheck`, so aligned accesses pay one test. -/
+
+/-- #AC(0) if alignment checking is enabled (CR0.AM and EFLAGS.AC); the caller has established that
+the access is at CPL 3 and misaligned. -/
+@[inline] def acCheck : M Unit := fun m =>
+  if m.cpu.cr0 &&& CR0.AM != 0 && m.cpu.eflags &&& Flag.AC != 0 then .error (.exc Vec.AC (some 0) 0) m
+  else .ok () m
+
+/-- Alignment check of an access (or operand) at linear address `lin` with required alignment `al`
+(a power of two) made with CPL 3 (`user`). -/
+@[inline] def acChk (lin al : UInt32) (user : Bool) : M Unit :=
+  if user && lin &&& (al - 1) != 0 then acCheck else pure ()
 
 /-! ## Segmentation -/
 
@@ -445,19 +539,25 @@ with protected-mode type and limit checks. -/
 
 @[inline] def isUser : M Bool := fun m => .ok (m.cpu.cpl == 3) m
 
-/-- Read `n` bytes at `seg:off`; RMW operands use write permission from the first access. -/
-@[inline] def rdMem (s : UInt8) (off n : UInt32) (write : Bool := false) : M UInt32 := do
+/-- Read `n` bytes at `seg:off`; RMW operands use write permission from the first access. `al` is the
+alignment the access must have at CPL 3 with alignment checking (see `acChk`). -/
+@[inline] def rdMem (s : UInt8) (off n : UInt32) (write : Bool := false) (al : UInt32 := n) : M UInt32 := do
   let lin ← segAddr s off n write
-  linRd lin n (← isUser) write
+  let u ← isUser
+  acChk lin al u
+  linRd lin n u write
 
-/-- Write `n` bytes at `seg:off`. -/
-@[inline] def wrMem (s : UInt8) (off n v : UInt32) : M Unit := do
+/-- Write `n` bytes at `seg:off` (`al` as for `rdMem`). -/
+@[inline] def wrMem (s : UInt8) (off n v : UInt32) (al : UInt32 := n) : M Unit := do
   let lin ← segAddr s off n true
-  linWr lin n v (← isUser)
+  let u ← isUser
+  acChk lin al u
+  linWr lin n v u
 
-/-- Supervisor-mode (implicit) linear accesses, used for descriptor tables and the TSS. -/
-@[inline] def sysRd (lin n : UInt32) : M UInt32 := linRd lin n false
-@[inline] def sysWr (lin n v : UInt32) : M Unit := linWr lin n v false
+/-- Implicit supervisor-mode linear accesses (descriptor tables, IDT, TSS): supervisor accesses
+whatever the CPL, subject to SMAP regardless of EFLAGS.AC, never alignment-checked. -/
+@[inline] def sysRd (lin n : UInt32) : M UInt32 := linRd lin n false (implicit := true)
+@[inline] def sysWr (lin n v : UInt32) : M Unit := linWr lin n v false (implicit := true)
 
 /-- Fetch one code byte at `CS:eip`. -/
 @[inline] def fetch8 (eip : UInt32) : M UInt32 := fun m =>

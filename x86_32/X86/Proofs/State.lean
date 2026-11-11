@@ -72,8 +72,8 @@ theorem segAllowed_spec {sr : SegReg} {off n : UInt32} {write : Bool}
 /-! ## Paging -/
 
 /-- With paging disabled, translation is the identity and does not change the machine. -/
-theorem translate_nopg {lin : UInt32} {w u f : Bool} {m : Machine} (h : m.cpu.cr0 &&& CR0.PG = 0) :
-    translate lin w u f m = .ok lin.toUInt64 m := by
+theorem translate_nopg {lin : UInt32} {w u f i : Bool} {m : Machine} (h : m.cpu.cr0 &&& CR0.PG = 0) :
+    translate lin w u f i m = .ok lin.toUInt64 m := by
   simp [translate, h]
 
 /-- User-mode accesses are only allowed through entries with U/S set at every level. -/
@@ -122,11 +122,11 @@ theorem paeAllowed_page {pde pte : UInt64} {large w u wp f nxe : Bool}
 
 /-- A TLB hit never satisfies an instruction fetch from an execute-disabled translation: `translate`
 with `fetch` only uses a cached entry whose NX bit is clear (otherwise it re-walks). -/
-theorem translate_hit_nx {lin : UInt32} {w u : Bool} {m : Machine}
+theorem translate_hit_nx {lin : UInt32} {w u i : Bool} {m : Machine}
     (hpg : m.cpu.cr0 &&& CR0.PG ≠ 0)
     (htag : m.tlbTag[((lin >>> 12) % tlbSize.toUInt32).toNat]! = ((lin &&& 0xFFFFF000) ||| 1))
     (hnx : m.tlbVal[((lin >>> 12) % tlbSize.toUInt32).toNat]! &&& Tlb.NX ≠ 0) :
-    translate lin w u true m = walk lin w u true m := by
+    translate lin w u true i m = walk lin w u true i m := by
   have h1 : (m.cpu.cr0 &&& CR0.PG == 0) = false := by simpa using hpg
   have h2 : (m.tlbVal[((lin >>> 12) % tlbSize.toUInt32).toNat]! &&& Tlb.NX == 0) = false := by
     simpa using hnx

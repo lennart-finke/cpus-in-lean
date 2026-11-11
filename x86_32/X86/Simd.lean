@@ -286,10 +286,13 @@ def sseStatus (flags : UInt64) : M Unit := do
 /-! ## Memory operands -/
 
 /-- Linear address of an `n`-byte vector operand: segment checks, 16-byte alignment (#GP(0)) if
-`align`, and for a store a write check of the whole range before anything is written. -/
+`align`, the alignment check (#AC at CPL 3: 64-bit media 8, 128-bit media 16, smaller operands by
+their size; AMD APM vol. 2, table 8-7), and for a store a write check of the whole range before
+anything is written. -/
 def vecAddr (i : Inst) (n : UInt32) (write align : Bool) : M UInt32 := do
   let lin ← segAddr i.seg (← fpEa i) n write
   if align && lin &&& 15 != 0 then gp 0
+  acChk lin (if n > 16 then 16 else n) (← isUser)
   if write then linProbeWr lin n (← isUser)
   return lin
 
@@ -536,6 +539,9 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
   let s := if i.segOvr != 0xFF then i.segOvr else SegN.DS
   let di := if i.adsz == 2 then c.edi &&& 0xFFFF else c.edi
   let sel := (List.range n).filter fun k => mask.lane 8 k &&& 0x80 != 0
+  -- #AC as for a 64-bit (MASKMOVQ) or 128-bit (MASKMOVDQU) media operand at DS:(E)DI, whatever the
+  -- mask (the APM's table 8-7 does not single out the masked stores; real hardware not confirmed)
+  acChk (((← cpu).getSeg s).base + di) n.toUInt32 (← isUser)
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr s (di + k.toUInt32) 1 true

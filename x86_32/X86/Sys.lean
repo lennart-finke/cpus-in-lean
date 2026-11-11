@@ -678,7 +678,7 @@ def smmEnter : M Unit := do
     cr0 := c.cr0 &&& ~~~(CR0.PE ||| CR0.EM ||| CR0.TS ||| CR0.PG), cr4 := 0, dr7 := 0x400, bpOn := false,
     cs := flat (c.smbase >>> 4).toUInt16 c.smbase,
     ds := flat 0 0, es := flat 0 0, ss := flat 0 0, fs := flat 0 0, gs := flat 0 0 }
-  flushTlb
+  flushTlbAll
 
 /-- RSM: #UD outside SMM; otherwise restore the saved state (a relocated SMBASE takes effect for the
 next SMI). An inconsistent saved state (paging without protection) shuts the processor down. -/
@@ -722,6 +722,6 @@ def rsm : M Unit := do
   if cr0 &&& CR0.PG != 0 && cr4 &&& CR4.PAE != 0 then
     let p ← tryCatch (readPdptes cr3) fun _ => throw (.shutdown "RSM: invalid PDPTEs")
     modCpu fun c => { c with pdpte := p }
-  flushTlb
+  flushTlbAll
 
 end X86
