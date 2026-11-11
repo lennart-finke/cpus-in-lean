@@ -177,6 +177,7 @@ void sys_main(void) {
 	test_cgf();
 	test_simd();
 	test_simd_exc();
+	test_xsave();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -184,6 +185,7 @@ void sys_main(void) {
 	test_x87_model();
 	test_x87_trans_model();
 	test_simd_model();
+	test_xsave_model();
 	test_debug_fuzz_model();
 	test_paging_fuzz_model();
 	sys_exit();
