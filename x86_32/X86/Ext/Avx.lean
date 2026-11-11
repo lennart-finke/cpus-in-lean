@@ -247,20 +247,22 @@ def cvt (i : Inst) (sf df : Option FP.Format) (trunc : Bool) : M Unit := do
 def storeRm (i : Inst) (n : UInt32) (v : V256) (align : Bool := false) : M Unit := do
   if i.isMem then wrVex i n v align else setV i i.rm v
 
-/-- VMASKMOVPS/PD load (`bits` 32/64): elements whose mask (VEX.vvvv) sign bit is set are read,
-the others are 0 and not accessed (see the module documentation). -/
+/-- The elements of `n` `bits`-wide elements selected by a VMASKMOVPS/PD mask (sign bit set). -/
+def maskSel (bits n : Nat) (mask : V256) : List Nat :=
+  (List.range n).filter fun k => mask.lane bits k >>> (bits - 1).toUInt64 != 0
+
+/-- VMASKMOVPS/PD load (`bits` 32/64): the elements selected by the mask (VEX.vvvv) are read, in
+ascending order; the others are 0 and not accessed (see the module documentation). -/
 def maskLoad (i : Inst) (bits : Nat) : M Unit := do
   start i (w0 i && i.isMem)
   let mask ← src1 i
   let off ← fpEa i
   let n := (if i.vexL then 256 else 128) / bits
   let sz := (bits / 8).toUInt32
-  let mut out : Array UInt64 := #[]
-  for k in [0:n] do
-    if mask.lane bits k >>> (bits - 1).toUInt64 != 0 then
-      let lin ← segAddr i.seg (off + sz * k.toUInt32) sz false
-      out := out.push (← rdLin lin sz).lo
-    else out := out.push 0
+  let mut out : Array UInt64 := Array.replicate n 0
+  for k in maskSel bits n mask do
+    let lin ← segAddr i.seg (off + sz * k.toUInt32) sz false
+    out := out.set! k (← rdLin lin sz).lo
   setV i i.reg (V256.ofLanes bits out)
 
 /-- VMASKMOVPS/PD store: the selected elements of ModRM.reg are written; all of them are checked
@@ -272,7 +274,7 @@ def maskStore (i : Inst) (bits : Nat) : M Unit := do
   let off ← fpEa i
   let n := (if i.vexL then 256 else 128) / bits
   let sz := (bits / 8).toUInt32
-  let sel := (List.range n).filter fun k => mask.lane bits k >>> (bits - 1).toUInt64 != 0
+  let sel := maskSel bits n mask
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr i.seg (off + sz * k.toUInt32) sz true
@@ -446,40 +448,51 @@ def intMoves (i : Inst) (b0 : UInt8) (p : Nat) : Option (M Unit) :=
     maskMov (← getY i.reg).lo (← getY i.rm).lo 16 i
   | _, _ => none
 
+/-- VZEROUPPER (VEX.128), VZEROALL (VEX.256): VEX.0F 77 with VEX.pp = 00. -/
+def vzero (i : Inst) : Option (M Unit) :=
+  if i.pp != 0 then none else some do
+  start i (noV i)
+  modCpu fun c => { c with sse := { c.sse with
+    ymmh := Array.replicate 8 {}, xmm := if i.vexL then Array.replicate 8 {} else c.sse.xmm } }
+
+/-- VHADDPD/PS, VHSUBPD/PS (7C, 7D), VADDSUBPD/PS (D0). -/
+def horiz (i : Inst) (b0 : UInt8) (p : Nat) : Option (M Unit) :=
+  if p != 1 && p != 3 then none
+  else if b0 == 0xD0 then some (op3Fp i true (Sse.addsub (p == 1)))
+  else some (op3Fp i true (Sse.hop (p == 1) (b0 == 0x7D)))
+
+/-- VSHUFPS / VSHUFPD. -/
+def shuf (i : Inst) (p : Nat) : Option (M Unit) :=
+  if p == 0 then some (op3 i true (shufps i.imm))
+  else if p == 1 then some do
+    start i true
+    let a ← src1 i
+    let b ← rdRmV i
+    setV i i.reg { lo := shufpd i.imm a.lo b.lo, hi := shufpd (i.imm >>> 2) a.hi b.hi }
+  else none
+
+/-- VLDMXCSR m32 (VEX.0F AE /2), VSTMXCSR m32 (/3). -/
+def mxcsrOp (i : Inst) (p : Nat) : Option (M Unit) :=
+  if p != 0 || !i.isMem || (i.reg != 2 && i.reg != 3) then none else some do
+  start i (!i.vexL && noV i)
+  if i.reg == 2 then
+    let v := (← rdVex i 4).lo.lo.toUInt32
+    if v &&& ~~~mxcsrMask != 0 then gp 0
+    modCpu fun c => { c with sse := { c.sse with mxcsr := v } }
+  else wrVex i 4 (V256.ofLo { lo := (← cpu).mxcsr.toUInt64 })
+
 /-- VEX.0F map. -/
 def map1 (i : Inst) : Option (M Unit) :=
   let b0 := i.byte
   let p := i.pp.toNat
-  let L := i.vexL
   match b0 with
   | 0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x28 | 0x29 | 0x2B => moves i b0 p
   | 0x2A | 0x2C | 0x2D | 0x2E | 0x2F | 0x50 | 0x51 | 0x52 | 0x53 | 0x54 | 0x55 | 0x56 | 0x57 | 0x58
   | 0x59 | 0x5A | 0x5B | 0x5C | 0x5D | 0x5E | 0x5F | 0xC2 | 0xE6 => fpOps i b0 p
-  | 0x77 =>                              -- VZEROUPPER (VEX.128), VZEROALL (VEX.256)
-    if p != 0 then none else some do
-    start i (noV i)
-    modCpu fun c => { c with sse := { c.sse with
-      ymmh := Array.replicate 8 {}, xmm := if L then Array.replicate 8 {} else c.sse.xmm } }
-  | 0x7C | 0x7D =>                       -- VHADDPD/PS, VHSUBPD/PS
-    if p == 1 || p == 3 then some (op3Fp i true (Sse.hop (p == 1) (b0 == 0x7D))) else none
-  | 0xD0 =>                              -- VADDSUBPD/PS
-    if p == 1 || p == 3 then some (op3Fp i true (Sse.addsub (p == 1))) else none
-  | 0xC6 =>                              -- VSHUFPS / VSHUFPD
-    if p == 0 then some (op3 i true (shufps i.imm))
-    else if p == 1 then some do
-      start i true
-      let a ← src1 i
-      let b ← rdRmV i
-      setV i i.reg { lo := shufpd i.imm a.lo b.lo, hi := shufpd (i.imm >>> 2) a.hi b.hi }
-    else none
-  | 0xAE =>                              -- VLDMXCSR m32 (/2), VSTMXCSR m32 (/3)
-    if p != 0 || !i.isMem || (i.reg != 2 && i.reg != 3) then none else some do
-    start i (!L && noV i)
-    if i.reg == 2 then
-      let v := (← rdVex i 4).lo.lo.toUInt32
-      if v &&& ~~~mxcsrMask != 0 then gp 0
-      modCpu fun c => { c with sse := { c.sse with mxcsr := v } }
-    else wrVex i 4 (V256.ofLo { lo := (← cpu).mxcsr.toUInt64 })
+  | 0x77 => vzero i
+  | 0x7C | 0x7D | 0xD0 => horiz i b0 p
+  | 0xC6 => shuf i p
+  | 0xAE => mxcsrOp i p
   | _ => intMoves i b0 p
 
 /-! ## VEX.0F38 -/
