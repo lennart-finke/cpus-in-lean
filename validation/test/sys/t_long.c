@@ -37,6 +37,9 @@
 #define CGBAD 0x168     /* 64-bit call gate whose upper half has type bits set */
 #define CG32T 0x178     /* 64-bit call gate to 32-bit code (KCODE) */
 #define LDTD 0x188      /* LDT descriptor */
+#define KC64D2 0x1A0    /* 64-bit code, DPL 2 */
+#define DS16D2 0x1A8    /* 16-bit data (B = 0), DPL 2 */
+#define SSB 0x1B0       /* 32-bit data, DPL 0, base 0x1000 */
 #define TSSEND 0x1F8    /* TSS descriptor in the last GDT entry: only 8 bytes within the limit */
 
 static u64 lgdt_[NG] __attribute__((aligned(16)));
@@ -50,6 +53,7 @@ static u8 iststack[4096] __attribute__((aligned(4096))); /* IST1 */
 static u32 tss64[26] __attribute__((aligned(128)));
 static u64 ldt_[4] __attribute__((aligned(8)));
 static u8 code16[64] __attribute__((aligned(16)));
+static u8 ostack[8192] __attribute__((aligned(4096)));   /* stacks of the outer-privilege returns */
 static u64 *pml4, *pdpt, *pd0, *pdw, *ptw;
 static u8 *data;                 /* 4 window pages */
 static u32 big2m;                /* a 2 MiB aligned physical region */
@@ -147,6 +151,9 @@ static void build_tables(void) {
 	gdt_gate(CG32T, KCODE, stub_at[0xF5], 0x8C, 0);
 	lgdt_[LDTD >> 3] = seg_desc((u32)ldt_, sizeof ldt_ - 1, 0x82, 0);
 	lgdt_[TSSEND >> 3] = seg_desc((u32)tss64, 0x67, 0x89, 0);
+	lgdt_[KC64D2 >> 3] = seg_desc(0, 0xFFFFF, 0xDA, 0xA);
+	lgdt_[DS16D2 >> 3] = seg_desc(0, 0xFFFF, 0xD2, 0x0);
+	lgdt_[SSB >> 3] = seg_desc(0x1000, 0xFFFFF, 0x92, 0xC);
 	ldt_[1] = seg_desc(0, 0xFFFFF, 0x92, 0xC);
 	/* 64-bit TSS: RSP0 at +4, IST1 at +0x24, I/O map base beyond the limit */
 	*(u64 *)((u8 *)tss64 + 4) = (u32)kstack64 + sizeof kstack64;
@@ -606,6 +613,25 @@ void test_long(void) {
 	showrec("lm.jmp.cg0", TRY(ljmp(CG0, 0)));
 	showrec("lm.retf.64", TRY(__asm__ volatile("pushl %0\n pushl %1\n lret" :: "i"(KC64), "r"(stub_at[0xF9]) : "memory")));
 	showrec("lm.iret.64", TRY(__asm__ volatile("pushfl\n pushl %0\n pushl %1\n iret" :: "i"(KC64), "r"(stub_at[0xFA]) : "memory")));
+	{
+		/* IRET and RETF from CPL 0 to 64-bit code at CPL 2: in 64-bit mode RSP is the popped value
+		   (+ RETF's immediate), whatever SS.B (a null SS has none, DS16D2 is a 16-bit segment; APM vol. 3
+		   IRET "RSP.s = temp_RSP", RET (Far) "RSP.s = temp_RSP + temp_IMM", vol. 2 2.4.5). The stack is
+		   reached through the 1 GiB alias at 0x80000000, so its address bits 31:16 differ from ESP's. The
+		   CPL-2 stub's IRETQ to CPL 0 is #GP(KCODE), whose frame (taken on RSP0) holds the stub's RSP. */
+		u32 top = 0x80000000u + (u32)ostack + 0x1F00;
+		showrec("lm.iret.64.outer", TRY(__asm__ volatile("pushl $2\n pushl %0\n pushfl\n pushl %1\n pushl %2\n iret"
+		        :: "r"(top + 6), "i"(KC64D2 | 2), "r"(stub_at[0xE0]) : "memory")));
+		showrec("lm.retf.64.outer16", TRY(__asm__ volatile("pushl %0\n pushl %1\n pushl $0\n pushl $0\n pushl %2\n pushl %3\n lret $8"
+		        :: "i"(DS16D2 | 2), "r"(top + 0x0A), "i"(KC64D2 | 2), "r"(stub_at[0xE1]) : "memory")));
+		/* a same-privilege CALL through a 64-bit call gate pushes CS and RIP on the flat 64-bit stack at
+		   RSP (CS is already 64-bit code: the SS base is not used; APM vol. 3 CALL (Far)); the stub
+		   records them from RSP. SS = SSB has base 0x1000. */
+		u32 esp_b = (u32)ostack + 0x800;
+		for (u32 i = 0; i < 0x40; i++) ostack[0x7C0 + i] = ostack[0x17C0 + i] = 0x5A;
+		showrec("lm.call.cg0.ssbase", TRY(__asm__ volatile("movl %0, %%ss\n movl %1, %%esp\n lcall %2, $0"
+		        :: "r"((u32)SSB), "r"(esp_b), "i"(CG0) : "memory")));
+	}
 	{
 		/* ring 3 -> 64-bit call gate DPL 3 (inner stack RSP0, null SS) */
 		static u8 snip[8] = { 0x9A, 0, 0, 0, 0, (u8)CG3, (u8)(CG3 >> 8), 0xCC };   /* call far CG3:0 */

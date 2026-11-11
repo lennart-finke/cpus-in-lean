@@ -466,9 +466,14 @@ def farRet (opsz : Sz) (imm : UInt32) : M Unit := do
       let nss := (← peek opsz (o + opsz.toUInt32)).toUInt16
       let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
       if !LongMode.limitOk c cs ip then gp 0
-      -- a 16-bit outer stack receives only SP: ESP[31:16] keep their value, as for IRET
+      -- to 64-bit code the stack pointer is 64 bits wide and SS.B is ignored (AMD APM vol. 2, 2.4.5;
+      -- vol. 3 RET (Far) "RSP.s = temp_RSP + temp_IMM"): RSP = the popped (zero-extended) value + imm;
+      -- otherwise a 16-bit outer stack receives only SP: ESP[31:16] keep their value, as for IRET
+      let r := nsp.toUInt64 + imm.toUInt64
+      let to64 := LongMode.lma c && LongMode.lBit cs
       modCpu fun c => { c with cs, eip := ip, ss,
-                               esp := if ss.big then nsp + imm else (c.esp &&& 0xFFFF0000) ||| ((nsp + imm) &&& 0xFFFF) }
+                               esp := if ss.big || to64 then nsp + imm else (c.esp &&& 0xFFFF0000) ||| ((nsp + imm) &&& 0xFFFF),
+                               lmx := if to64 then { c.lmx with rspHi := (r >>> 32).toUInt32 } else c.lmx }
       nullInaccessible rpl
     if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "far RET"
 
@@ -708,8 +713,12 @@ def iret (opsz : Sz) : M Unit := do
     let nsp ← peek opsz (3 * opsz.toUInt32)
     let nss := (← peek opsz (4 * opsz.toUInt32)).toUInt16
     let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
+    -- to 64-bit code RSP is the popped value, whatever SS.B (APM vol. 3 IRET "RSP.s = temp_RSP"; in 64-bit
+    -- mode the stack size is 64 bits, vol. 2, 2.4.5); otherwise a 16-bit stack receives only SP
+    let to64 := LongMode.lma c && LongMode.lBit cs
     modCpu fun c => { c with cs, eip := ip, eflags := newFlags, ss,
-                             esp := if ss.big then nsp else (c.esp &&& 0xFFFF0000) ||| (nsp &&& 0xFFFF) }
+                             esp := if ss.big || to64 then nsp else (c.esp &&& 0xFFFF0000) ||| (nsp &&& 0xFFFF),
+                             lmx := if to64 then { c.lmx with rspHi := 0 } else c.lmx }
     nullInaccessible rpl
   if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "IRET"
 

@@ -22,7 +22,8 @@ assembles (`build_stubs`):
 
 When `x86sys` stops at such an entry, `resume` performs exactly what these instructions do (the
 pushes, the stores, the copy, and IRETQ to the compatibility-mode or legacy code segment it names,
-with its descriptor checks reduced to loading the caches) and lets the model continue. Anything else
+with its descriptor checks reduced to loading the caches, or the #GP of an IRETQ to a more privileged
+level, which the model then delivers) and lets the model continue. Anything else
 at RIP is left as the fatal stop. QEMU executes the same bytes, so both transcripts continue
 identically.
 -/
@@ -103,6 +104,19 @@ def run : M Bool := do
   sp ← LongMode.push64 sp flImm user
   sp ← LongMode.push64 sp csSel user
   let _ ← LongMode.push64 sp ripImm user
+  -- IRETQ to a more privileged level (a stub entered at CPL 1..3 returning to ring-0 code): #GP(CS
+  -- selector) at the IRETQ (APM vol. 3 IRET: the return CPL must not be below CPL), delivered by the model
+  if csSel.toUInt32 &&& 3 < c.cpl then
+    let at_ := common + 64
+    let bot := sp - 8
+    let si := (top + 8 * n).toUInt32
+    let di := (recA + 8 * n).toUInt32
+    modCpu fun c =>
+      { c with eip := at_.toUInt32, esp := bot.toUInt32, esi := si, edi := di, ecx := 0,
+               lmx := { c.lmx with ripHi := (at_ >>> 32).toUInt32, rspHi := (bot >>> 32).toUInt32 } }
+    modM fun m => handleFault { m with icount := m.icount + (if n0 then 15 else 14) }
+      (.exc Vec.GP (some (csSel.toUInt32 &&& 0xFFFC)) 0)
+    return true
   -- IRETQ to compatibility (or legacy) mode at the same privilege level: CS and SS descriptors
   let (clo, chi, caddr) ← LongMode.readSel csSel.toUInt16 0
   let chi ← LongMode.setA chi caddr
