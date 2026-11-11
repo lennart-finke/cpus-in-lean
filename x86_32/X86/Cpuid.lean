@@ -205,9 +205,9 @@ def implemented : Feature → Bool
   | .sse4a => false
   | .misalignSse => false
   -- X86/Ext/Crypto.lean
-  | .aes => false
-  | .pclmulqdq => false
-  | .sha => false
+  | .aes => true
+  | .pclmulqdq => true
+  | .sha => true
   -- X86/Ext/Xsave.lean
   | .xsave => false
   | .xsaveopt => false
