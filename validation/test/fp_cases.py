@@ -310,3 +310,7 @@ FAMILIES.append((xsaves_family, ('xsave', 'osxsave', 'avx', 'xsaves')))
 import native_avx  # noqa: E402
 FAMILIES += [(native_avx.avx_ops, ('avx', 'osxsave')), (native_avx.avx_encoding, ('avx', 'osxsave')),
              (native_avx.avx_maskmov, ('avx', 'osxsave')), (native_avx.avx_alignment, ('avx', 'osxsave'))]
+
+# Long-mode workstream (test/native_longmode.py): instructions that differ in compatibility mode.
+import native_longmode  # noqa: E402
+FAMILIES += native_longmode.FAMILIES

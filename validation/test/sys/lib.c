@@ -167,6 +167,12 @@ void sys_main(void) {
 		test_smp_model();
 		sys_exit();
 	}
+	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
+		test_long();
+		kputs("MODEL-ONLY\n");
+		test_long_model();
+		sys_exit();
+	}
 	test_paging();
 	test_pae();
 	test_paging_fuzz();

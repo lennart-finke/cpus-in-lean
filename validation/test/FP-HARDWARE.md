@@ -107,6 +107,12 @@ sources. Missing, reordered, duplicated, truncated or extra output is rejected.
 
 ## Comparison boundaries
 
+The oracle executes each case as 32-bit code in compatibility mode under 64-bit Linux, and the model
+does the same (`x86fp --compat`: EFER.LMA, 4-level paging, a 32-bit code segment with L = 0); the
+`longmode` family (`native_longmode.py`) holds the user-mode instructions whose outcome differs from
+legacy protected mode (SYSENTER/SYSEXIT, SWAPGS and the FSGSBASE instructions are #UD). The 116,715
+cases of the earlier campaigns give identical model results in legacy and in compatibility mode.
+
 The comparison checks exception vector/error, instruction pointer, eight GPRs,
 defined arithmetic flags, all eight XMM registers, MXCSR, defined x87 control and
 status bits, physical tag bits, nonempty x87 registers, and three memory hashes.

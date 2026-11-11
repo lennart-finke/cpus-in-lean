@@ -399,11 +399,13 @@ def msrInfo (n : UInt32) : Option UInt64 :=
   | 0x1D9 => some 0x7F
   | _ => none
 
-/-- IA32_EFER: WRMSR accepts `Cpuid.eferWritable` (NXE today) and flushes the TLB. -/
+/-- IA32_EFER: WRMSR accepts `Cpuid.eferWritable` and flushes the TLB. LMA is read-only: the value
+written must equal it, and LME cannot change while paging is enabled (`LongMode.eferOk`). -/
 def eferMsr : MsrImpl where
   rd := do return (← cpu).efer.toUInt64
   wr v := do
-    if v &&& ~~~Cpuid.eferWritable.toUInt64 != 0 then gp 0
+    if v &&& ~~~(Cpuid.eferWritable ||| EFER.LMA).toUInt64 != 0 then gp 0
+    if !LongMode.eferOk (← cpu) v.toUInt32 then gp 0
     modCpu fun c => { c with efer := v.toUInt32 }
     flushTlbAll
 
@@ -446,22 +448,25 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
   | 0 =>
     let v := (v &&& 0xE005003F) ||| CR0.ET
     if v &&& CR0.PG != 0 && v &&& CR0.PE == 0 then gp 0
-    -- enabling PAE paging (or changing CD/NW with it on) loads the PDPTE registers
-    if v &&& CR0.PG != 0 && pae && (c.cr0 &&& CR0.PG == 0 || (v ^^^ c.cr0) &&& 0x60000000 != 0) then
+    -- long-mode consistency checks; with EFER.LME, PG = 1 activates long mode (EFER.LMA)
+    if !LongMode.cr0Ok c v then gp 0
+    -- enabling PAE paging (or changing CD/NW with it on) loads the PDPTE registers (not in long mode)
+    if v &&& CR0.PG != 0 && pae && c.efer &&& EFER.LME == 0 &&
+       (c.cr0 &&& CR0.PG == 0 || (v ^^^ c.cr0) &&& 0x60000000 != 0) then
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
-    modCpu fun c => { c with cr0 := v }
-    if (v ^^^ c.cr0) &&& (CR0.PG ||| CR0.WP ||| CR0.PE) != 0 then flushTlbAll
+    LongMode.setCr0 v
   | 2 => modCpu fun c => { c with cr2 := v }
   | 3 =>
-    if c.cr0 &&& CR0.PG != 0 && pae then
+    if c.cr0 &&& CR0.PG != 0 && pae && !LongMode.lma c then
       let p ← readPdptes v
       modCpu fun c => { c with pdpte := p }
     modCpu fun c => { c with cr3 := v }
     flushTlb
   | 4 =>
     if v &&& ~~~Cpuid.cr4Writable != 0 then gp 0
-    if c.cr0 &&& CR0.PG != 0 && v &&& CR4.PAE != 0 &&
+    if !LongMode.cr4Ok c v then gp 0
+    if c.cr0 &&& CR0.PG != 0 && v &&& CR4.PAE != 0 && !LongMode.lma c &&
        (v ^^^ c.cr4) &&& (CR4.PAE ||| CR4.PGE ||| CR4.PSE) != 0 then
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
@@ -527,7 +532,9 @@ def grp6 (i : Inst) : M Unit := do
     if sel &&& 0xFFFC == 0 then gp 0
     if sel &&& 4 != 0 then gp (sel.toUInt32 &&& 0xFFFC)
     let (d, addr) ← readDesc sel
-    if d.isSeg || !(d.sysType == 1 || d.sysType == 9) then gp (sel.toUInt32 &&& 0xFFFC)
+    -- a 16-bit TSS (type 1) is illegal in long mode (APM vol. 2, table 4-6); compatibility mode reads
+    -- the 8-byte descriptor (4.8.3)
+    if d.isSeg || !(d.sysType == 9 || (d.sysType == 1 && !LongMode.lma c)) then gp (sel.toUInt32 &&& 0xFFFC)
     if !d.present then exc Vec.NP (some (sel.toUInt32 &&& 0xFFFC))
     let d := { d with hi := d.hi ||| 0x200 }
     sysWr (addr + 4) 4 d.hi
@@ -558,9 +565,15 @@ def larLsl (i : Inst) (lsl : Bool) : M Unit := do
         if d.isSeg then true
         else
           let t := d.sysType
-          if lsl then t == 1 || t == 2 || t == 3 || t == 9 || t == 11
+          -- long mode: LDT, 64-bit TSS and (LAR) 64-bit call gates only (APM vol. 3 LAR, LSL)
+          if LongMode.lma c then t == 2 || t == 9 || t == 11 || (!lsl && t == 12)
+          else if lsl then t == 1 || t == 2 || t == 3 || t == 9 || t == 11
           else t == 1 || t == 2 || t == 3 || t == 4 || t == 5 || t == 9 || t == 11 || t == 12
       if !okType then return none
+      -- a long-mode call gate is valid for LAR only with bits 12:8 of its dword +12 clear
+      if LongMode.lma c && !d.isSeg && d.sysType == 12 then
+        let (_, _, a) ← LongMode.readSel sel 0 16
+        if (← sysRd (a + 12) 4) &&& 0x1F00 != 0 then return none
       let conf := d.isCode && d.conforming
       if !conf && (d.dpl < c.cpl || d.dpl < (sel.toUInt32 &&& 3)) then return none
       return some (if lsl then d.limit else d.hi &&& 0x00F0FF00)) (fun _ => pure none)

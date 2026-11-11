@@ -11,8 +11,9 @@ before committing (see `Exec`).
 
 ## Paging
 
-Two-level 32-bit paging with optional 4 MiB pages (CR4.PSE), and PAE paging (CR4.PAE) with
-2 MiB pages and execute-disable (EFER.NXE). Accessed/dirty bits are set during the walk. Translations are cached in a direct-mapped TLB, like hardware
+Two-level 32-bit paging with optional 4 MiB pages (CR4.PSE), PAE paging (CR4.PAE) with
+2 MiB pages and execute-disable (EFER.NXE), and the 4-level paging of long mode (EFER.LMA, 2 MiB and
+1 GiB pages, `walkLong`). Accessed/dirty bits are set during the walk. Translations are cached in a direct-mapped TLB, like hardware
 does. The TLB is architecturally visible exactly as on real hardware: software must
 use INVLPG / MOV CR3 after changing a present PTE.
 -/
@@ -50,7 +51,8 @@ structure MachineExt where
   tlbLarge : Bool := false
   /-- The 4 MiB / 2 MiB regions (linear address of the large page) whose slices may be in the TLB:
   INVLPG scans the TLB only for an address in one of them (Linux maps its kernel with large pages
-  and issues many INVLPGs elsewhere). Superset of the cached regions. -/
+  and issues many INVLPGs elsewhere). Superset of the cached regions. A 1 GiB page of long-mode
+  paging is recorded as its linear address ORed with 1 (`gigRegion`). -/
   tlbLargeRegions : Array UInt32 := #[]
   /-- Some TLB entry may be global (`Tlb.G`): a CR3 load then scans for the entries it keeps. -/
   tlbGlobal : Bool := false
@@ -513,6 +515,9 @@ def flushTlb : M Unit := modM fun m =>
           if m.tlbVal[k]! &&& Tlb.G == 0 then t := t.set! k 0
         return t }
 
+/-- The `tlbLargeRegions` entry of the 1 GiB page (long-mode paging) containing `lin`. -/
+@[inline] def gigRegion (lin : UInt32) : UInt32 := (lin &&& 0xC0000000) ||| 1
+
 /-- INVLPG: drop the translation of the page containing `lin`, global or not (AMD APM vol. 2, 5.5.2),
 including every cached 4 KiB slice of a large page that contains it. -/
 def flushTlbPage (lin : UInt32) : M Unit := modM fun m =>
@@ -521,8 +526,13 @@ def flushTlbPage (lin : UInt32) : M Unit := modM fun m =>
   if !m.tlbLarge then m else
   let mask : UInt32 := if m.cpu.cr4 &&& CR4.PAE != 0 then 0xFFE00000 else 0xFFC00000
   let region := lin &&& mask
-  if !m.tlbLargeRegions.contains region then m else
-  { m with tlbLargeRegions := m.tlbLargeRegions.filter (· != region), tlbTag := Id.run do
+  -- a 1 GiB page (long mode): its slices are dropped together with every 2 MiB slice in the region
+  let (mask, region, gig) :=
+    if m.tlbLargeRegions.contains (gigRegion lin) then (0xC0000000, lin &&& 0xC0000000, true)
+    else (mask, region, false)
+  if !gig && !m.tlbLargeRegions.contains region then m else
+  { m with tlbLargeRegions := m.tlbLargeRegions.filter (fun r => r != region && r != gigRegion lin),
+           tlbTag := Id.run do
       let mut t := m.tlbTag
       for k in [0:tlbSize] do
         if m.tlbVal[k]! &&& Tlb.L != 0 && t[k]! &&& 1 != 0 && t[k]! &&& mask == region then
@@ -562,10 +572,12 @@ and accesses to supervisor pages (U/S = 0 at some level) pass; see `smPass` for 
 @[inline] def smAllowed (perm cr4 eflags : UInt32) (user fetch implicit : Bool) : Bool :=
   user || perm &&& 4 == 0 || smPass cr4 eflags fetch implicit
 
-/-- Store a translation in the TLB. -/
-@[inline] def tlbFill (m : Machine) (lin : UInt32) (phys : UInt64) (bits : UInt64) (large : Bool) : Machine :=
+/-- Store a translation in the TLB (`gig`: a slice of a 1 GiB page). -/
+@[inline] def tlbFill (m : Machine) (lin : UInt32) (phys : UInt64) (bits : UInt64) (large : Bool)
+    (gig : Bool := false) : Machine :=
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
-  let region := lin &&& (if m.cpu.cr4 &&& CR4.PAE != 0 then 0xFFE00000 else 0xFFC00000)
+  let region := if gig then gigRegion lin
+    else lin &&& (if m.cpu.cr4 &&& CR4.PAE != 0 then 0xFFE00000 else 0xFFC00000)
   { m with tlbTag := m.tlbTag.set! idx ((lin &&& 0xFFFFF000) ||| 1),
            tlbVal := m.tlbVal.set! idx (phys ||| bits ||| (if large then Tlb.L else 0)),
            tlbLarge := m.tlbLarge || large,
@@ -686,9 +698,116 @@ def walkPae (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := fun 
     globalBit c.cr4 pte.toUInt32
   .ok (phys ||| (lin &&& 0xFFF).toUInt64) (tlbFill { m with mem } lin phys bits large)
 
+/-! ### Long-mode (4-level) paging
+
+Used while EFER.LMA = 1 (AMD APM vol. 2, 5.3): CR3[51:12] holds the PML4 base (the model's CR3 is the
+low 32 bits: MOV CR3 outside 64-bit mode writes only them, 5.3.2, 14.6.4; PCD/PWT and the other low
+bits are ignored, no PCID on Zen 2); PML4E → PDPE → PDE → PTE, a PDPE with PS = 1 maps a 1 GiB page
+(CPUID Fn8000_0001_EDX[Page1GB]), a PDE with PS = 1 a 2 MiB page; CR4.PSE is ignored. Reserved bits
+(#PF with RSVD = 1 and P = 1): physical-address bits 51:48 (MAXPHYADDR 48) at every level, bit 63
+without EFER.NXE (5.4.1), PML4E bits 8:7 (MBZ, figure 5-20), bits 20:13 of a 2 MiB PDE (figure 5-29)
+and bits 29:13 of a 1 GiB PDPE (figure 5-34). Bits 62:52 are available to software in long mode
+(unlike legacy PAE, `paeRsvd`). Protection combines all levels (5.8): U/S and R/W are ANDed
+(`pageAllowed` on the combined bits), NX is ORed, then SMEP/SMAP on the combined U/S. The accessed bit
+of each directory entry is set when the walk uses it (`setTableA`); the leaf's A/D bits only for
+allowed accesses. G is taken from the leaf (PTE, 2 MiB PDE, 1 GiB PDPE). -/
+
+/-- The NX bit (bit 63) of a PAE / long-mode paging entry. -/
+def nxBit : UInt64 := 0x8000000000000000
+
+/-- Reserved bits of every long-mode paging entry: bits 51:48 and, without EFER.NXE, bit 63. -/
+@[inline] def longRsvd (nxe : Bool) : UInt64 := if nxe then 0x000F000000000000 else 0x800F000000000000
+
+/-- Permission check of a long-mode translation: `perm` holds the U/S and R/W bits ANDed over the
+four (three, two) levels, `xd` the NX bits ORed over them (with EFER.NXE). -/
+@[inline] def longAllowed (perm : UInt32) (xd write user wp fetch : Bool) : Bool :=
+  pageAllowed perm 0 true write user wp && !(fetch && xd)
+
+/-- The protection decision of a long-mode translation through the entries `e4` (PML4E), `e3` (PDPE),
+`e2` (PDE), `e1` (PTE); for a 2 MiB page `e1 = e2`, for a 1 GiB page `e1 = e2 = e3`. U/S and R/W are
+ANDed over the levels, NX (with EFER.NXE) ORed, then SMEP/SMAP (theorems `longCheck_*` in
+`Proofs/ExtLongMode.lean`). -/
+@[inline] def longCheck (e4 e3 e2 e1 : UInt64) (nxe write user wp fetch : Bool) (cr4 eflags : UInt32)
+    (implicit : Bool) : Bool :=
+  let perm := (e4 &&& e3 &&& e2 &&& e1).toUInt32 &&& 6
+  let xd := nxe && (e4 ||| e3 ||| e2 ||| e1) &&& nxBit != 0
+  longAllowed perm xd write user wp fetch && smAllowed perm cr4 eflags user fetch implicit
+
+/-- The entries of a long-mode translation of `lin`: PML4E, PDPE, PDE, PTE (a 2 MiB page repeats the
+PDE as PTE, a 1 GiB page the PDPE as PDE and PTE), the physical address of the leaf and the page
+size (0: 4 KiB, 1: 2 MiB, 2: 1 GiB). Raises the not-present and reserved-bit #PFs (error code from
+`fault prot rsvd`) and sets the accessed bit of each directory entry it uses. -/
+def longEntries (lin : UInt64) (fault : Bool → Bool → Fault) :
+    M (UInt64 × UInt64 × UInt64 × UInt64 × UInt64 × UInt8) := fun m =>
+  let c := m.cpu
+  let rsv := longRsvd (c.efer &&& EFER.NXE != 0)
+  -- PML4E (bits 8:7 MBZ)
+  let e4A := (c.cr3.toUInt64 &&& paeAddr) + (((lin >>> 39) &&& 0x1FF) <<< 3)
+  let e4 := rd64 m.mem e4A
+  if e4 &&& 1 == 0 then .error (fault false false) m else
+  if e4 &&& (rsv ||| 0x180) != 0 then .error (fault true true) m else
+  let m := setTableA m e4A.toUInt32 e4.toUInt32
+  -- PDPE (PS = 1: 1 GiB page, bits 29:13 reserved)
+  let e3A := (e4 &&& paeAddr) + (((lin >>> 30) &&& 0x1FF) <<< 3)
+  let e3 := rd64 m.mem e3A
+  if e3 &&& 1 == 0 then .error (fault false false) m else
+  let g1 := e3 &&& 0x80 != 0
+  if e3 &&& rsv != 0 || (g1 && e3 &&& 0x3FFFE000 != 0) then .error (fault true true) m else
+  if g1 then .ok (e4, e3, e3, e3, e3A, 2) m else
+  let m := setTableA m e3A.toUInt32 e3.toUInt32
+  -- PDE (PS = 1: 2 MiB page, bits 20:13 reserved)
+  let e2A := (e3 &&& paeAddr) + (((lin >>> 21) &&& 0x1FF) <<< 3)
+  let e2 := rd64 m.mem e2A
+  if e2 &&& 1 == 0 then .error (fault false false) m else
+  let m2 := e2 &&& 0x80 != 0
+  if e2 &&& rsv != 0 || (m2 && e2 &&& 0x1FE000 != 0) then .error (fault true true) m else
+  if m2 then .ok (e4, e3, e2, e2, e2A, 1) m else
+  let m := setTableA m e2A.toUInt32 e2.toUInt32
+  -- PTE
+  let e1A := (e2 &&& paeAddr) + (((lin >>> 12) &&& 0x1FF) <<< 3)
+  let e1 := rd64 m.mem e1A
+  if e1 &&& 1 == 0 then .error (fault false false) m else
+  if e1 &&& rsv != 0 then .error (fault true true) m else
+  .ok (e4, e3, e2, e1, e1A, 0) m
+
+/-- Long-mode page walk of a (64-bit) linear address. Returns the physical address, the TLB bits of
+the translation and the page size (0: 4 KiB, 1: 2 MiB, 2: 1 GiB); sets A/D bits; does not fill the
+TLB. A #PF reports `lin`'s low 32 bits as its address (callers with `lin ≥ 2^32` handle that). -/
+def walkLong (lin : UInt64) (write user fetch implicit : Bool) : M (UInt64 × UInt64 × UInt8) := fun m =>
+  let c := m.cpu
+  let wp := c.cr0 &&& CR0.WP != 0
+  let nxe := c.efer &&& EFER.NXE != 0
+  let fault := fun (prot rsvd : Bool) =>
+    Fault.exc Vec.PF (some (pfErr write user prot rsvd (fetch && (nxe || c.cr4 &&& CR4.SMEP != 0)))) lin.toUInt32
+  match longEntries lin fault m with
+  | .error f m => .error f m
+  | .ok (e4, e3, e2, e1, leafA, size) m =>
+    if !longCheck e4 e3 e2 e1 nxe write user wp fetch c.cr4 c.eflags implicit then
+      .error (fault true false) m else
+    let perm := (e4 &&& e3 &&& e2 &&& e1).toUInt32 &&& 6
+    let xd := nxe && (e4 ||| e3 ||| e2 ||| e1) &&& nxBit != 0
+    -- A/D of the leaf
+    let nleaf := e1 ||| 0x20 ||| (if write then 0x40 else 0)
+    let mem := if nleaf != e1 then wrBytes m.mem leafA.toUInt32 4 nleaf.toUInt32 else m.mem
+    let base : UInt64 :=
+      if size == 2 then (e1 &&& 0xFFFFC0000000) ||| (lin &&& 0x3FFFF000)
+      else if size == 1 then (e1 &&& 0xFFFFFFE00000) ||| (lin &&& 0x1FF000)
+      else e1 &&& paeAddr
+    let bits := tlbBits perm (nleaf &&& 0x40 != 0) wp |||
+      (if xd then Tlb.NX else 0) ||| globalBit c.cr4 e1.toUInt32
+    .ok (base ||| (lin &&& 0xFFF), bits, size) { m with mem }
+
+/-- Long-mode walk of a 32-bit linear address (compatibility mode) that fills the TLB. -/
+def walkLongTlb (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := fun m =>
+  match walkLong lin.toUInt64 write user fetch implicit m with
+  | .ok (p, bits, size) m => .ok p (tlbFill m lin (p &&& ~~~0xFFF) bits (size != 0) (size == 2))
+  | .error f m => .error f m
+
 /-- Page-table walk in the current paging mode. -/
 @[inline] def walk (lin : UInt32) (write user fetch : Bool) (implicit : Bool := false) : M UInt64 := fun m =>
-  if m.cpu.cr4 &&& CR4.PAE != 0 then walkPae lin write user fetch implicit m
+  if m.cpu.cr4 &&& CR4.PAE != 0 then
+    if m.cpu.efer &&& EFER.LMA != 0 then walkLongTlb lin write user fetch implicit m
+    else walkPae lin write user fetch implicit m
   else walk32 lin write user fetch implicit m
 
 /-- Translate a linear address. `user` selects user-mode permission checking; `fetch` marks an

@@ -27,9 +27,9 @@ RDPID, ABM, PREFETCHW, MONITORX, RDTSCP, CLZERO, IRPERF, RDPRU, WBNOINVD, MCOMMI
 SSE4.1, SSE4.2, SSE4A, MisAlignSse), Crypto (AES, PCLMULQDQ, SHA), Xsave (XSAVE, XSAVEOPT, XSAVEC,
 XGETBV1, XSAVES, XSaveErPtr; leaf 0xD and OSXSAVE depend on the CPU state) and system A (SYSENTER,
 SYSCALL, TSC, PSE, PSE-36, PGE, MCE, MCA, MTRR, PAT, SMEP, SMAP, UMIP, AltMovCr8, FFXSR, TCE, OSVW,
-WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD), Avx (AVX) and SMP (x2APIC, HTT, CmpLegacy,
-ExtApicSpace, TopoExt; the topology fields of leaves 1, 0xB, 8000_0001 and 8000_0008 depend on the
-CPU, `Cpuid.topo`): highest leaves 0xD and 0x80000008. -/
+WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD), long mode (LM, Page1GB, LahfSahf, FSGSBASE),
+Avx (AVX) and SMP (x2APIC, HTT, CmpLegacy, ExtApicSpace, TopoExt; the topology fields of leaves 1,
+0xB, 8000_0001 and 8000_0008 depend on the CPU, `Cpuid.topo`): highest leaves 0xD and 0x80000008. -/
 def sysALeaf (c : Cpu) (l sub : UInt32) : Regs :=
   match l with
   | 0 => (0xD, 0x756E6547, 0x6C65746E, 0x49656E69)
@@ -37,10 +37,10 @@ def sysALeaf (c : Cpu) (l sub : UInt32) : Regs :=
   | 0xB => Cpuid.topo c 0xB sub (0, 0, 0, 0)
   | 5 => (0x40, 0x40, 3, 0x11)
   | 6 => (4, 0, 1, 0)
-  | 7 => if sub == 0 then (0, 0x219C0188, 0x400004, 0) else (0, 0, 0, 0)
+  | 7 => if sub == 0 then (0, 0x219C0189, 0x400004, 0) else (0, 0, 0, 0)
   | 0xD => Cpuid.leafD c sub
   | 0x80000000 => (0x80000008, 0, 0, 0)
-  | 0x80000001 => (0, 0, Cpuid.topoEcx81 c 0x204223FA, 0x0A100800)
+  | 0x80000001 => (0, 0, Cpuid.topoEcx81 c 0x204223FB, 0x2E100800)
   | 0x80000007 => (0, 0, 0, 0x100)
   | 0x80000008 => (0x3030, 0x0102D315, Cpuid.topoEcx88 c 0x707F, 0x10000)
   | _ => (0, 0, 0, 0)
@@ -61,8 +61,8 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
   obtain ⟨l, s⟩ := p
   have h12 : Cpuid.featBits 1 0 2 true = 0x56F8020B := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x178BFBFD := by decide
-  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x204223FA := by decide
-  have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x0A100800 := by decide
+  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x204223FB := by decide
+  have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x2E100800 := by decide
   have hc : implemented .clfsh = true := rfl
   by_cases h0 : l = 0
   · subst h0; rfl
@@ -97,14 +97,17 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
   · subst h8a; simp [Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.topo, sysALeaf, show implemented .svm = false from rfl]
   simp only [sysALeaf]
 
-/-- MOV CR4 accepts the former bits, OSXSAVE (Xsave) and UMIP, SMEP, SMAP (system A). -/
+/-- MOV CR4 accepts the former bits, OSXSAVE (Xsave), UMIP, SMEP, SMAP (system A) and FSGSBASE (long
+mode). -/
 theorem cr4Writable_former :
-    Cpuid.cr4Writable = 0x07FC ||| CR4.OSXSAVE ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP := by decide
+    Cpuid.cr4Writable = 0x07FC ||| CR4.OSXSAVE ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP ||| CR4.FSGSBASE := by
+  decide
 
-/-- WRMSR EFER accepts NXE, system A's SCE, LMSLE, FFXSR, TCE, INTWB and Gpr's MCOMMIT. -/
+/-- WRMSR EFER accepts NXE, system A's SCE, LMSLE, FFXSR, TCE, INTWB, Gpr's MCOMMIT and LME (long
+mode; LMA is read-only, `LongMode.eferOk`). -/
 theorem eferWritable_former :
     Cpuid.eferWritable = EFER.NXE ||| EFER.SCE ||| EFER.LMSLE ||| EFER.FFXSR ||| EFER.TCE ||| EFER.INTWB |||
-      EFER.MCOMMIT := by
+      EFER.MCOMMIT ||| EFER.LME := by
   decide
 
 theorem vexExec_real {m : Machine} {i : Inst} (h : m.cpu.cr0 &&& CR0.PE = 0) :

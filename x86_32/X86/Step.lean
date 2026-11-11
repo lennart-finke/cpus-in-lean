@@ -166,6 +166,9 @@ def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
     cr0 := 0x10 ||| (c.cr0 &&& (CR0.CD ||| CR0.NW)), cr2 := 0, cr3 := 0, cr4 := 0,
     dr0 := 0, dr1 := 0, dr2 := 0, dr3 := 0, dr6 := 0xFFFF0FF0, dr7 := 0x400, bpOn := false,
     efer := 0, halted := !bsp, shadow := false,
+    -- long mode: EFER = 0 (LME, LMA); RIP/RSP bits 63:32 = 0, FS/GS base 0 (the segment loads clear
+    -- the 64-bit bases); R11 and KernelGSbase (an MSR) are not modified
+    lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none, entry := "" },
     smpx := { c.smpx with waitSipi := !bsp, mwait := none } }
 
 /-- INIT of the running CPU. -/

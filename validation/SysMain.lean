@@ -1,4 +1,5 @@
 import X86
+import LongStub
 /-!
 # x86sys — runner for the system-level test kernel
 
@@ -72,6 +73,8 @@ def main (args : List String) : IO UInt32 := do
   let mut done := false
   while !done do
     s := s.runUntil (min maxI (s.m.icount + 100000))
+    -- the long-mode test's 64-bit stubs (test infrastructure, `LongStub.lean`)
+    if let some m' := X86.LongStub.resume s.m then s := { s with m := m' }; continue
     let tx := s.m.uart.tx
     if tx.size > 0 then
       stdout.write tx
