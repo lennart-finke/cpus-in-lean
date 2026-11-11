@@ -22,7 +22,7 @@ pages) and vol. 1, 14.5 (FMA) and 14.4.1 (half precision), SDM vol. 2A, 2.3.12 (
   the shifts by imm8 including VPSLLDQ/VPSRLDQ, the 0F 38/0F 3A SSSE3/SSE4.1 forms) operate within
   each 128-bit lane: PSHUFB, PALIGNR, PACK*, PUNPCK*, PHADD*/PHSUB*, PSLLDQ/PSRLDQ, PBLENDW (the same
   imm8 for both lanes), PSADBW, and VMPSADBW, whose upper lane uses imm8[5:3] (SDM VMPSADBW, AMD APM
-  vol. 4 VMPSADBW). Theorem: `Proofs/ExtAvx2.lean` (`perLane_*`).
+  vol. 4 VMPSADBW). Theorems: `Proofs/ExtAvx2.lean` (`pshufb256_lanes`, `palignr256_lanes`, `int256_lanes`).
 * The shifts by an XMM count (VPSLLW/D/Q, VPSRLW/D/Q, VPSRAW/D ymm, ymm, xmm/m128) shift both lanes
   by the one 64-bit count in bits 63:0 of the source (a 16-byte memory operand): not per lane.
 * VPMOVSX*/VPMOVZX* ymm read 8/4/2 elements (16, 8 or 4 bytes) and widen across the whole register;
@@ -300,26 +300,37 @@ addressing, and destination (ModRM.reg), mask (VEX.vvvv) and index (VSIB.index) 
   let ib := if i.byte &&& 1 == 1 then 64 else 32
   (db, ib, (if i.vexL then 256 else 128) / max db ib)
 
+/-- The element loop of a gather over the element numbers `ks` (ascending): a selected element is
+loaded into the destination register, then the element's mask element is cleared; both registers are
+written after every element, so that a fault leaves the completed elements in place. `sel` is the
+selection by the mask's sign bits before the instruction. -/
+def gatherElems (i : Inst) (db ib : Nat) (base : UInt32) (ix : V256) (sel : Array Bool) :
+    List Nat → V256 → V256 → M Unit
+  | [], _, _ => pure ()
+  | k :: ks, d, m => do
+    let d ← if sel[k]! then do
+        let sz := (db / 8).toUInt32
+        let off := base + i.disp + ((ix.lane ib k).toUInt32 <<< i.scale.toUInt32)
+        let lin ← segAddr i.seg off sz false
+        acChk lin sz (← isUser)
+        let d := setLane256 d db k (← rdLin lin sz).lo
+        setY i.reg d
+        pure d
+      else pure d
+    let m := setLane256 m db k 0
+    setY i.vvvv m
+    gatherElems i db ib base ix sel ks d m
+
 /-- VPGATHERDD/DQ/QD/QQ, VGATHERDPS/DPD/QPS/QPD (see the module documentation). -/
 def gather (i : Inst) : M Unit := do
   start i (gatherEnc i)
   let (db, ib, n) := gatherShape i
-  let sz := (db / 8).toUInt32
-  let ix ← getY (gatherIndex i)
-  let base ← if i.base < 8 then getReg i.base else pure 0
-  let mut m ← getY i.vvvv
-  let sel := (Array.range n).map fun k => m.lane db k >>> (db - 1).toUInt64 != 0
-  let mut d ← getY i.reg
-  for k in [0:n] do
-    if sel[k]! then
-      let off := base + i.disp + ((ix.lane ib k).toUInt32 <<< i.scale.toUInt32)
-      let lin ← segAddr i.seg off sz false
-      acChk lin sz (← isUser)
-      d := setLane256 d db k (← rdLin lin sz).lo
-      setY i.reg d
-    m := setLane256 m db k 0
-    setY i.vvvv m
-  setY i.reg (keepLow d (n * db))
+  let c ← cpu
+  let y := fun (r : UInt8) => V256.mk c.xmm[(r &&& 7).toNat]! c.ymmh[(r &&& 7).toNat]!
+  let base := if i.base < 8 then c.getReg i.base else 0
+  let sel := (Array.range n).map fun k => (y i.vvvv).lane db k >>> (db - 1).toUInt64 != 0
+  gatherElems i db ib base (y (gatherIndex i)) sel (List.range n) (y i.reg) (y i.vvvv)
+  setY i.reg (keepLow (← getY i.reg) (n * db))
   setY i.vvvv {}
 
 /-! ### FMA and F16C -/
