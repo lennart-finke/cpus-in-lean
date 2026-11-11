@@ -226,36 +226,36 @@ def implemented : Feature → Bool
   | .fma => false
   | .f16c => false
   -- X86/Ext/Sys.lean (system A: SYSENTER/SYSCALL, MSRs, SMEP/SMAP/UMIP, paging features)
-  | .tsc => false
-  | .pse => false
-  | .pge => false
-  | .pse36 => false
-  | .mce => false
-  | .mca => false
-  | .mtrr => false
-  | .pat => false
-  | .sep => false
-  | .syscall => false
-  | .ffxsr => false
-  | .smep => false
-  | .smap => false
-  | .umip => false
-  | .altMovCr8 => false
-  | .tce => false
-  | .osvw => false
-  | .wdt => false
-  | .invariantTsc => false
-  | .arat => false
-  | .effFreq => false
+  | .tsc => true
+  | .pse => true
+  | .pge => true
+  | .pse36 => true
+  | .mce => true
+  | .mca => true
+  | .mtrr => true
+  | .pat => true
+  | .sep => true
+  | .syscall => true
+  | .ffxsr => true
+  | .smep => true
+  | .smap => true
+  | .umip => true
+  | .altMovCr8 => true
+  | .tce => true
+  | .osvw => true
+  | .wdt => true
+  | .invariantTsc => true
+  | .arat => true
+  | .effFreq => true
   | .mcaRecovery => false
   | .perfCtrExtCore => false
   | .dataBkptExt => false
   | .adMskExtn => false
-  | .ibpb => false
-  | .ibrs => false
-  | .stibp => false
-  | .stibpAlwaysOn => false
-  | .ssbd => false
+  | .ibpb => true
+  | .ibrs => true
+  | .stibp => true
+  | .stibpAlwaysOn => true
+  | .ssbd => true
   | .ext8Misc => false
   -- system B (VME/PVI, NMI)
   | .vme => false
@@ -304,6 +304,10 @@ def cr4Writable : UInt32 :=
 def eferWritable : UInt32 :=
   ifImpl .nx EFER.NXE ||| ifImpl .syscall EFER.SCE ||| ifImpl .lm EFER.LME |||
   ifImpl .svm EFER.SVME ||| ifImpl .ffxsr EFER.FFXSR ||| ifImpl .tce EFER.TCE |||
+  -- system A: EFER bits of the 7742 without a feature of their own, writable with no effect outside
+  -- long mode / on the model: LMSLE (8000_0008:EBX[EferLmsleUnsupported] = 0) and INTWB
+  -- (8000_0008:EBX[INT_WBINVD] = 1; WBINVD has no duration in the model)
+  ifImpl .syscall (EFER.LMSLE ||| EFER.INTWB) |||
   ifImpl .mcommit EFER.MCOMMIT
 
 /-- XCR0 bits the processor supports (CPUID 0xD.0:EDX:EAX): with XSAVE, x87, SSE and the AVX state
@@ -475,10 +479,13 @@ def amdLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
   else match raw leaf sub with
     | none => (0, 0, 0, 0)
     | some r =>
-      let a := maskReg leaf sub 0 (reg r 0)
-      let b := maskReg leaf sub 1 (reg r 1)
-      let cx := maskReg leaf sub 2 (reg r 2)
-      let d := maskReg leaf sub 3 (reg r 3)
+      -- feature bits are located by subleaf only in leaves 7 and 0xD; the others ignore ECX, so
+      -- their bits are masked as for subleaf 0 whatever the subleaf (system A fix)
+      let ms := if leaf == 7 || leaf == 0xD then sub else 0
+      let a := maskReg leaf ms 0 (reg r 0)
+      let b := maskReg leaf ms 1 (reg r 1)
+      let cx := maskReg leaf ms 2 (reg r 2)
+      let d := maskReg leaf ms 3 (reg r 3)
       -- 8000_0001:EDX bits that mirror 1:EDX
       let d := if leaf == 0x80000001 then d &&& ~~~Feature.mirrorMask ||| (featBits 1 0 3 true &&& Feature.mirrorMask) else d
       -- OSXSAVE reflects CR4.OSXSAVE: the dump's bit 27 (set: the dump was taken under an OS) is

@@ -126,6 +126,7 @@ def SVME : UInt32 := 0x1000
 def LMSLE : UInt32 := 0x2000
 def FFXSR : UInt32 := 0x4000
 def TCE : UInt32 := 0x8000
+def INTWB : UInt32 := 0x40000
 /-- MCOMMIT enable (APM vol. 3, MCOMMIT; Gpr). -/
 def MCOMMIT : UInt32 := 0x20000
 end EFER

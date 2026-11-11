@@ -82,8 +82,23 @@ structure GprState where
   perfEvtSel : Array UInt64 := Array.replicate 6 0
   deriving Repr, Inhabited
 
-/-- State of `X86/Ext/Sys.lean` (SYSENTER/SYSCALL MSRs, TSC offset, PAT, MTRRs, ...). -/
+/-- State of `X86/Ext/Sys.lean`: the MSRs used on hot paths (SYSENTER/SYSCALL linkage, TSC, PAT).
+The other MSRs of the module (MTRRs, MCA banks, AMD configuration MSRs) live in `Cpu.msrs`. -/
 structure SysState where
+  /-- SYSENTER_CS (MSR 0x174, bits 15:0), SYSENTER_ESP (0x175) and SYSENTER_EIP (0x176): 32-bit in
+  legacy mode (AMD APM vol. 2, 6.1.2, figure 6-2). -/
+  sysenterCs : UInt32 := 0
+  sysenterEsp : UInt32 := 0
+  sysenterEip : UInt32 := 0
+  /-- STAR, LSTAR, CSTAR (C000_0081..83h) and SFMASK (C000_0084h, bits 31:0) (APM vol. 2, 6.1.1). -/
+  star : UInt64 := 0
+  lstar : UInt64 := 0
+  cstar : UInt64 := 0
+  sfmask : UInt32 := 0
+  /-- The time-stamp counter is `icount + tscOff` (mod 2^64); WRMSR 0x10 sets the offset. -/
+  tscOff : UInt64 := 0
+  /-- PAT (MSR 0x277), reset value 0007_0406_0007_0406h (APM vol. 2, table A-3). -/
+  pat : UInt64 := 0x0007040600070406
   deriving Repr, Inhabited
 
 /-- State of `X86/Ext/Svm.lean` (VM_HSAVE_PA, GIF, ...). -/

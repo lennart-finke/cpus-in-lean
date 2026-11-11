@@ -239,11 +239,44 @@ def simd_cases(rng, count):
 # Case families and the CPUID features they require (native_fp.FEATURES names). The
 # baseline (x87, MMX, SSE, SSE2 on an x86-64 machine) needs none. Later ISA extensions add
 # their own generator here, e.g. (sse3_cases, ('sse3',)).
+# Alignment checking (system workstream A): Linux runs user code with CR0.AM = 1, so EFLAGS.AC = 1
+# makes a misaligned data access at CPL 3 raise #AC (SIGBUS). Operands at offsets 0..15 of an aligned
+# address in the arena, with AC set and clear; the model's alignments are those of the AMD APM vol. 2,
+# table 8-7 (x86_32/X86/Machine.lean, `acChk`). Also a misaligned access to an unmapped page (#AC is
+# checked before paging in the model; the hardware order is undocumented) and the masked stores
+# MASKMOVQ/MASKMOVDQU (not in the table). SGDT/SIDT/SMSW are left out: Linux emulates them under UMIP.
+ALIGN_OPS = [
+    ('mov16_load', '668b03'), ('mov32_load', '8b03'), ('mov32_store', '8903'), ('add_rmw', '0103'),
+    ('movsw', '66a5'), ('movsd', 'a5'),
+    ('bt_imm', '0fba2300'), ('cmpxchg8b', '0fc70b'), ('movzx16', '0fb703'),
+    ('fld32', 'd903'), ('fld64', 'dd03'), ('fld80', 'db2b'), ('fild16', 'df03'), ('fild64', 'df2b'),
+    ('fnstcw', 'd93b'), ('fnstsw', 'dd3b'), ('fnstenv32', 'd933'), ('fnstenv16', '66d933'),
+    ('fnsave32', 'dd33'), ('frstor32', 'dd23'), ('fbld', 'df23'),
+    ('movups', '0f1003'), ('movdqu', 'f30f6f03'), ('movaps', '0f2803'), ('movq_mmx', '0f6f03'),
+    ('movss', 'f30f1003'), ('movsd_sse', 'f20f1003'), ('movlps', '0f1203'), ('movd', '660f6e03'),
+    ('stmxcsr', '0fae1b'), ('ldmxcsr', '0fae13'), ('fxsave', '0fae03'),
+    ('maskmovq', '0ff7c1'), ('maskmovdqu', '660ff7c1'),
+]
+
+
+def alignment_cases(rng, count):
+    mem = struct.pack('<16I', *([0x1f80] * 16))   # valid MXCSR images for LDMXCSR
+    for name, code in ALIGN_OPS:
+        for off in (0, 1, 2, 3, 4, 6, 8, 12):
+            for flags in (0x40202, 0x202):
+                yield (record(code, flags=flags, address=0x10000 + off, mem=mem),
+                       meta('alignment_check', name, code, offset=off, ac=flags >> 18 & 1))
+    # misaligned and aligned reads of an unmapped page: #AC or #PF first
+    for off in (0, 1, 2):
+        yield (record('8b03', flags=0x40202, address=0x11000 + off, permissions=(0x67, 0)),
+               meta('alignment_check', 'unmapped_load', '8b03', offset=off, ac=1))
+
 from native_crypto import aes_cases, pclmul_cases, sha_cases   # Crypto workstream
 
 FAMILIES = [
     (x87_cases, ()),
     (simd_cases, ()),
+    (alignment_cases, ()),
     (aes_cases, ('aes',)),
     (pclmul_cases, ('pclmulqdq',)),
     (sha_cases, ('sha',)),

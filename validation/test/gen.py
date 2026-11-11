@@ -27,6 +27,7 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isa_forms
+import gen_sys
 import xsave_gen
 import gen_gpr   # 'ext' family: general-purpose extensions (x86_32/X86/Ext/Gpr.lean)
 
@@ -507,6 +508,10 @@ def gen_v2_family(g):
         return insn[:15]
     if r < 0.26:   # 'ext': the XSAVE forms (isa_forms.IMPLEMENTED, owner Xsave) and their neighbours
         return xsave_gen.gen(g, VFLAGS)
+    if r < 0.28:
+        # 'ext' forms of system workstream A (test/gen_sys.py)
+        insn, g.desc = gen_sys.sys_form()
+        return insn
     if r < 0.44:
         return gen_gpr.gen(g)   # 'ext' family of the Gpr forms (gen_gpr.py)
     # 'ext' family, Crypto workstream: AES-NI, PCLMULQDQ, SHA (gen_crypto.py)

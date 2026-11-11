@@ -38,12 +38,12 @@ theorem alignStrict_movntdqa (i : Inst) (h : i.op = 0x22A) : alignStrict i = tru
 
 theorem misalignExc_mm1 (c : Cpu) (i : Inst) (hm : c.mxcsr &&& MXCSR_MM ≠ 0)
     (hs : alignStrict i = false) (hac : c.cr0 &&& CR0.AM = 0) : misalignExc c i = none := by
-  simp [misalignExc, hm, hs, hac]
+  simp [misalignExc, Cpu.acEnabled, hm, hs, hac]
 
 theorem misalignExc_ac (c : Cpu) (i : Inst) (hm : c.mxcsr &&& MXCSR_MM ≠ 0)
     (hs : alignStrict i = false) (ham : c.cr0 &&& CR0.AM ≠ 0) (hac : c.eflags &&& Flag.AC ≠ 0)
     (hcpl : c.cpl = 3) : misalignExc c i = some Vec.AC := by
-  simp [misalignExc, hm, hs, ham, hac, hcpl]
+  simp [misalignExc, Cpu.acEnabled, hm, hs, ham, hac, hcpl]
 
 theorem xmmOp_noosfxsr {m : Machine} {i : Inst} {f : V128 → V128 → V128} {al : Bool}
     (h : m.cpu.cr4 &&& CR4.OSFXSR = 0) :

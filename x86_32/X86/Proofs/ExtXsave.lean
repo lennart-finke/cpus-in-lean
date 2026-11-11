@@ -32,10 +32,10 @@ theorem amdLeaf_osxsave (c : Cpu) (sub : UInt32) :
     (Cpuid.amdLeaf c 1 sub).2.2.1 &&& Cpuid.osxsaveBit =
       (if c.cr4 &&& CR4.OSXSAVE != 0 then Cpuid.osxsaveBit else 0) := by
   have e : (Cpuid.amdLeaf c 1 sub).2.2.1 =
-      (Cpuid.maskReg 1 sub 2 0x7EF8320B &&& ~~~Cpuid.osxsaveBit) ||| Cpuid.osxsave c := rfl
+      (Cpuid.maskReg 1 0 2 0x7EF8320B &&& ~~~Cpuid.osxsaveBit) ||| Cpuid.osxsave c := rfl  -- (leaf 1 masks as subleaf 0)
   rw [e]
   clear e
-  generalize Cpuid.maskReg 1 sub 2 0x7EF8320B = x
+  generalize Cpuid.maskReg 1 0 2 0x7EF8320B = x
   have hx : implemented .xsave = true := rfl
   have hb : Cpuid.osxsaveBit = 0x8000000 := by decide
   by_cases h : c.cr4 &&& CR4.OSXSAVE = 0

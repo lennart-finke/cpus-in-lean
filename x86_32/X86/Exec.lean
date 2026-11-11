@@ -405,7 +405,7 @@ def eferMsr : MsrImpl where
   wr v := do
     if v &&& ~~~Cpuid.eferWritable.toUInt64 != 0 then gp 0
     modCpu fun c => { c with efer := v.toUInt32 }
-    flushTlb
+    flushTlbAll
 
 /-- IA32_APIC_BASE: base, global enable (bit 11), boot processor (bit 8). -/
 def apicBaseMsr : MsrImpl where
@@ -455,7 +455,7 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
     modCpu fun c => { c with cr0 := v }
-    if (v ^^^ c.cr0) &&& (CR0.PG ||| CR0.WP ||| CR0.PE) != 0 then flushTlb
+    if (v ^^^ c.cr0) &&& (CR0.PG ||| CR0.WP ||| CR0.PE) != 0 then flushTlbAll
   | 2 => modCpu fun c => { c with cr2 := v }
   | 3 =>
     if c.cr0 &&& CR0.PG != 0 && pae then
@@ -470,7 +470,7 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
     modCpu fun c => { c with cr4 := v }
-    if (v ^^^ c.cr4) &&& (CR4.PSE ||| CR4.PGE ||| CR4.PAE) != 0 then flushTlb
+    if (v ^^^ c.cr4) &&& (CR4.PSE ||| CR4.PGE ||| CR4.PAE) != 0 then flushTlbAll
   | _ => ud
 
 def movFromCr (n : UInt8) : M UInt32 := do
@@ -493,12 +493,27 @@ def drIndex (n : UInt8) : M UInt8 := do
     return n + 2
   return n
 
+/-- UMIP (AMD APM vol. 2, chapter 6, "User Mode Instruction Prevention (UMIP)"): with CR4.UMIP = 1, SGDT, SIDT,
+SLDT, SMSW and STR "become available only at CPL=0. Any attempt to execute them with CPL>0 results in
+a #GP fault with error code 0" (also in virtual-8086 mode, CPL 3; also the SMSW register form). The
+check comes after the #UD checks of the form and before any memory access. -/
+@[inline] def umipCheck : M Unit := do
+  let c ← cpu
+  if c.cr4 &&& CR4.UMIP != 0 && c.cpl != 0 then gp 0
+
+/-- The time-stamp counter: the instruction count plus the offset set by WRMSR 0x10. -/
+@[inline] def tsc : M UInt64 := fun m => .ok (m.icount + m.cpu.sysx.tscOff) m
+
 def grp6 (i : Inst) : M Unit := do
   let c ← cpu
   if !c.pe || c.vm86 then ud
   match i.reg with
-  | 0 => if i.isMem then wrE i 2 c.ldtr.sel.toUInt32 else wrReg i.opsz i.rm c.ldtr.sel.toUInt32
-  | 1 => if i.isMem then wrE i 2 c.tr.sel.toUInt32 else wrReg i.opsz i.rm c.tr.sel.toUInt32
+  | 0 =>
+    umipCheck
+    if i.isMem then wrE i 2 c.ldtr.sel.toUInt32 else wrReg i.opsz i.rm c.ldtr.sel.toUInt32
+  | 1 =>
+    umipCheck
+    if i.isMem then wrE i 2 c.tr.sel.toUInt32 else wrReg i.opsz i.rm c.tr.sel.toUInt32
   | 2 => -- LLDT
     cplIs0
     let sel := (← rdE i 2).toUInt16
@@ -563,6 +578,7 @@ def grp7 (i : Inst) : M Unit := do
   match i.reg with
   | 0 | 1 => -- SGDT / SIDT
     needMem i
+    umipCheck
     let c ← cpu
     let (b, l) := if i.reg == 0 then (c.gdtBase, c.gdtLimit) else (c.idtBase, c.idtLimit)
     let off ← eaOff i
@@ -578,6 +594,7 @@ def grp7 (i : Inst) : M Unit := do
     if i.reg == 2 then modCpu fun c => { c with gdtBase := b, gdtLimit := l }
     else modCpu fun c => { c with idtBase := b, idtLimit := l }
   | 4 => -- SMSW
+    umipCheck
     let c ← cpu
     if i.isMem then wrE i 2 c.cr0 else wrReg i.opsz i.rm c.cr0
   | 6 => -- LMSW
@@ -978,7 +995,7 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x131 => fun _ => do
     let c ← cpu
     if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
-    let t := (← getM).icount
+    let t ← tsc
     setReg 0 t.toUInt32
     setReg 2 (t >>> 32).toUInt32
   | 0x1AA => fun _ => rsm
@@ -1062,7 +1079,7 @@ def execOp0F (op : Nat) : Inst → M Unit :=
     let _ ← segAddr i.seg off 8 true
     -- Both halves require write access before either half can be committed.
     -- Reading in address order also reports the first byte of a faulting page.
-    let lo ← rdMem i.seg off 4 true
+    let lo ← rdMem i.seg off 4 true (al := 8)
     let hi ← rdMem i.seg (off + 4) 4 true
     let eax ← getReg 0
     let edx ← getReg 2

@@ -303,7 +303,7 @@ def alignStrict (i : Inst) : Bool :=
 MXCSR.MM = 1 for a non-strict instruction #AC when alignment checking is enabled and none otherwise. -/
 def misalignExc (c : Cpu) (i : Inst) : Option UInt8 :=
   if c.mxcsr &&& MXCSR_MM == 0 || alignStrict i then some Vec.GP
-  else if c.cr0 &&& CR0.AM != 0 && c.eflags &&& Flag.AC != 0 && c.cpl == 3 then some Vec.AC
+  else if c.acEnabled then some Vec.AC
   else none
 
 /-- Linear address of an `n`-byte vector operand: segment checks, 16-byte alignment if `align`, and
@@ -317,6 +317,9 @@ def vecAddr (i : Inst) (n : UInt32) (write align : Bool) : M UInt32 := do
     match misalignExc (← cpu) i with
     | some v => exc v (some 0)
     | none => pure ()
+  -- alignment check of the operand (#AC at CPL 3: 64-bit media 8, 128-bit media 16, smaller operands
+  -- by their size; AMD APM vol. 2, table 8-7; system A, `acChk`)
+  acChk lin (if n > 16 then 16 else n) (← isUser)
   if write then linProbeWr lin n (← isUser)
   return lin
 
@@ -563,6 +566,9 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
   let s := if i.segOvr != 0xFF then i.segOvr else SegN.DS
   let di := if i.adsz == 2 then c.edi &&& 0xFFFF else c.edi
   let sel := (List.range n).filter fun k => mask.lane 8 k &&& 0x80 != 0
+  -- #AC as for a 64-bit (MASKMOVQ) or 128-bit (MASKMOVDQU) media operand at DS:(E)DI, whatever the
+  -- mask (the APM's table 8-7 does not single out the masked stores; real hardware not confirmed)
+  acChk (((← cpu).getSeg s).base + di) n.toUInt32 (← isUser)
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr s (di + k.toUInt32) 1 true

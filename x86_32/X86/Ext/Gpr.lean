@@ -193,7 +193,7 @@ def splitmix (s : UInt64) : UInt64 × UInt64 :=
 @[inline] def modG (f : GprState → GprState) : M Unit := modCpu fun c => { c with gprx := f c.gprx }
 
 /-- The time-stamp counter, as the core's RDTSC reads it (`Exec`, 0F 31). -/
-@[inline] def tsc : M UInt64 := fun m => .ok m.icount m
+@[inline] def tsc : M UInt64 := X86.tsc  -- the core TSC (`Exec.tsc`, writable as MSR 0x10)
 
 /-- Set the arithmetic flags to `v` (only bits of `Flag.arith`). -/
 @[inline] def setArith (v : UInt32) : M Unit := setFlags arith v

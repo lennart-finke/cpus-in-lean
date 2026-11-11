@@ -162,19 +162,21 @@ end Gpr
 /-! ## CPUID -/
 
 /-- CPUID 7.0 (legacy identity): EBX = BMI1, BMI2, RDSEED, ADX, CLFLUSHOPT, CLWB and SHA (Crypto; reported
-since SSSE3 exists); ECX = RDPID. -/
-theorem cpuid_leaf7_gpr (c : Cpu) : cpuid c 7 0 = (0, 0x218C0108, 0x00400000, 0) := by
+since SSSE3 exists); ECX = RDPID (and system A's SMEP, SMAP in EBX and UMIP in ECX: 0x00100080, 0x4). -/
+theorem cpuid_leaf7_gpr (c : Cpu) :
+    cpuid c 7 0 = (0, 0x218C0108 ||| 0x00100080, 0x00400000 ||| 0x4, 0) := by
   have h0 : Cpuid.maskReg 7 0 0 0 = 0 := by decide
-  have h1 : Cpuid.maskReg 7 0 1 0x219C91A9 = 0x218C0108 := by decide
-  have h2 : Cpuid.maskReg 7 0 2 0x00400004 = 0x00400000 := by decide
+  have h1 : Cpuid.maskReg 7 0 1 0x219C91A9 = 0x218C0108 ||| 0x00100080 := by decide
+  have h2 : Cpuid.maskReg 7 0 2 0x00400004 = 0x00400000 ||| 0x4 := by decide
   have h3 : Cpuid.maskReg 7 0 3 0 = 0 := by decide
   simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw,
     h0, h1, h2, h3]
   decide
 
-/-- CPUID 8000_0008h EBX (legacy identity): CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of the XSAVE work). -/
-theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x315 := by
-  have h1 : Cpuid.maskReg 0x80000008 0 1 0x018EF757 = 0x315 := by decide
+/-- CPUID 8000_0008h EBX (legacy identity): CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of
+the XSAVE work, and system A's IBPB, IBRS, STIBP, StibpAlwaysOn, SSBD: 0x0102D000). -/
+theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x315 ||| 0x0102D000 := by
+  have h1 : Cpuid.maskReg 0x80000008 0 1 0x018EF757 = 0x315 ||| 0x0102D000 := by decide
   simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, h1]
   rfl
 

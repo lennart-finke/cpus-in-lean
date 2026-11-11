@@ -46,7 +46,8 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
   let mut c : Cpu := {
     cs := { seg with sel := 0x23, attr := 0xC0FB },
     ds := seg, es := seg, ss := seg, fs := seg, gs := seg,
-    cr0 := 0x80010033, cr3 := 0x3000, eip := 0x20100,
+    -- CR0 as Linux sets it: PG, AM (alignment checking for EFLAGS.AC = 1), WP, NE, ET, MP, PE
+    cr0 := 0x80050033, cr3 := 0x3000, eip := 0x20100,
     -- as Linux on the target: CR4.OSFXSR, OSXMMEXCPT, OSXSAVE; XCR0 = 7; the x87, SSE and AVX
     -- state loaded from the signal frame by XRSTOR with XSTATE_BV[2:0] = 111b (XINUSE = 7)
     cr4 := 0x40600, xcr0 := 7, xsx := { inuse := 7 },

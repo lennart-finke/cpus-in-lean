@@ -29,7 +29,8 @@ void test_pae(void) {
 	u32 L = 0x40000000;
 	pt1[0] = (u32)data | 0x3;                   /* supervisor RW */
 	pt1[1] = ((u32)data + 0x1000) | 0x1;        /* supervisor RO */
-	pt1[2] = ((u32)data + 0x2000) | 0x7 | (1ULL << 40);  /* reserved bit 40 */
+	pt1[2] = ((u32)data + 0x2000) | 0x7 | (1ULL << 50);  /* reserved bit 50 (MAXPHYADDR = 48) */
+	pt1[4] = ((u32)data + 0x2000) | 0x7 | (1ULL << 40);  /* address bit 40: above the RAM, not reserved */
 	pt1[3] = ((u32)data + 0x3000) | 0x7 | (1ULL << 63);  /* XD (reserved while NXE = 0) */
 	pd1[1] = bigphys | 0x83;                    /* 2 MiB page at 0x40200000 */
 	pd1[2] = bigphys | 0x83 | 0x2000;           /* 2 MiB page with reserved bit 13 */
@@ -46,7 +47,8 @@ void test_pae(void) {
 	report("pae.write", TRY(p[1] = 7));
 	show("pae.pte0", pt1[0]);
 	report("pae.write.ro", TRY(p[0x400] = 1));
-	report("pae.rsvd40", TRY(v = p[0x800]));
+	report("pae.rsvd50", TRY(v = p[0x800]));
+	report("pae.maxphy40", TRY(v = p[0x1000]));
 	report("pae.xd.nonxe", TRY(v = p[0xC00]));
 	volatile u32 *b = (u32 *)0x40205000;
 	report("pae.2m.read", TRY(v = *b));
@@ -57,7 +59,7 @@ void test_pae(void) {
 	report("pae.pdpte.np", TRY(v = *(volatile u32 *)0x80000000));
 	report("pae.user.super", run_user(u_read, L, 0));
 
-	/* execute-disable */
+	/* execute-disable; EFER bit 1 is reserved (bit 0, SCE, and the other EFER bits: sysa.efer.*) */
 	kprintf("pae.efer.rsvd: vec=%x\n", TRY(wrmsr(EFER, 2)));
 	report("pae.efer.nxe", TRY(wrmsr(EFER, 0x800)));
 	kprintf("pae.efer: %x\n", (u32)rdmsr(EFER));

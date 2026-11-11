@@ -146,13 +146,22 @@ def fpCompare (a b : Option F80) (quiet eflags : Bool) (pops : Nat) (extra : UIn
   let a := b + x + i.disp
   .ok (if i.adsz == 2 then a &&& 0xFFFF else a) m
 
+/-- Alignment of an x87 memory operand of `n` bytes for #AC (AMD APM vol. 2, table 8-7): m16 2,
+m32 4, m64 8, m80 (extended real and packed BCD) 8, the 14/28-byte environment and the 94/108-byte
+save area 2 or 4 (by operand size); 1 for the register part of FRSTOR's area (checked with the
+environment at the start of the area). -/
+def fpAlign (n : Nat) : UInt32 :=
+  match n with
+  | 2 => 2 | 4 => 4 | 8 => 8 | 10 => 8 | 14 => 2 | 28 => 4 | 94 => 2 | 108 => 4 | _ => 1
+
 /-- Read `n` (≤ 10) bytes at seg:off as a natural number (little endian). -/
 def fpRead (s : UInt8) (off : UInt32) (n : Nat) : M Nat := do
   let mut v : Nat := 0
   let mut k := 0
   while k < n do
     let w := if n - k ≥ 4 then 4 else if n - k ≥ 2 then 2 else 1
-    let x ← rdMem s (off + k.toUInt32) w.toUInt32
+    -- the operand's alignment is checked once, with its first part
+    let x ← rdMem s (off + k.toUInt32) w.toUInt32 (al := if k == 0 then fpAlign n else 1)
     v := v + x.toNat * 2^(8 * k)
     k := k + w
   return v
@@ -160,11 +169,12 @@ def fpRead (s : UInt8) (off : UInt32) (n : Nat) : M Nat := do
 /-- Write `n` (≤ 108) bytes at seg:off; the whole range is checked before any byte is written. -/
 def fpWrite (s : UInt8) (off : UInt32) (n : Nat) (v : Nat) : M Unit := do
   let lin ← segAddr s off n.toUInt32 true
+  acChk lin (fpAlign n) (← isUser)
   linProbeWr lin n.toUInt32 (← isUser)
   let mut k := 0
   while k < n do
     let w := if n - k ≥ 4 then 4 else if n - k ≥ 2 then 2 else 1
-    wrMem s (off + k.toUInt32) w.toUInt32 ((v / 2^(8 * k)) % 2^(8 * w)).toUInt32
+    wrMem s (off + k.toUInt32) w.toUInt32 ((v / 2^(8 * k)) % 2^(8 * w)).toUInt32 (al := 1)
     k := k + w
 
 @[inline] def f80OfNat (v : Nat) : F80 := { sig := (v % 2^64).toUInt64, se := (v / 2^64).toUInt16 }

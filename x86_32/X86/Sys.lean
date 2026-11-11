@@ -678,7 +678,7 @@ def smmEnter : M Unit := do
     cr0 := c.cr0 &&& ~~~(CR0.PE ||| CR0.EM ||| CR0.TS ||| CR0.PG), cr4 := 0, dr7 := 0x400, bpOn := false,
     cs := flat (c.smbase >>> 4).toUInt16 c.smbase,
     ds := flat 0 0, es := flat 0 0, ss := flat 0 0, fs := flat 0 0, gs := flat 0 0 }
-  flushTlb
+  flushTlbAll
 
 /-- RSM: #UD outside SMM; otherwise restore the saved state (a relocated SMBASE takes effect for the
 next SMI). An inconsistent saved state (paging without protection) shuts the processor down. -/
@@ -690,7 +690,9 @@ def rsm : M Unit := do
   let cr0 := ((← r 0x7FFC) &&& 0xE005003F) ||| CR0.ET
   let cr4 ← r 0x7F14
   if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
-  if cr4 &&& ~~~(0x01FC : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
+  -- the CR4 bits MOV CR4 accepts besides VME/PVI and OSXMMEXCPT/OSFXSR (as before), plus system A's UMIP,
+  -- SMEP and SMAP: an SMI taken while they are set must be able to return
+  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
   let cr3 ← r 0x7FF8
   let efl ← r 0x7FF4
   let eip ← r 0x7FF0
@@ -722,6 +724,6 @@ def rsm : M Unit := do
   if cr0 &&& CR0.PG != 0 && cr4 &&& CR4.PAE != 0 then
     let p ← tryCatch (readPdptes cr3) fun _ => throw (.shutdown "RSM: invalid PDPTEs")
     modCpu fun c => { c with pdpte := p }
-  flushTlb
+  flushTlbAll
 
 end X86
