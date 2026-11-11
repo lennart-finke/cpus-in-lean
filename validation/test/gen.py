@@ -26,6 +26,7 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isa_forms
+import gen_gpr   # 'ext' family: general-purpose extensions (x86_32/X86/Ext/Gpr.lean)
 
 DATA, DATA_SIZE = 0x8000, 8192
 CODE, INSN_OFF, CODE_SIZE = 0x20000, 256, 512
@@ -501,6 +502,8 @@ def gen_v2_family(g):
         insn = b'\x3e' * (total - len(body)) + body
         g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
         return insn[:15]
+    if r < 0.40:
+        return gen_gpr.gen(g)   # 'ext' family of the Gpr forms (gen_gpr.py)
     return None
 
 def main():
@@ -529,6 +532,8 @@ def main():
             patches = (g.patches + [(0xFFFF, 0), (0xFFFF, 0)])[:2]
             poff = [p[0] if p[0] == 0xFFFF or 0 <= p[0] <= DATA_SIZE - 4 else 0xFFFF for p in patches]
             paging = random.random() < 0.5
+            if getattr(g, 'no_paging', False):
+                paging = False   # e.g. CLFLUSH: TCG makes no access (gen_gpr.py)
             mode = (1 if paging else 0) | (2 if random.random() < 0.5 else 0)
             # REP + single-step: QEMU traps with EIP on the instruction even after the last
             # iteration (the SDM REP loop completes the instruction); not generated

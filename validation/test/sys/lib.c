@@ -177,6 +177,7 @@ void sys_main(void) {
 	test_cgf();
 	test_simd();
 	test_simd_exc();
+	test_gpr();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -186,5 +187,6 @@ void sys_main(void) {
 	test_simd_model();
 	test_debug_fuzz_model();
 	test_paging_fuzz_model();
+	test_gpr_model();
 	sys_exit();
 }
