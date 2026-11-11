@@ -97,6 +97,19 @@ static void denan(const u32 *a, u32 *b, int dbl) {
 	}
 }
 
+/* At most `max` NaN lanes among the FP inputs a and b (the extras become 1.0): two NaN inputs of one
+   operation follow the first-operand rule on hardware but TCG's larger-significand rule (see denan);
+   DPPS/DPPD (max 0) combine all lanes. */
+static void onenan(u32 *a, u32 *b, int dbl, int max) {
+	int n = 0;
+	for (int k = 0; k < 8; k++) {
+		u32 *p = k < 4 ? a + k : b + k - 4;
+		if (dbl ? (k % 2 == 0 && nan64(p)) : nan32(*p)) {
+			if (n++ >= max) { if (dbl) { p[0] = 0; p[1] = 0x3FF00000; } else *p = 0x3F800000; }
+		}
+	}
+}
+
 static u64 gen64(void) {
 	u64 s = (u64)(rnd() & 1) << 63, m = rnd64() & 0xFFFFFFFFFFFFFULL, e;
 	switch (rnd() % 16) {
@@ -150,7 +163,8 @@ enum {
 	NODN = 0x2000, /* no denormal inputs (RCP/RSQRT), round to nearest */
 	NODAZ = 0x4000, /* DAZ clear (MIN/MAX: TCG returns the unflushed denormal) */
 	ALLX = 0x40,   /* prints XMM0..7 (not only XMM0/XMM1) */
-	YMMD = 0x80    /* prints the YMM0..7 upper halves (VEX.256 forms) */
+	YMMD = 0x80,   /* prints the YMM0..7 upper halves (VEX.256 forms) */
+	ONENAN = 0x8000 /* at most one NaN among the FP inputs (map 3 rows, DPPS/DPPD: none), see onenan() */
 };
 /* One instruction form: mandatory prefix (0, 0x66, 0xF3, 0xF2; the VEX.pp of VEX forms), opcode,
    flags; map 0 or 1 = 0F, 2 = 0F 38, 3 = 0F 3A (always an imm8); vex: VEX-encoded (vvvv = XMM2),
@@ -200,6 +214,47 @@ static const u8 iops[] = {
    a terminator. Example: { 0xF2, 0x7C, MEM | F32 | D32 } (HADDPS), { 0x66, 0x00, MEM, 2 } (PSHUFB),
    { 0x66, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 } (VADDPD, VEX.128/256). */
 static const struct sop xops[] = {
+	/* SSE3 (Sse): MOVSLDUP, MOVSHDUP, MOVDDUP, HADDPx, HSUBPx, ADDSUBPx, LDDQU; SSE4a MOVNTSS/SD */
+	{ 0xF3, 0x12, MEM | F32 | D32 }, { 0xF3, 0x16, MEM | F32 | D32 }, { 0xF2, 0x12, MEM | F64 | D64 },
+	{ 0x66, 0x7C, MEM | F64 | D64 | ONENAN }, { 0xF2, 0x7C, MEM | F32 | D32 | ONENAN },
+	{ 0x66, 0x7D, MEM | F64 | D64 | ONENAN }, { 0xF2, 0x7D, MEM | F32 | D32 | ONENAN },
+	{ 0x66, 0xD0, MEM | F64 | D64 | ONENAN }, { 0xF2, 0xD0, MEM | F32 | D32 | ONENAN },
+	{ 0xF2, 0xF0, MEMONLY }, { 0xF3, 0x2B, MEMONLY | STORE }, { 0xF2, 0x2B, MEMONLY | STORE },
+	/* SSE4a register forms EXTRQ/INSERTQ xmm, xmm (the imm8 forms are in t_sse.c) */
+	{ 0x66, 0x79, 0 }, { 0xF2, 0x79, 0 },
+	/* SSSE3, MMX (no prefix) and XMM (66) forms */
+	{ 0, 0x00, MEM | MMXD, 2 }, { 0x66, 0x00, MEM, 2 }, { 0, 0x01, MEM | MMXD, 2 }, { 0x66, 0x01, MEM, 2 },
+	{ 0, 0x02, MEM | MMXD, 2 }, { 0x66, 0x02, MEM, 2 }, { 0, 0x03, MEM | MMXD, 2 }, { 0x66, 0x03, MEM, 2 },
+	{ 0, 0x04, MEM | MMXD, 2 }, { 0x66, 0x04, MEM, 2 }, { 0, 0x05, MEM | MMXD, 2 }, { 0x66, 0x05, MEM, 2 },
+	{ 0, 0x06, MEM | MMXD, 2 }, { 0x66, 0x06, MEM, 2 }, { 0, 0x07, MEM | MMXD, 2 }, { 0x66, 0x07, MEM, 2 },
+	{ 0, 0x08, MEM | MMXD, 2 }, { 0x66, 0x08, MEM, 2 }, { 0, 0x09, MEM | MMXD, 2 }, { 0x66, 0x09, MEM, 2 },
+	{ 0, 0x0A, MEM | MMXD, 2 }, { 0x66, 0x0A, MEM, 2 }, { 0, 0x0B, MEM | MMXD, 2 }, { 0x66, 0x0B, MEM, 2 },
+	{ 0, 0x1C, MEM | MMXD, 2 }, { 0x66, 0x1C, MEM, 2 }, { 0, 0x1D, MEM | MMXD, 2 }, { 0x66, 0x1D, MEM, 2 },
+	{ 0, 0x1E, MEM | MMXD, 2 }, { 0x66, 0x1E, MEM, 2 }, { 0, 0x0F, MEM | MMXD, 3 }, { 0x66, 0x0F, MEM, 3 },
+	/* SSE4.1 / SSE4.2 (0F 38): PBLENDVB, BLENDVPS/PD, PTEST, PMOVSX/ZX, PMULDQ, PCMPEQQ, MOVNTDQA,
+	   PACKUSDW, PCMPGTQ, PMIN/PMAX, PMULLD, PHMINPOSUW */
+	{ 0x66, 0x10, MEM, 2 }, { 0x66, 0x14, MEM | F32 | D32, 2 }, { 0x66, 0x15, MEM | F64 | D64, 2 }, { 0x66, 0x17, MEM, 2 },
+	{ 0x66, 0x20, MEM, 2 }, { 0x66, 0x21, MEM, 2 }, { 0x66, 0x22, MEM, 2 }, { 0x66, 0x23, MEM, 2 },
+	{ 0x66, 0x24, MEM, 2 }, { 0x66, 0x25, MEM, 2 }, { 0x66, 0x28, MEM | INT, 2 }, { 0x66, 0x29, MEM, 2 },
+	{ 0x66, 0x2A, MEMONLY, 2 }, { 0x66, 0x2B, MEM | INT | DINT, 2 },
+	{ 0x66, 0x30, MEM, 2 }, { 0x66, 0x31, MEM, 2 }, { 0x66, 0x32, MEM, 2 }, { 0x66, 0x33, MEM, 2 },
+	{ 0x66, 0x34, MEM, 2 }, { 0x66, 0x35, MEM, 2 }, { 0x66, 0x37, MEM, 2 },
+	{ 0x66, 0x38, MEM, 2 }, { 0x66, 0x39, MEM | INT | DINT, 2 }, { 0x66, 0x3A, MEM, 2 }, { 0x66, 0x3B, MEM | INT | DINT, 2 },
+	{ 0x66, 0x3C, MEM, 2 }, { 0x66, 0x3D, MEM | INT | DINT, 2 }, { 0x66, 0x3E, MEM, 2 }, { 0x66, 0x3F, MEM | INT | DINT, 2 },
+	{ 0x66, 0x40, MEM | INT | DINT, 2 }, { 0x66, 0x41, MEM, 2 },
+	/* SSE4.1 (0F 3A): ROUNDPS/PD/SS/SD, BLENDPS/PD, PBLENDW, PEXTRB/W/D and EXTRACTPS to memory (the
+	   register forms are in t_sse.c), PINSRB, INSERTPS, PINSRD, DPPS, DPPD, MPSADBW */
+	{ 0x66, 0x08, MEM | F32 | D32, 3 }, { 0x66, 0x09, MEM | F64 | D64, 3 },
+	{ 0x66, 0x0A, MEM | F32 | D32, 3 }, { 0x66, 0x0B, MEM | F64 | D64, 3 },
+	{ 0x66, 0x0C, MEM, 3 }, { 0x66, 0x0D, MEM, 3 }, { 0x66, 0x0E, MEM, 3 },
+	{ 0x66, 0x14, MEMONLY | STORE, 3 }, { 0x66, 0x15, MEMONLY | STORE, 3 }, { 0x66, 0x16, MEMONLY | STORE, 3 },
+	{ 0x66, 0x17, MEMONLY | STORE, 3 }, { 0x66, 0x20, MEM, 3 }, { 0x66, 0x21, MEM | F32 | D32, 3 }, { 0x66, 0x22, MEM, 3 },
+	{ 0x66, 0x40, MEM | F32 | D32 | ONENAN, 3 }, { 0x66, 0x41, MEM | F64 | D64 | ONENAN, 3 }, { 0x66, 0x42, MEM, 3 },
+	/* AES-NI, PCLMULQDQ (all imm8), SHA (Crypto) */
+	{ 0x66, 0xDB, MEM, 2 }, { 0x66, 0xDC, MEM, 2 }, { 0x66, 0xDD, MEM, 2 }, { 0x66, 0xDE, MEM, 2 },
+	{ 0x66, 0xDF, MEM, 2 }, { 0x66, 0xDF, MEM, 3 }, { 0x66, 0x44, MEM, 3 },
+	{ 0, 0xC8, MEM, 2 }, { 0, 0xC9, MEM, 2 }, { 0, 0xCA, MEM, 2 }, { 0, 0xCB, MEM, 2 }, { 0, 0xCC, MEM, 2 },
+	{ 0, 0xCD, MEM, 2 }, { 0, 0xCC, MEM, 3 },
 	{ 0, 0, 0xFFFF }
 };
 #define NXOPS (sizeof xops / sizeof xops[0] - 1)
@@ -270,6 +325,7 @@ static void sse_case(u32 n, const struct sop *o) {
 		denan(XIN, XIN + 4, et == 2);
 		denan(XIN, MEMOP, et == 2);
 	}
+	if (fl & ONENAN) onenan(XIN, mem ? MEMOP : XIN + 4, et == 2, o->map == 3 ? 0 : 1);
 	fill(MMIN, et == 3 ? 3 : 0, 0);
 	if (et == 3 && rnd() % 2) MMIN[2] = XIN[4], MMIN[3] = XIN[5];
 	GIN = et == 3 ? genint() : rnd();

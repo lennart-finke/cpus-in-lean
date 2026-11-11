@@ -1,5 +1,6 @@
 import X86.Fpu
 import X86.Float
+import X86.Cpuid
 /-!
 # MMX, SSE and SSE2 (Pentium 4 level), FXSAVE/FXRSTOR
 
@@ -18,12 +19,14 @@ MOVDQ2Q) additionally take a pending x87 exception and switch to MMX operation. 
 the exact binary32/binary64 arithmetic of `X86/Float.lean`: masked exceptions set MXCSR flags; an
 unmasked one sets the flags, leaves the destination unchanged and raises #XM with
 CR4.OSXMMEXCPT = 1, otherwise #UD (SDM vol. 1, 11.5). 128-bit memory operands of packed
-instructions must be 16-byte aligned (#GP(0)), except MOVUPS/MOVUPD/MOVDQU and MASKMOVDQU.
+instructions must be 16-byte aligned (#GP(0)), except MOVUPS/MOVUPD/MOVDQU and MASKMOVDQU; with
+MXCSR.MM (AMD Misaligned SSE mode) only MOVAPx, MOVDQA, MOVNTPx, MOVNTDQ, MOVNTDQA and
+FXSAVE/FXRSTOR keep the requirement (`vecAddr`).
 
 The decoder keeps the 66/F2/F3 prefixes (`Inst.p66`, `Inst.rep`); for the 0F map they select the
 instruction: F2 or F3 (the last one wins) take precedence over 66. A prefix combination with no
 instruction in the SDM opcode map (blank cells of tables A-3/A-4, e.g. F3 0F 58 is ADDSS but
-F3 0F 54 is undefined) raises #UD; so do SSE3 opcodes (CPUID does not report SSE3).
+F3 0F 54 is undefined) raises #UD. SSE3 and later extensions are in `X86/Ext/Sse.lean`.
 
 **RCPPS/RCPSS/RSQRTPS/RSQRTSS** return approximations whose exact bits are implementation
 specific (relative error ≤ 1.5·2^-12, SDM). This model defines them as the round-to-nearest-even
@@ -32,8 +35,8 @@ MXCSR.RC/DAZ/FTZ and without flags, with the SDM's special cases: ±0 and denorm
 results below the normal range are flushed to ±0, RSQRT of a negative number is the QNaN
 indefinite, NaNs are returned quieted.
 
-**FXSAVE/FXRSTOR** use the 512-byte 32-bit format. MXCSR_MASK is 0xFFFF (all MXCSR bits
-including DAZ are implemented, as on later Pentium 4 steppings and QEMU). With CR4.OSFXSR = 0,
+**FXSAVE/FXRSTOR** use the 512-byte 32-bit format. MXCSR_MASK is 0x2FFFF (all MXCSR bits
+including DAZ, and MM, bit 17, of AMD's Misaligned SSE mode; `mxcsrMask`). With CR4.OSFXSR = 0,
 MXCSR, MXCSR_MASK and the XMM registers are neither saved nor restored (the SDM leaves this
 implementation dependent). Reserved fields of the image are not written, apart from the zero
 upper halves of FTW, FCS and FDS.
@@ -285,13 +288,37 @@ def sseStatus (flags : UInt64) : M Unit := do
 
 /-! ## Memory operands -/
 
-/-- Linear address of an `n`-byte vector operand: segment checks, 16-byte alignment (#GP(0)) if
-`align`, the alignment check (#AC at CPL 3: 64-bit media 8, 128-bit media 16, smaller operands by
-their size; AMD APM vol. 2, table 8-7), and for a store a write check of the whole range before
-anything is written. -/
+/-- MXCSR.MM (bit 17, AMD Misaligned SSE mode, `Sse.lean`). -/
+def MXCSR_MM : UInt32 := 0x20000
+
+/-- Instructions whose 16-byte alignment requirement MXCSR.MM does not lift (AMD APM vol. 1, 4.3.2):
+MOVAPS/MOVAPD (0F 28/29), MOVNTPS/MOVNTPD (0F 2B), MOVDQA (66 0F 6F/7F), MOVNTDQ (66 0F E7), FXSAVE and
+FXRSTOR (0F AE), MOVNTDQA (66 0F 38 2A, APM vol. 4 MOVNTDQA); and every VEX form that requests
+alignment (MM controls only legacy SSE instructions). -/
+def alignStrict (i : Inst) : Bool :=
+  i.vex || i.op == 0x128 || i.op == 0x129 || i.op == 0x12B || i.op == 0x1E7 || i.op == 0x1AE ||
+  i.op == 0x22A || ((i.op == 0x16F || i.op == 0x17F) && i.pp == 1)
+
+/-- The exception (error code 0) for a misaligned operand that must be 16-byte aligned: #GP, or with
+MXCSR.MM = 1 for a non-strict instruction #AC when alignment checking is enabled and none otherwise. -/
+def misalignExc (c : Cpu) (i : Inst) : Option UInt8 :=
+  if c.mxcsr &&& MXCSR_MM == 0 || alignStrict i then some Vec.GP
+  else if c.acEnabled then some Vec.AC
+  else none
+
+/-- Linear address of an `n`-byte vector operand: segment checks, 16-byte alignment if `align`, and
+for a store a write check of the whole range before anything is written. A misaligned operand
+raises #GP(0); with MXCSR.MM = 1 (Misaligned SSE mode), except for `alignStrict` instructions, it
+raises #AC(0) instead when alignment checking is enabled (CR0.AM, EFLAGS.AC, CPL 3) and nothing
+otherwise (AMD APM vol. 1, 4.2.2 and 4.3.2). -/
 def vecAddr (i : Inst) (n : UInt32) (write align : Bool) : M UInt32 := do
   let lin ← segAddr i.seg (← fpEa i) n write
-  if align && lin &&& 15 != 0 then gp 0
+  if align && lin &&& 15 != 0 then
+    match misalignExc (← cpu) i with
+    | some v => exc v (some 0)
+    | none => pure ()
+  -- alignment check of the operand (#AC at CPL 3: 64-bit media 8, 128-bit media 16, smaller operands
+  -- by their size; AMD APM vol. 2, table 8-7; system A, `acChk`)
   acChk lin (if n > 16 then 16 else n) (← isUser)
   if write then linProbeWr lin n (← isUser)
   return lin
@@ -552,7 +579,10 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
 
 /-! ## FXSAVE / FXRSTOR / LDMXCSR / STMXCSR -/
 
-def mxcsrMask : UInt32 := 0xFFFF
+/-- Writable MXCSR bits, reported as MXCSR_MASK by FXSAVE: bits 15:0 (DAZ included) and, with
+Misaligned SSE mode, MM (bit 17; AMD APM vol. 1, 4.2.2: "The corresponding MXCSR_MASK bit (17) is
+1, regardless of whether MM is set or not"). -/
+def mxcsrMask : UInt32 := if implemented .misalignSse then 0x2FFFF else 0xFFFF
 
 def fxsave (i : Inst) : M Unit := do
   let c ← cpu

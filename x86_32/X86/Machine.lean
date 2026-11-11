@@ -489,10 +489,11 @@ def linWr (lin n v : UInt32) (user : Bool) (implicit : Bool := false) : M Unit :
       let p := if a &&& 0xFFFFF000 == lin1 then p1 + (a &&& 0xFFF).toUInt64 else p0 + (a - lin).toUInt64
       physWr p 1 (v >>> (k.toUInt32 * 8))
 
-/-- Check that a linear range is writable (used by instructions with several writes). -/
+/-- Check that a linear range is writable (used by instructions with several writes). A fault on the
+second page reports its first byte in CR2, as `linWr` does. -/
 def linProbeWr (lin n : UInt32) (user : Bool) : M Unit := do
   let _ ← translate lin true user
-  let _ ← translate (lin + n - 1) true user
+  let _ ← translate ((lin + n - 1) &&& 0xFFFFF000) true user
 
 /-! ## Alignment check
 
@@ -511,11 +512,15 @@ requirement for single accesses; instructions whose operand is made of several a
 operand's requirement for the first part and `al := 1` for the rest. Only a misaligned access at
 CPL 3 reaches `acCheck`, so aligned accesses pay one test. -/
 
-/-- #AC(0) if alignment checking is enabled (CR0.AM and EFLAGS.AC); the caller has established that
-the access is at CPL 3 and misaligned. -/
+/-- Alignment checking is enabled: CR0.AM = 1, EFLAGS.AC = 1 and CPL 3 (the one definition, also used
+by `Simd.misalignExc` for misaligned SSE operands with MXCSR.MM). -/
+@[inline] def Cpu.acEnabled (c : Cpu) : Bool :=
+  c.cr0 &&& CR0.AM != 0 && c.eflags &&& Flag.AC != 0 && c.cpl == 3
+
+/-- #AC(0) if alignment checking is enabled; the caller has established that the access is a
+misaligned CPL-3 access. -/
 @[inline] def acCheck : M Unit := fun m =>
-  if m.cpu.cr0 &&& CR0.AM != 0 && m.cpu.eflags &&& Flag.AC != 0 then .error (.exc Vec.AC (some 0) 0) m
-  else .ok () m
+  if m.cpu.acEnabled then .error (.exc Vec.AC (some 0) 0) m else .ok () m
 
 /-- Alignment check of an access (or operand) at linear address `lin` with required alignment `al`
 (a power of two) made with CPL 3 (`user`). -/

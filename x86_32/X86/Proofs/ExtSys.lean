@@ -228,13 +228,13 @@ theorem acChk_disabled {lin al : UInt32} {u : Bool} {m : Machine}
     (h : m.cpu.cr0 &&& CR0.AM = 0 ∨ m.cpu.eflags &&& Flag.AC = 0) : acChk lin al u m = .ok () m := by
   unfold acChk
   split
-  · rcases h with h | h <;> simp [acCheck, h]
+  · rcases h with h | h <;> simp [acCheck, Cpu.acEnabled, h]
   · rfl
 
 /-- A misaligned access at CPL 3 with CR0.AM = EFLAGS.AC = 1 raises #AC(0) before anything changes. -/
 theorem acChk_fault {lin al : UInt32} {m : Machine} (ha : lin &&& (al - 1) ≠ 0)
-    (hm : m.cpu.cr0 &&& CR0.AM ≠ 0) (hf : m.cpu.eflags &&& Flag.AC ≠ 0) :
+    (hm : m.cpu.cr0 &&& CR0.AM ≠ 0) (hf : m.cpu.eflags &&& Flag.AC ≠ 0) (hc : m.cpu.cpl = 3) :
     acChk lin al true m = .error (.exc Vec.AC (some 0) 0) m := by
-  simp [acChk, acCheck, ha, hm, hf]
+  simp [acChk, acCheck, Cpu.acEnabled, ha, hm, hf, hc]
 
 end X86

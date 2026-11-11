@@ -271,15 +271,26 @@ def alignment_cases(rng, count):
         yield (record('8b03', flags=0x40202, address=0x11000 + off, permissions=(0x67, 0)),
                meta('alignment_check', 'unmapped_load', '8b03', offset=off, ac=1))
 
+from native_crypto import aes_cases, pclmul_cases, sha_cases   # Crypto workstream
 
 FAMILIES = [
     (x87_cases, ()),
     (simd_cases, ()),
     (alignment_cases, ()),
+    (aes_cases, ('aes',)),
+    (pclmul_cases, ('pclmulqdq',)),
+    (sha_cases, ('sha',)),
 ]
 # General-purpose extensions (x86_32/X86/Ext/Gpr.lean): gpr_cases.py
 from gpr_cases import FAMILIES as _GPR_FAMILIES  # noqa: E402
 FAMILIES += _GPR_FAMILIES
+
+
+# Sse workstream: SSE3 (with FISTTP), SSSE3, SSE4.1, SSE4.2, SSE4a, MisalignSse (fp_cases_sse.py)
+import fp_cases_sse  # noqa: E402
+FAMILIES += [(lambda rng, n, name=name: getattr(fp_cases_sse, name)(rng, n), (feature,)) for name, feature in
+             (('sse3_cases', 'sse3'), ('ssse3_cases', 'ssse3'), ('sse41_cases', 'sse41'),
+              ('sse42_cases', 'sse42'), ('sse4a_cases', 'sse4a'), ('misalign_cases', 'misalignSse'))]
 
 
 def cases(seed=20261111, count=10000):

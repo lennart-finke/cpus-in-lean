@@ -262,10 +262,11 @@ def fpNote (i : Inst) : M Unit := do
   else modCpu fun c => { c with fip := ip, fcs := c.cs.sel, fop }
 
 /-- Store ST(0) to memory with format `kind`: 0 m32fp, 1 m64fp, 2 m80fp, 3 m16int, 4 m32int,
-5 m64int, 6 m80bcd; pop afterwards if `pop`. -/
-def fpStore (i : Inst) (kind : Nat) (pop : Bool) : M Unit := do
+5 m64int, 6 m80bcd; pop afterwards if `pop`. `trunc`: convert by truncation whatever FCW.RC says
+(FISTTP, SSE3; SDM FISTTP). -/
+def fpStore (i : Inst) (kind : Nat) (pop : Bool) (trunc : Bool := false) : M Unit := do
   let c ← cpu
-  let cw := c.fcw.toUInt32
+  let cw := c.fcw.toUInt32 ||| (if trunc then 0xC00 else 0)
   let off ← fpEa i
   let a? := c.stOpt 0
   let size := match kind with | 0 => 4 | 1 => 8 | 3 => 2 | 4 => 4 | 5 => 8 | _ => 10
@@ -540,6 +541,7 @@ def x87 (i : Inst) : M Unit := do
     | 0xDB =>
       match r with
       | 0 => fpLoad i 4
+      | 1 => fpStore i 4 true true   -- FISTTP m32int (SSE3)
       | 2 => fpStore i 4 false
       | 3 => fpStore i 4 true
       | 5 => fpLoad i 2
@@ -548,6 +550,7 @@ def x87 (i : Inst) : M Unit := do
     | 0xDD =>
       match r with
       | 0 => fpLoad i 1
+      | 1 => fpStore i 5 true true   -- FISTTP m64int (SSE3)
       | 2 => fpStore i 1 false
       | 3 => fpStore i 1 true
       | 4 => -- FRSTOR
@@ -573,6 +576,7 @@ def x87 (i : Inst) : M Unit := do
     | _ => -- DF
       match r with
       | 0 => fpLoad i 3
+      | 1 => fpStore i 3 true true   -- FISTTP m16int (SSE3)
       | 2 => fpStore i 3 false
       | 3 => fpStore i 3 true
       | 4 => fpLoad i 6

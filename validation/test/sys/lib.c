@@ -178,6 +178,8 @@ void sys_main(void) {
 	test_simd();
 	test_simd_exc();
 	test_sysa();
+	test_sse();
+	test_crypto();
 	test_gpr();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
@@ -186,9 +188,11 @@ void sys_main(void) {
 	test_x87_model();
 	test_x87_trans_model();
 	test_simd_model();
+	test_crypto_model();
 	test_debug_fuzz_model();
 	test_paging_fuzz_model();
 	test_sysa_model();
+	test_sse_model();
 	test_gpr_model();
 	sys_exit();
 }

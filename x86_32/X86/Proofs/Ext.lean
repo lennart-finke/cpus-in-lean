@@ -23,19 +23,20 @@ def formerCpuid (leaf : UInt32) : Regs :=
 
 /-- The reported leaves with the features implemented since `formerCpuid`'s (the removed
 `cpuidVals`): Gpr (MONITOR, MOVBE, POPCNT, RDRAND, CLFSH, BMI1/2, ADX, RDSEED, CLFLUSHOPT, CLWB,
-RDPID, ABM, PREFETCHW, MONITORX, RDTSCP, CLZERO, IRPERF, RDPRU, WBNOINVD, MCOMMIT) and system A
+RDPID, ABM, PREFETCHW, MONITORX, RDTSCP, CLZERO, IRPERF, RDPRU, WBNOINVD, MCOMMIT), Sse (SSE3, SSSE3,
+SSE4.1, SSE4.2, SSE4A, MisAlignSse), Crypto (AES, PCLMULQDQ, SHA) and system A
 (SYSENTER, SYSCALL, TSC, PSE, PSE-36, PGE, MCE, MCA, MTRR, PAT, SMEP, SMAP, UMIP, AltMovCr8, FFXSR,
 TCE, OSVW, WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD): highest leaves 7 and
 0x80000008. -/
 def sysALeaf (l sub : UInt32) : Regs :=
   match l with
   | 0 => (7, 0x756E6547, 0x6C65746E, 0x49656E69)
-  | 1 => (0x619, 0x800, 0x40C00008, 0x078BFBFD)
+  | 1 => (0x619, 0x800, 0x42D8020B, 0x078BFBFD)
   | 5 => (0x40, 0x40, 3, 0x11)
   | 6 => (4, 0, 1, 0)
-  | 7 => if sub == 0 then (0, 0x19C0188, 0x400004, 0) else (0, 0, 0, 0)
+  | 7 => if sub == 0 then (0, 0x219C0188, 0x400004, 0) else (0, 0, 0, 0)
   | 0x80000000 => (0x80000008, 0, 0, 0)
-  | 0x80000001 => (0, 0, 0x20022330, 0x0A100800)
+  | 0x80000001 => (0, 0, 0x200223F0, 0x0A100800)
   | 0x80000007 => (0, 0, 0, 0x100)
   | 0x80000008 => (0x3030, 0x0102D311, 0x707F, 0x10000)
   | _ => (0, 0, 0, 0)
@@ -56,9 +57,9 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
     else ((7 : UInt32), sub)) = p
   obtain ⟨l, s⟩ := p
   have hx : implemented .xsave = false := rfl
-  have h12 : Cpuid.featBits 1 0 2 true = 0x40C00008 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x42D8020B := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x078BFBFD := by decide
-  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x20022330 := by decide
+  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x200223F0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x0A100800 := by decide
   have hc : implemented .clfsh = true := rfl
   by_cases h0 : l = 0
