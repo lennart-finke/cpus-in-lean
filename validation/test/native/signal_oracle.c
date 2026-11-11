@@ -23,6 +23,12 @@ struct context {
 struct stack {u64 pointer;u32 flags,padding;u64 size;};
 struct ucontext {u64 flags,link;struct stack stack;struct context cpu;u64 sigmask;};
 struct vector {u8 code[16];u64 r[16],flags;u32 seed,mode;u64 pte[2],xmm[32];u32 mxcsr,pad;};
+#ifdef NATIVE_FP
+/* FXSAVE order: logical ST(0)..ST(7), but FTW bits name physical registers. */
+struct fp_input {u16 cw,sw,tw,pad;u64 reserved;u32 st[32];u8 memory[64];};
+static struct fp_input fp_input;
+_Static_assert(sizeof(struct fp_input)==208,"FP extension layout");
+#endif
 struct action {u64 handler,flags,restorer,mask;};
 _Static_assert(sizeof(struct context)==256,"Linux sigcontext layout");
 _Static_assert(__builtin_offsetof(struct ucontext,cpu)==40,"Linux ucontext layout");
@@ -73,7 +79,12 @@ static void mark_sse(struct fpregs *fp,u64 uc_flags) {
   u32 extended=fp->reserved[13],size=fp->reserved[16];
   if(extended<580 || size<576 || extended>1024*1024)fail("invalid Linux xstate frame",extended);
   if(*(u32 *)((u8 *)fp+extended-4)!=0x46505845)fail("invalid xstate trailer",extended);
-  *(u64 *)((u8 *)fp+512)|=2;
+  *(u64 *)((u8 *)fp+512)|=
+#ifdef NATIVE_FP
+   3;
+#else
+   2;
+#endif
  } else fail("missing xstate magic",fp->reserved[12]);
 }
 static void handler(int sig,int *info,struct ucontext *u) {
@@ -85,6 +96,11 @@ static void handler(int sig,int *info,struct ucontext *u) {
   recovery=*c;recovery_fp=*fp;
   set_regs(c,&input);
   fp->mxcsr=input.mxcsr;
+#ifdef NATIVE_FP
+  fp->cwd=fp_input.cw;fp->swd=fp_input.sw;fp->ftw=fp_input.tw;
+  fp->fop=0;fp->rip=0;fp->rdp=0;
+  for(int i=0;i<32;i++)fp->st[i]=fp_input.st[i];
+#endif
   for(int i=0;i<32;i++){fp->xmm[2*i]=(u32)input.xmm[i];fp->xmm[2*i+1]=(u32)(input.xmm[i]>>32);}
   mark_sse(fp,u->flags);phase=1;return;
  }
@@ -95,6 +111,11 @@ static void handler(int sig,int *info,struct ucontext *u) {
   * Keep the current kernel-generated xstate allocation and extension metadata. */
  u64 fpp=c->fpstate;*c=recovery;c->fpstate=fpp;u->flags|=6;
  fp->mxcsr=recovery_fp.mxcsr;
+#ifdef NATIVE_FP
+ fp->cwd=recovery_fp.cwd;fp->swd=recovery_fp.swd;fp->ftw=recovery_fp.ftw;
+ fp->fop=recovery_fp.fop;fp->rip=recovery_fp.rip;fp->rdp=recovery_fp.rdp;
+ for(int i=0;i<32;i++)fp->st[i]=recovery_fp.st[i];
+#endif
  for(int i=0;i<64;i++)fp->xmm[i]=recovery_fp.xmm[i];
  mark_sse(fp,u->flags);phase=2;
 }
@@ -117,10 +138,22 @@ static void self_check(int tf) {
   fail("NOP mode/IP/trap calibration",observed.rip);
  for(int k=0;k<(compat?8:16);k++)if(r[k]!=input.r[k])fail("NOP input GPR calibration",k);
  if((observed.flags&0xdd5)!=(input.flags&0xdd5))fail("NOP flags calibration",observed.flags);
- if(!compat) {
+ if(!compat
+#ifdef NATIVE_FP
+    || 1
+#endif
+ ) {
   if(observed_fp.mxcsr!=input.mxcsr)fail("NOP MXCSR calibration",observed_fp.mxcsr);
   for(int k=0;k<32;k++)if((observed_fp.xmm[2*k]|((u64)observed_fp.xmm[2*k+1]<<32))!=input.xmm[k])fail("NOP XMM calibration",k);
  }
+#ifdef NATIVE_FP
+ if(observed_fp.cwd!=fp_input.cw || observed_fp.swd!=fp_input.sw || observed_fp.ftw!=fp_input.tw)
+  fail("NOP x87 control/status/tag calibration",observed_fp.swd);
+ for(int i=0;i<8;i++)for(int j=0;j<3;j++) {
+  u32 mask=j==2?0xffff:0xffffffff;
+  if((observed_fp.st[4*i+j]&mask)!=(fp_input.st[4*i+j]&mask))fail("NOP x87 stack calibration",i);
+ }
+#endif
 }
 #ifdef NATIVE_MEMORY
 /* Only this isolated 8 KiB arena is exposed to memory test instructions.
@@ -144,6 +177,9 @@ static void memory_prepare(void) {
   seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;
   ((u32 *)arena)[k]=seed;
  }
+#ifdef NATIVE_FP
+ memcpy(arena,fp_input.memory,64);
+#endif
  memcpy(initial,arena,8192);
  for(int p=0;p<2;p++) {
   if(input.pte[p]==0) {
@@ -163,11 +199,34 @@ static void memory_restore(void) {
   if(missing)memcpy(arena+p*4096,initial+p*4096,4096);
  }
 }
+#ifdef NATIVE_FP
+static u8 memory_byte(int i) {
+ if(input.pad==1 && i<512) {
+  int keep=i<5 || (i>=24 && i<28) || (i>=32 && i<160 && (i-32)%16<10) ||
+           (i>=160 && i<288) || i>=464;
+  if(!keep)return 0;
+ }
+ if((input.pad==2 || input.pad==3) && i<28 && !(i<2 || (i>=4 && i<6) || (i>=8 && i<10)))return 0;
+ return arena[i];
+}
+#endif
 static u32 memory_hash(void) {
- u32 h=2166136261u;for(int i=0;i<8192;i++)h=(h^arena[i])*16777619u;return h;
+ u32 h=2166136261u;for(int i=0;i<8192;i++)h=(h^
+#ifdef NATIVE_FP
+ memory_byte(i)
+#else
+ arena[i]
+#endif
+ )*16777619u;return h;
 }
 static u64 page_hash(int page) {
- u64 h=14695981039346656037ull;for(int i=0;i<4096;i++)h=(h^arena[page*4096+i])*1099511628211ull;return h;
+ u64 h=14695981039346656037ull;for(int i=0;i<4096;i++)h=(h^
+#ifdef NATIVE_FP
+ memory_byte(page*4096+i)
+#else
+ arena[page*4096+i]
+#endif
+ )*1099511628211ull;return h;
 }
 static void memory_check(void) {
  /* Flat user DS/ES are required for compatibility-mode data accesses.
@@ -176,7 +235,13 @@ static void memory_check(void) {
  input.flags=0x202;input.seed=1;input.mxcsr=0x1f80;input.pte[0]=input.pte[1]=0x67;
  input.r[3]=0x10000;input.code[0]=2;input.code[1]=0x8b;input.code[2]=3;
  memory_prepare();execute();memory_restore();
- if(observed.trapno!=3 || observed.rax!=0x42021 || observed.rip!=0x20103)fail("memory load calibration",observed.trapno);
+ if(observed.trapno!=3 || observed.rax!=
+#ifdef NATIVE_FP
+    *(u32 *)fp_input.memory
+#else
+    0x42021
+#endif
+    || observed.rip!=0x20103)fail("memory load calibration",observed.trapno);
  input.r[0]=0x12345678;input.code[1]=0x89;
  memory_prepare();execute();memory_restore();
  if(observed.trapno!=3 || *(u32 *)arena!=0x12345678)fail("memory store calibration",observed.trapno);
@@ -202,6 +267,12 @@ void start(u64 *stack) {
  struct action action={(u64)handler,0x0c000004,(u64)signal_restorer,~0ull};
  int signals[]={4,5,7,8,10,11};
  for(int k=0;k<6;k++){res=call(13,signals[k],(long)&action,0,8,0,0);if(res<0)fail("rt_sigaction",res);}
+#ifdef NATIVE_FP
+ if(!compat)fail("FP oracle requires i386 mode",0);
+ /* Nonzero TOP and a mixture of empty/nonempty physical registers. */
+ fp_input.cw=0x37f;fp_input.sw=0x2800;fp_input.tw=0xa5;
+ for(int i=0;i<8;i++){fp_input.st[4*i]=i+1;fp_input.st[4*i+1]=0x80000000;fp_input.st[4*i+2]=0x3fff+i;}
+#endif
  self_check(0);self_check(1);
  text(2,"PASS: NOP state calibration with TF off/on\n");
 #ifdef NATIVE_MEMORY
@@ -210,6 +281,9 @@ void start(u64 *stack) {
  text(1,"BEGIN ");hex(1,count);text(1,"\n");
  for(u64 index=0;index<count;index++) {
   read_all(&input,sizeof(input));
+#ifdef NATIVE_FP
+  read_all(&fp_input,sizeof(fp_input));
+#endif
 #ifdef NATIVE_MEMORY
   memory_prepare();
 #endif
@@ -223,6 +297,14 @@ void start(u64 *stack) {
   hex(1,observed_fp.mxcsr);hex(1,observed.trapno);hex(1,observed.err);hex(1,observed.cr2);
 #ifdef NATIVE_MEMORY
   hex(1,memory_hash());hex(1,page_hash(0));hex(1,page_hash(1));
+#endif
+#ifdef NATIVE_FP
+  hex(1,observed_fp.cwd);hex(1,observed_fp.swd);hex(1,observed_fp.ftw);
+  hex(1,observed_fp.fop);hex(1,(u32)observed_fp.rip);hex(1,(u32)observed_fp.rdp);
+  for(int i=0;i<8;i++) {
+   hex(1,observed_fp.st[4*i]|((u64)observed_fp.st[4*i+1]<<32));
+   hex(1,observed_fp.st[4*i+2]&0xffff);
+  }
 #endif
   text(1,"\n");
  }

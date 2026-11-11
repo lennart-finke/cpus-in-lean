@@ -37,6 +37,12 @@ preserves single-CPU execution and records all stores, using 20,000 generated in
 (only those with paging off are checked).
 
 ## Hardware tests
+For the IA-32 x87/MMX/SSE/SSE2 coverage gap, the new
+[user-mode floating-point campaign](test/FP-HARDWARE.md) provides over 120,000
+directed and random cases, a full-state native oracle, and a self-contained
+Linux paste script. It requires no root, KVM, compiler or Lean on the target.
+Preparation and emulator smoke checks are not physical-hardware evidence.
+
 These run on an x86-64 Linux server without root or KVM. Each instruction executes in user mode, and Linux signal handlers capture the result, for both models:
 
 ```

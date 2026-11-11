@@ -31,10 +31,6 @@ subDir = "x86_32"
 
 (`subDir = "x86_64"` and `name = "x86_64"` for the 64-bit model.)
 
-The separate [OpenSSL example suite](suites/openssl/README.md) contains four pinned targets
-(SHA-256/SHA-224, ChaCha20, Poly1305 and X25519), independent specifications and 13 open proof
-obligations. Run `suites/openssl/verify.sh` to check the artifacts and execute smoke tests.
-
 ## Why?
 To prove correctness of binaries with respect to these formal models. This work is inspired by researchers like Nicholas Carlini and Keane Lucas, see [LLMs are making formal software verification feasible at a much larger scale](https://www.anthropic.com/research/formal-verification).
 
@@ -42,8 +38,6 @@ To prove correctness of binaries with respect to these formal models. This work 
 ## Correctness
 It's hard to know whether a formal model actually does what it's supposed to. The main ways we test for correctness are fuzzing against real hardware (`IA-32` using 32-bit mode on an AMD EPYC 7742) and QEMU. Sometimes QEMU deviates from Intel's manual, in which case the manual takes precedence. Sometimes the hardware test differs from either the manual and/or QEMU, in which case the hardware gets precedence (though this is highly debatable of course).
 
-`./verify.sh` builds both models, checks the proofs, and runs QEMU instruction and system tests
-plus the TSO litmus tests; `./verify.sh --full` also checks the TSO access log and boots Linux on both models.
 
 ## Requirements
 - [elan](https://github.com/leanprover/elan) (Lean 4.34.1, from `lean-toolchain`) and Python 3

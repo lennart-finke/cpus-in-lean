@@ -22,8 +22,10 @@ def build(source, output, linker, backend='ptrace'):
         cc += ['-m64', '-O2', '-Wall', '-Wextra', '-Werror', '-ffreestanding', '-fno-builtin', '-fno-pie',
                '-fno-pic', '-fno-stack-protector', '-fno-asynchronous-unwind-tables',
                '-mno-red-zone', '-mno-sse', '-mno-mmx']
-        if backend == 'memory':
+        if backend in ('memory', 'fp'):
             cc += ['-DNATIVE_MEMORY']
+        if backend == 'fp':
+            cc += ['-DNATIVE_FP']
         objects = []
         sources = ['start.S', 'oracle.c'] if backend == 'ptrace' else ['start.S', 'signal_oracle.c', 'signal_enter.S']
         for name in sources:

@@ -24,3 +24,8 @@ root = "LitmusMain"
 [[lean_exe]]
 name = "x86sys"
 root = "SysMain"
+
+# User-mode IA-32 x87/MMX/SSE/SSE2 hardware validation.
+[[lean_exe]]
+name = "x86fp"
+root = "FpMain"
