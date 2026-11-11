@@ -35,7 +35,8 @@ figures 7 and 14; `X86/Proofs/ExtCrypto.lean` proves them equal to the algebraic
 * 66 0F 38 DB..DF AESIMC, AESENC, AESENCLAST, AESDEC, AESDECLAST; 66 0F 3A DF AESKEYGENASSIST
   (CPUID.1:ECX.AES); 66 0F 3A 44 PCLMULQDQ (CPUID.1:ECX.PCLMULQDQ).
 * 0F 38 C8..CD SHA1NEXTE, SHA1MSG1, SHA1MSG2, SHA256RNDS2, SHA256MSG1, SHA256MSG2; 0F 3A CC SHA1RNDS4
-  (CPUID.7.0:EBX.SHA; not reported yet, see `shaAvail`).
+  (CPUID.7.0:EBX.SHA, reported: `implemented .sha`; the instructions execute whatever CPUID reports,
+  see `shaAvail`).
 
 Exceptions (SDM vol. 2, table 2-21 "Type 4"; AMD APM vol. 4, the instruction pages): #UD with any
 other mandatory prefix (AES/PCLMULQDQ need 66; the SHA instructions are "NP": a 66, F2 or F3 prefix
@@ -312,11 +313,11 @@ def sha256msg2 (a b : V128) : V128 :=
 
 /-! ## Instructions -/
 
-/-- Whether the SHA instructions execute. They do whether or not CPUID reports SHA: the CPUID bit
-(`implemented .sha`) stays clear until SSSE3 is implemented (the Sse workstream), because software
-selects its SHA code by the SHA bit alone and that code also uses SSSE3 (BusyBox's sha256sum, part of
-the Linux workload, runs PSHUFB before SHA256RNDS2). Masking a CPUID bit does not disable an
-instruction on hardware either. -/
+/-- Whether the SHA instructions execute. They do whether or not CPUID reports SHA (CPUID reports
+it now, `implemented .sha`; it was held back until SSSE3 was implemented, because software selects its
+SHA code by the SHA bit alone and that code also uses SSSE3: BusyBox's sha256sum, part of the Linux
+workload, runs PSHUFB before SHA256RNDS2). Masking a CPUID bit does not disable an instruction on
+hardware either. -/
 def shaAvail : Bool := true
 
 /-- `xmm1 := f xmm1 (xmm2/m128)` with mandatory prefix `pp` (`Inst.pp`), executable if `avail` (the

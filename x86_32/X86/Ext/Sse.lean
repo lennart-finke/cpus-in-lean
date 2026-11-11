@@ -50,8 +50,11 @@ before writing. Arguments named `a` are the first source (the legacy destination
 
 XMM forms: `sseCheck` (#UD for CR0.EM or CR4.OSFXSR = 0, #NM for CR0.TS) before any memory access;
 MMX forms of SSSE3 (PSHUFB mm, ..., PALIGNR mm): `mmxCheck` (CR0.EM #UD, CR0.TS #NM, pending x87
-exception #MF, then the switch to MMX operation; CR4.OSFXSR does not matter; SDM vol. 3, table
-23-? "SSSE3 instructions on MMX registers", AMD APM vol. 4/5). 128-bit memory operands of packed
+exception #MF, then the switch to MMX operation; CR4.OSFXSR does not matter; SDM vol. 3B, 23.25.3
+"Exception Conditions of Legacy SIMD Instructions Operating on MMX Registers", table 23-7
+"Exception Conditions for SIMD/MMX Instructions with Memory Reference" (rev. 084; table 22-7 in rev.
+076): no CR4.OSFXSR condition, applicable to PSHUFB, PALIGNR, PHADDx, PABSx, PSIGNx, PMADDUBSW,
+PMULHRSW among others; AMD APM vol. 4/5). 128-bit memory operands of packed
 instructions must be 16-byte aligned (#GP(0), unless MXCSR.MM, see `Simd.vecAddr`); not aligned:
 scalar and narrower operands (MOVDDUP m64, PMOVSX/ZX, INSERTPS m32, ROUNDSS/SD, PINSR/PEXTR,
 EXTRACTPS, MOVNTSS/SD), LDDQU and PCMPxSTRx (APM vol. 1, 4.3.2; SDM PCMPESTRI "memory operand need
@@ -65,8 +68,15 @@ memory operand, and for 66 0F 78 with ModRM.reg ≠ 0: APM vol. 3 table A-7, gro
   family `sse4a`). A field length of 0 means 64. If index + length > 64 the result is undefined; the
   model computes it with the bits above bit 63 as zeros (EXTRQ: `(v >>> idx) &&& mask`; INSERTQ:
   the mask shifted left, truncated at bit 63), as QEMU and Bochs do.
-* HADDPx/HSUBPx with two NaN operands of one addition: the lower-indexed element is the first
-  operand (its NaN is returned), following the SDM's operation `SRC[31:0] + SRC[63:32]`.
+* HADDPx with two NaN operands of one addition: the higher-indexed element is the first operand
+  (its NaN is returned; SDM vol. 1, table 4-7 and AMD APM vol. 1, table 4-7: the first source
+  operand's NaN), as both manuals write the addition: SDM HADDPS "DEST[31:0] := SRC1[63:32] +
+  SRC1[31:0]", HADDPD "DEST[63:0] := SRC1[127:64] + SRC1[63:0]"; AMD APM vol. 4 HADDPS "Adds the
+  packed single-precision values in bits [63:32] and bits [31:0] of the first source", HADDPD "in bits
+  [127:64] and bits [63:0]". (Older SDM editions wrote `xmm1[0..31] + xmm1[32..63]`.) The order on
+  real hardware is not documented beyond this and is recorded by the native campaign family
+  `sse3_hadd_nan`. HSUBPx subtracts the higher element from the lower (`x[2j] - x[2j+1]`), so its
+  first operand is the lower element.
 * DPPS/DPPD: the masked-out products are +0.0 and raise nothing; exceptions are detected per stage
   (multiplies, then the additions in their order, SDM DPPS "Exceptions are determined separately
   for each add and multiply operation, in the order of their execution"), see `statusStaged`.
@@ -90,7 +100,9 @@ def addsub (double : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
   collect bits ((Array.range (128 / bits)).map fun k =>
     FP.binary (fmt double) (if k % 2 == 0 then .sub else .add) (a.lane bits k) (b.lane bits k) mx)
 
-/-- HADDPx/HSUBPx: the pairs of adjacent lanes of `a`, then of `b`, as `x[2j] op x[2j+1]`. -/
+/-- HADDPx/HSUBPx: the pairs of adjacent lanes of `a`, then of `b`: HSUB `x[2j] - x[2j+1]`, HADD
+`x[2j+1] + x[2j]` (the operand order of the manuals, see the module documentation; it matters only for
+which of two NaN operands is returned). -/
 def hop (double sub : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
   let bits := if double then 64 else 32
   let n := 128 / bits
@@ -98,7 +110,8 @@ def hop (double sub : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
   collect bits ((Array.range n).map fun k =>
     let src := if k < half then a else b
     let j := 2 * (k % half)
-    FP.binary (fmt double) (if sub then .sub else .add) (src.lane bits j) (src.lane bits (j + 1)) mx)
+    if sub then FP.binary (fmt double) .sub (src.lane bits j) (src.lane bits (j + 1)) mx
+    else FP.binary (fmt double) .add (src.lane bits (j + 1)) (src.lane bits j) mx)
 
 def movsldup (s : V128) : V128 := V128.ofLanes 32 #[s.lane 32 0, s.lane 32 0, s.lane 32 2, s.lane 32 2]
 def movshdup (s : V128) : V128 := V128.ofLanes 32 #[s.lane 32 1, s.lane 32 1, s.lane 32 3, s.lane 32 3]
@@ -182,10 +195,10 @@ def stages (mx : UInt64) (fls : List UInt64) : UInt64 × Bool :=
     let (f, u) := stageFlags fl mx
     (acc ||| f, u)) (0, false)
 
-/-- DPPS: products of the lanes selected by imm[7:4] (others +0.0), summed as
-`(p0 + p1) + (p2 + p3)`, written to the lanes selected by imm[3:0] (others +0.0). Flags: staged
-(multiplies, the two first additions, the last addition); returns `(result, flags, unmasked)`. -/
-def dpps (a b : V128) (imm : Nat) (mx : UInt64) : V128 × UInt64 × Bool :=
+/-- DPPS of one 128-bit lane: the result and the raw flags of its three stages (multiplies, the two
+first additions, the last addition), before `stages`. The VEX.256 form ORs the flags of the two lanes
+stage by stage (`Avx.map3`, VDPPS). -/
+def dppsStages (a b : V128) (imm : Nat) (mx : UInt64) : V128 × List UInt64 :=
   let f := FP.binary32
   let prod := fun (k : Nat) => if (imm >>> (4 + k)) % 2 == 1 then FP.binary f .mul (a.lane 32 k) (b.lane 32 k) mx else (0, 0)
   let (p0, f0) := prod 0
@@ -195,8 +208,16 @@ def dpps (a b : V128) (imm : Nat) (mx : UInt64) : V128 × UInt64 × Bool :=
   let (s1, g1) := FP.binary f .add p0 p1 mx
   let (s2, g2) := FP.binary f .add p2 p3 mx
   let (s, g) := FP.binary f .add s1 s2 mx
-  let (fl, u) := stages mx [f0 ||| f1 ||| f2 ||| f3, g1 ||| g2, g]
-  (V128.ofLanes 32 ((Array.range 4).map fun k => if (imm >>> k) % 2 == 1 then s else 0), fl, u)
+  (V128.ofLanes 32 ((Array.range 4).map fun k => if (imm >>> k) % 2 == 1 then s else 0),
+   [f0 ||| f1 ||| f2 ||| f3, g1 ||| g2, g])
+
+/-- DPPS: products of the lanes selected by imm[7:4] (others +0.0), summed as
+`(p0 + p1) + (p2 + p3)`, written to the lanes selected by imm[3:0] (others +0.0). Flags: staged
+(multiplies, the two first additions, the last addition); returns `(result, flags, unmasked)`. -/
+def dpps (a b : V128) (imm : Nat) (mx : UInt64) : V128 × UInt64 × Bool :=
+  let (r, fls) := dppsStages a b imm mx
+  let (fl, u) := stages mx fls
+  (r, fl, u)
 
 /-- DPPD: as DPPS with two binary64 lanes, product mask imm[5:4], result mask imm[1:0]. -/
 def dppd (a b : V128) (imm : Nat) (mx : UInt64) : V128 × UInt64 × Bool :=
