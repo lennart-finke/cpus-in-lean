@@ -8,8 +8,24 @@ instruction (undefined flags are masked in the comparison) and a short descripti
 
 Layout shared with the harness and the Lean runner:
   DATA = 0x8000 (4 KiB), CODE = 0x20000 (512 B, instruction at +256, rest filled with INT3)
+
+Record formats (shared with test/harness/harness.c and TestMain.lean):
+  v1  (default; also used by native.py): 88-byte records, no header, integer state only.
+  v2  (--v2, used by run.sh): a 16-byte header (V2_MAGIC, record size 96, 0) and 96-byte records:
+      the v1 fields, then MXCSR (u32) and vector flags (u32; bit 0: enable CR4.OSXSAVE and
+      XCR0 = 7). The harness then also enables CR4.OSFXSR/OSXMMEXCPT, loads XMM0-7 (and, with
+      OSXSAVE, YMM0-7 bits 255:128) from a pattern derived from the data seed (`vec_pattern`) and
+      reports MXCSR, XMM0-7 and the YMM upper halves after the instruction.
+  v2 adds instruction families beyond the integer generator: 'ud' (encodings that are #UD on
+  Zen 2: unused 0F 38 / 0F 3A / VEX opcodes, VEX after 66/F2/F3/LOCK, unknown VEX maps, EVEX and
+  XOP register forms, ...), 'len' (such encodings padded with prefixes to 15 bytes (#UD) or 16
+  bytes (#GP(0)); for 16 bytes QEMU reports #UD, see TestMain.lean) and 'ext' (forms in
+  isa_forms.IMPLEMENTED, none yet). Forms listed in
+  isa_forms.NOT_YET_IMPLEMENTED (which QEMU's EPYC-Rome CPU executes) are never generated.
 """
-import random, struct, sys
+import os, random, struct, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isa_forms
 
 DATA, DATA_SIZE = 0x8000, 8192
 CODE, INSN_OFF, CODE_SIZE = 0x20000, 256, 512
@@ -187,7 +203,9 @@ def gen_one():
         rep = random.choice([0xF2, 0xF3])
         prefixes.append(rep)
     if random.random() < 0.05:
-        prefixes.append(0xF0)
+        # (v2: LOCK MOV CR is MOV CR8 on CPUs with AltMovCr8; not generated until implemented)
+        if not (V2 and two and isa_forms.not_yet_implemented('legacy-lock', 1, 0, op)):
+            prefixes.append(0xF0)
     random.shuffle(prefixes)
     opsz = 2 if p66 else 4
     a16 = p67
@@ -351,14 +369,163 @@ def gen_one():
     g.desc = insn.hex()
     return insn, g
 
+V2 = False   # set by main() for --v2
+V2_MAGIC = b'X86VEC\x00\x02'
+V2_SIZE = 96
+
+def xorshift(x):
+    x ^= (x << 13) & 0xFFFFFFFF; x ^= x >> 17; x ^= (x << 5) & 0xFFFFFFFF
+    return x
+
+def vec_pattern(seed):
+    """Initial XMM0-7 and YMM0-7[255:128] of a v2 vector: 64 words from xorshift32, starting at
+    seed ^ 0xA5A5A5A5 (XMM0 word 0 first; the same in harness.c and TestMain.lean)."""
+    s, out = seed ^ 0xA5A5A5A5, []
+    for _ in range(64):
+        s = xorshift(s)
+        out.append(s)
+    return out
+
+PP_BYTE = {0: b'', 1: b'\x66', 2: b'\xf3', 3: b'\xf2'}
+
+def vex_bytes(map_, pp, L, W, vvvv, two_byte):
+    """A VEX prefix in 32-bit mode: inverted R and X are 1 (required), inverted B random."""
+    vb = (~vvvv & 0xF) << 3 | (L << 2) | pp
+    if two_byte:
+        return bytes([0xC5, 0x80 | vb])
+    return bytes([0xC4, 0xC0 | (random.getrandbits(1) << 5) | map_, (W << 7) | vb])
+
+def vex_layout(map_, op, pp):
+    """(ModRM, immediate bytes) of a VEX opcode: the layout of the legacy map with the same opcode
+    (x86_32/X86/Decode.lean); None for map 1 opcodes whose layout is not a ModRM/imm8 one."""
+    if map_ == 2: return (True, 0)
+    if map_ == 3: return (True, 1)
+    if 0x80 <= op <= 0x8F or op in (0x78,) and pp in (1, 3): return None
+    if op in (0x77, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37,
+              0xA0, 0xA1, 0xA2, 0xA8, 0xA9, 0xAA) or 0xC8 <= op <= 0xCF:
+        return (False, 0)
+    if 0x70 <= op <= 0x73 or op in (0xC2, 0xC4, 0xC5, 0xC6, 0xA4, 0xAC, 0xBA):
+        return (True, 1)
+    if op in (0x04, 0x0A, 0x0C, 0x0F, 0x24, 0x25, 0x26, 0x27, 0x36, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+              0x3E, 0x3F, 0x7A, 0x7B, 0xA6, 0xA7):
+        return (False, 0)
+    return (True, 0)
+
+# 0F-map opcodes without an instruction on Zen 2 for some prefixes (isa_forms decides which)
+UD_0F = [0x04, 0x0A, 0x0C, 0x0E, 0x0F, 0x24, 0x25, 0x26, 0x27, 0x36, 0x39, 0x3B, 0x3C, 0x3D, 0x3E,
+         0x3F, 0x78, 0x79, 0x7A, 0x7B, 0xA6, 0xA7, 0xB8]
+MODRM_0F = {0x78, 0x79, 0xB8}
+
+def ud_form(g, a16, force=None):
+    """An encoding that is #UD on Zen 2 and in the model, as (bytes, kind); the bytes include the
+    mandatory or legacy prefix the form needs. With `force`, the ModRM byte (and an imm8) is that
+    value (a register form): used by the length tests, whose last byte is the INT3 filler."""
+    kinds = ['map2', 'map3', 'vex', 'vex', 'vexpfx', 'vexmap', 'evex', 'xop', '0f']
+    if force is not None:
+        kinds = ['map2', 'map3', 'vex', '0f']
+    kind = random.choice(kinds)
+    def modrm(reg=None):
+        return bytes([force]) if force is not None else g.modrm(a16, reg)[0]
+    if kind in ('map2', 'map3'):
+        m = 2 if kind == 'map2' else 3
+        while True:
+            pp, op = random.randint(0, 3), random.getrandbits(8)
+            if not isa_forms.defined('legacy', m, pp, op):
+                break
+        body = PP_BYTE[pp] + bytes([0x0F, 0x38 if m == 2 else 0x3A, op])
+        if m == 3:
+            mr = g.modrm(a16)[0] if force is None else bytes([0xC0 | random.getrandbits(6)])
+            return body + mr + bytes([force if force is not None else random.getrandbits(8)]), kind
+        return body + modrm(), kind
+    if kind == '0f':
+        while True:
+            op, pp = random.choice(UD_0F), random.randint(0, 3)
+            if not isa_forms.defined('legacy', 1, pp, op):
+                break
+        body = PP_BYTE[pp] + bytes([0x0F, op])
+        if op in MODRM_0F:
+            return body + modrm(), kind
+        return (None if force is not None else body), kind
+    if kind in ('vex', 'vexpfx', 'vexmap'):
+        while True:
+            m = random.choice([1, 2, 3]) if kind != 'vexmap' else random.choice([0] + list(range(4, 32)))
+            pp, op = random.randint(0, 3), random.getrandbits(8)
+            # after a 66/F2/F3/LOCK prefix every VEX form is #UD; an unknown map too
+            if kind != 'vex' or not isa_forms.defined('vex', m, pp, op):
+                break
+        L, W, vvvv = random.getrandbits(1), random.getrandbits(1), random.getrandbits(4)
+        # C5: bit 6 of its byte is inverted vvvv[3], which must be 1 (vvvv < 8) in 32-bit mode
+        two = m == 1 and W == 0 and vvvv < 8 and random.random() < 0.5
+        pre = bytes([random.choice([0x66, 0xF2, 0xF3, 0xF0])]) if kind == 'vexpfx' else b''
+        body = pre + vex_bytes(m, pp, L, W, vvvv, two) + bytes([op])
+        if kind == 'vexmap':
+            return body, kind
+        lay = vex_layout(m, op, pp)
+        if lay is None or (force is not None and not lay[0]):
+            return None, kind
+        if lay[0]:
+            body += modrm()
+        if lay[1]:
+            body += bytes([force if force is not None else random.getrandbits(8)])
+        return body, kind
+    if kind == 'evex':
+        # 62 with ModRM.mod = 11: EVEX on AVX-512 CPUs, the #UD register form of BOUND on Zen 2
+        return bytes([0x62, 0xC0 | random.getrandbits(6)]) + bytes(random.getrandbits(8) for _ in range(4)), kind
+    # 8F with ModRM.reg != 0: XOP on CPUs with XOP, #UD on Zen 2 (POP r/m needs reg = 0)
+    return bytes([0x8F]) + modrm(random.randint(1, 7)), kind
+
+def gen_v2_family(g):
+    """A vector of a v2-only family ('ud', 'len'), or None to use the integer generator."""
+    r = random.random()
+    if r < 0.15:
+        a16 = random.random() < 0.1
+        body, kind = ud_form(g, a16)
+        if body is None:
+            return None
+        pre = (b'\x67' if a16 else b'') + \
+            (bytes([random.choice([0x26, 0x36, 0x3E, 0x64, 0x65])]) if random.random() < 0.15 else b'')
+        insn = pre + body
+        if len(insn) > 15:
+            return None
+        g.desc = 'ud-%s:%s' % (kind, insn.hex())
+        return insn
+    if r < 0.22:
+        # length limit: a #UD form whose last byte (ModRM or imm8) is 0xCC, the code buffer's
+        # filler, padded with DS prefixes to 15 bytes (#UD) or 16 bytes (#GP(0)); 15 bytes stored
+        body, kind = ud_form(g, False, force=0xCC)
+        if body is None:
+            return None
+        total = random.choice([15, 16])
+        if len(body) >= total:
+            return None
+        insn = b'\x3e' * (total - len(body)) + body
+        g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
+        return insn[:15]
+    return None
+
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 10000
-    seed = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    out = sys.argv[3] if len(sys.argv) > 3 else 'vectors'
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    v2 = '--v2' in sys.argv
+    global V2
+    V2 = v2
+    n = int(args[0]) if len(args) > 0 else 10000
+    seed = int(args[1]) if len(args) > 1 else 1
+    out = args[2] if len(args) > 2 else 'vectors'
     random.seed(seed)
+    # bit 0: CR4.OSXSAVE and XCR0 = 7, once the model implements XSAVE and AVX (or forced with
+    # GEN_FORCE_OSXSAVE=1 to exercise the harness's YMM path)
+    vflags = 1 if (isa_forms.model_has('xsave') and isa_forms.model_has('avx')) or \
+        os.environ.get('GEN_FORCE_OSXSAVE') == '1' else 0
     with open(out + '.bin', 'wb') as vb, open(out + '.meta', 'w') as mf:
+        if v2:
+            vb.write(V2_MAGIC + struct.pack('<II', V2_SIZE, 0))
         for k in range(n):
-            insn, g = gen_one()
+            insn = None
+            if v2:
+                g = Gen()
+                insn = gen_v2_family(g)
+            if insn is None:
+                insn, g = gen_one()
             patches = (g.patches + [(0xFFFF, 0), (0xFFFF, 0)])[:2]
             poff = [p[0] if p[0] == 0xFFFF or 0 <= p[0] <= DATA_SIZE - 4 else 0xFFFF for p in patches]
             paging = random.random() < 0.5
@@ -374,6 +541,11 @@ def main():
                                  *[r & 0xFFFFFFFF for r in g.regs], g.eflags, random.getrandbits(32) | 1,
                                  *g.sel, *poff, *[p[1] & 0xFFFFFFFF for p in patches],
                                  mode, pte() | 1 if random.random() < 0.7 else pte(), pte()))
+            if v2:
+                # all exceptions masked; random rounding control, FTZ, DAZ and sticky flags
+                mxcsr = 0x1F80 | (random.getrandbits(2) << 13) | (0x8000 if random.random() < 0.3 else 0) \
+                    | (0x40 if random.random() < 0.3 else 0) | (random.getrandbits(6) if random.random() < 0.3 else 0)
+                vb.write(struct.pack('<II', mxcsr, vflags))
             mf.write('%08x %s\n' % (g.fmask, g.desc))
 
 if __name__ == '__main__':

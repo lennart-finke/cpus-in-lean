@@ -12,6 +12,11 @@ CR0.WP), data area at 0x8000 (8 KiB) filled by xorshift32, code buffer at 0x2000
 INT3. Executes exactly one instruction with the model and compares the outcome (exception vector,
 error code and CR2, or EIP, GPRs, defined EFLAGS, segment selectors, a hash of the data area and
 the two PTEs including accessed/dirty bits) with QEMU's.
+
+Record format v2 (a 16-byte header `X86VEC\0\2`, record size, 0; see `test/gen.py`) adds MXCSR and
+vector flags to each vector: CR4.OSFXSR/OSXMMEXCPT are set (with flag bit 0 also CR4.OSXSAVE and
+XCR0 = 7), XMM0-7 and YMM0-7[255:128] start from `vecPattern`, and MXCSR, XMM0-7 and the YMM upper
+halves (zero without flag bit 0) are compared too. Version 1 (88 bytes, no header) is unchanged.
 -/
 open X86
 
@@ -54,7 +59,33 @@ structure Outcome where
   pte8 : UInt32
   pte9 : UInt32
   pageHashes : List UInt32 := []
+  /-- v2: MXCSR, XMM0-7 and YMM0-7[255:128] as 32-bit words (low word first). -/
+  vecs : List UInt32 := []
   deriving BEq, Repr
+
+def v2Magic : List UInt8 := [0x58, 0x38, 0x36, 0x56, 0x45, 0x43, 0, 2]
+
+/-- Header size and record size of a vector file (v1: no header, 88-byte records). -/
+def vecFormat (v : ByteArray) : Nat × Nat :=
+  if v.size ≥ 16 && (List.range 8).all (fun k => v.get! k == v2Magic[k]!) then
+    (16, u32At v 8)
+  else (0, 88)
+
+/-- Initial XMM0-7 and YMM0-7[255:128] words of a v2 vector (as `vec_pattern` in test/gen.py). -/
+def vecPattern (seed : UInt32) : Array UInt32 := Id.run do
+  let mut s := seed ^^^ 0xA5A5A5A5
+  let mut out := #[]
+  for _ in [0:64] do
+    s := xorshift s
+    out := out.push s
+  return out
+
+def v128Of (w : Array UInt32) (k : Nat) : V128 :=
+  { lo := w[4*k]!.toUInt64 ||| (w[4*k+1]!.toUInt64 <<< 32),
+    hi := w[4*k+2]!.toUInt64 ||| (w[4*k+3]!.toUInt64 <<< 32) }
+
+def v128Words (x : V128) : List UInt32 :=
+  [x.lo.toUInt32, (x.lo >>> 32).toUInt32, x.hi.toUInt32, (x.hi >>> 32).toUInt32]
 
 def baseMachine : Machine := Id.run do
   let mut mem := ByteArray.mk (Array.replicate 0x40000 0)
@@ -114,7 +145,8 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   return q
 
 /-- The machine state of vector `o`, before its instruction. -/
-def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) : Except String Machine := do
+def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 : Bool := false) :
+    Except String Machine := do
   let len := u8At v o
   let rd32 (i : Nat) : UInt32 := (u32At v (o + i)).toUInt32
   let regs := (List.range 8).map fun r => rd32 (16 + 4 * r)
@@ -146,6 +178,15 @@ def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) : Exc
     mem := wrBytes mem (0x4000 + 17 * 4) 4 (0x9000 ||| (pte9 &&& 0xFFF))
   if mode &&& 1 != 0 then
     c := { c with cr0 := 0x80000031 ||| (if mode &&& 2 != 0 then 0x10000 else 0) }
+  if v2 then
+    let mxcsr := rd32 88
+    let ymm := rd32 92 &&& 1 != 0
+    let pat := vecPattern seed
+    c := { c with cr4 := CR4.OSFXSR ||| CR4.OSXMMEXCPT ||| (if ymm then CR4.OSXSAVE else 0),
+                  xcr0 := if ymm then 7 else 1,
+                  sse := { mxcsr, xmm := (List.range 8).toArray.map (v128Of pat),
+                           ymmh := if ymm then (List.range 8).toArray.map (fun k => v128Of pat (k + 8))
+                                   else Array.replicate 8 {} } }
   m := { m with mem, cpu := c }
   -- data segment registers through the descriptor-load path
   for (si, sel) in [SegN.DS, SegN.ES, SegN.FS, SegN.GS].zip sels do
@@ -154,9 +195,9 @@ def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) : Exc
     | .error _ _ => throw s!"bad initial selector {sel}"
   return m
 
-def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
+def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 : Bool := false) :
     Except String (Outcome × Option Inst × UInt32) := do
-  let mut m ← vectorMachine v o nativeMemory
+  let mut m ← vectorMachine v o nativeMemory v2
   let start := m.cpu.eip
   let inst := match decode m with | .ok i _ => some i | .error _ _ => none
   let initHash := fnv m.mem
@@ -188,7 +229,11 @@ def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
             regs := #[fc.eax, fc.ecx, fc.edx, fc.ebx, fc.esp, fc.ebp, fc.esi, fc.edi],
             eflags := fc.eflags, segs := #[fc.ds.sel.toUInt32, fc.es.sel.toUInt32, fc.fs.sel.toUInt32,
               fc.gs.sel.toUInt32, fc.ss.sel.toUInt32], hash := fnv m.mem, cr2,
-            pte8 := rdBytes m.mem (0x4000 + 32) 4, pte9 := rdBytes m.mem (0x4000 + 36) 4, pageHashes },
+            pte8 := rdBytes m.mem (0x4000 + 32) 4, pte9 := rdBytes m.mem (0x4000 + 36) 4, pageHashes,
+            vecs := if !v2 then [] else
+              let ymm := (u32At v (o + 92)).toUInt32 &&& 1 != 0
+              [fc.mxcsr] ++ (fc.xmm.toList.map v128Words).flatten ++
+              (if ymm then (fc.ymmh.toList.map v128Words).flatten else List.replicate 32 0) },
           inst, initHash)
 
 def parseHex (s : String) : UInt32 :=
@@ -247,24 +292,36 @@ def main (args : List String) : IO UInt32 := do
     return 0
   let [vf, mf, qf] := args | do IO.eprintln "usage: x86test vectors.bin vectors.metaLines qemu.out"; return 2
   let v ← IO.FS.readBinFile vf
+  let (hdr, rsz) := vecFormat v
+  let v2 := hdr != 0
   let metaLines := (← IO.FS.lines mf)
   let qlines := (← IO.FS.lines qf).filter fun l => l.length > 150 && (l.get 0).isAlphanum
-  let n := v.size / 88
+  let n := (v.size - hdr) / rsz
   let mut bad := 0
   let mut tcg := 0
+  let mut lenRule := 0
   let mut checked := 0
   let mut q := 0
   for l in qlines do
     let f := (l.splitOn " ").filter (· ≠ "") |>.map parseHex |>.toArray
-    if f.size < 22 then continue
+    if f.size < (if v2 then 87 else 22) then continue
     let idx := f[0]!.toNat
     if idx ≥ n then continue
     let fm := parseHex ((metaLines[idx]!.splitOn " ")[0]!)
     let desc := (metaLines[idx]!.splitOn " ")[1]!
     let qo : Outcome := { vec := f[1]!, err := f[2]!, eip := f[3]!, regs := f.extract 4 12,
                           eflags := f[12]!, segs := f.extract 13 18, hash := f[18]!,
-                          cr2 := f[19]!, pte8 := f[20]!, pte9 := f[21]! }
-    match runVector v (idx * 88) with
+                          cr2 := f[19]!, pte8 := f[20]!, pte9 := f[21]!,
+                          vecs := if v2 then (f.extract 22 87).toList else [] }
+    -- 16-byte encodings without an instruction (`len16-` vectors of test/gen.py): TCG raises #UD
+    -- for such an opcode before fetching its remaining ModRM/immediate bytes, so it never reaches
+    -- the 15-byte limit. The model decodes the whole instruction and raises #GP(0), as the SDM's
+    -- exception priorities list the length limit with the decode faults (vol. 3, table 6-2);
+    -- QEMU's #UD is rewritten to #GP(0) (counted separately; all other fields still compared).
+    let len16 := desc.startsWith "len16-" && qo.vec == 6
+    let qo := if len16 then { qo with vec := 13 } else qo
+    if len16 then lenRule := lenRule + 1
+    match runVector v (hdr + idx * rsz) (v2 := v2) with
     | .error e => IO.println s!"#{idx} {desc}: {e}"; bad := bad + 1
     | .ok (lo, inst, initHash) =>
       -- the instruction completed (INT3 terminator or single-step trap): undefined flags masked
@@ -287,5 +344,6 @@ def main (args : List String) : IO UInt32 := do
         IO.println s!"  qemu: {repr (norm qo)}"
         IO.println s!"  lean: {repr (norm lo)}"
     q := q + 1
-  IO.println s!"{checked} vectors compared, {bad} mismatches ({tcg} known QEMU deviations accepted)"
+  let lenNote := if lenRule == 0 then "" else s!", {lenRule} 16-byte #UD encodings checked as #GP(0)"
+  IO.println s!"{checked} vectors compared, {bad} mismatches ({tcg} known QEMU deviations accepted{lenNote})"
   return (if bad == 0 then 0 else 1)

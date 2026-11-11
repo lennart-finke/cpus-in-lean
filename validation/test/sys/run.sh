@@ -14,11 +14,12 @@ ROOT=$(cd "$DIR/../.." && pwd)
 OUT=${OUT:-$DIR/out}
 CMDLINE=${CMDLINE:-}
 TIMEOUT=${TIMEOUT:-30}
+. "$ROOT/test/qemu-cpu.sh"
 mkdir -p "$OUT"
 [ -n "${NOBUILD:-}" ] || "$DIR/build.sh"
 ELF="$DIR/out/systest.elf"
 rm -f "$OUT/qemu.txt"
-qemu-system-i386 -cpu qemu32,+nx,+mmx,+fxsr,+sse,+sse2,-pni -m 64 -kernel "$ELF" -append "$CMDLINE" -display none \
+qemu-system-i386 -cpu "$QEMU_CPU" -m 64 -kernel "$ELF" -append "$CMDLINE" -display none \
   -serial file:"$OUT/qemu.txt" -monitor none -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot &
 QPID=$!
 ( sleep "$TIMEOUT"; kill $QPID 2>/dev/null ) &

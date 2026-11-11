@@ -32,6 +32,12 @@ static void stx(void) {   /* XMM0..7 to XW */
 	__asm__ volatile("movdqu %%xmm0, XW\n movdqu %%xmm1, XW+16\n movdqu %%xmm2, XW+32\n movdqu %%xmm3, XW+48\n"
 	                 "movdqu %%xmm4, XW+64\n movdqu %%xmm5, XW+80\n movdqu %%xmm6, XW+96\n movdqu %%xmm7, XW+112" ::: "memory");
 }
+/* An instruction of an optional feature: "ok" if it ran (no event) when CPUID reports the feature, or
+   raised #UD when it does not; otherwise "ran" / "fault". */
+static const char *feat(int has, int vec) {
+	if (has) return vec == 0xFFFF ? "ok" : "fault";
+	return vec == 6 ? "ok" : "ran";
+}
 static void px(const char *k, const u32 *p) { kprintf(" %s=%x%x%x%x", k, p[3], p[2], p[1], p[0]); }
 static void pb(const char *k, const u8 *p, int n) { kprintf(" %s=", k); for (int i = n - 1; i >= 0; i--) { kputc("0123456789abcdef"[p[i] >> 4]); kputc("0123456789abcdef"[p[i] & 15]); } }
 
@@ -79,13 +85,16 @@ void test_simd_exc(void) {
 		R(mis, 0x66, 0x0F, 0x5A, 0x06), R(mis, 0x66, 0x0F, 0x70, 0x06, 0x00), R(XF + 8, 0x0F, 0xAE, 0x06),
 		R(XF + 8, 0x0F, 0xAE, 0x0E), last.err);
 
-	/* undefined opcodes and prefix combinations */
-	kprintf("simd.undef: f3_andps=%x f2_movq=%x movsldup=%x addsubpd=%x haddpd=%x punpcklqdq_mmx=%x",
-		R(XM, 0xF3, 0x0F, 0x54, 0xC1), R(XM, 0xF2, 0x0F, 0x6F, 0xC1), R(XM, 0xF3, 0x0F, 0x12, 0xC1),
-		R(XM, 0x66, 0x0F, 0xD0, 0xC1), R(XM, 0x66, 0x0F, 0x7C, 0xC1), R(XM, 0x0F, 0x6C, 0xC1));
+	/* undefined opcodes and prefix combinations; SSE3 instructions (MOVSLDUP, ADDSUBPD, HADDPD) must
+	   run exactly when CPUID.1:ECX.SSE3 is reported and raise #UD otherwise (feat()) */
+	int sse3 = has_feature(1, 0, 2, 0);
+	kprintf("simd.undef: f3_andps=%x f2_movq=%x movsldup=%s addsubpd=%s haddpd=%s punpcklqdq_mmx=%x",
+		R(XM, 0xF3, 0x0F, 0x54, 0xC1), R(XM, 0xF2, 0x0F, 0x6F, 0xC1), feat(sse3, R(XM, 0xF3, 0x0F, 0x12, 0xC1)),
+		feat(sse3, R(XM, 0x66, 0x0F, 0xD0, 0xC1)), feat(sse3, R(XM, 0x66, 0x0F, 0x7C, 0xC1)), R(XM, 0x0F, 0x6C, 0xC1));
 	kprintf(" psrlw_mem=%x pextrw_mem=%x movmskps_mem=%x movntps_reg=%x psrldq_mmx=%x psraq=%x",
 		R(XM, 0x0F, 0x71, 0x16, 0x01), R(XM, 0x0F, 0xC5, 0x06, 0x00), R(XM, 0x0F, 0x50, 0x06),
 		R(XM, 0x0F, 0x2B, 0xC1), R(XM, 0x0F, 0x73, 0xD9, 0x01), R(XM, 0x66, 0x0F, 0x73, 0xE1, 0x01));
+	/* XSAVE is #UD while CR4.OSXSAVE = 0, whatever CPUID reports */
 	kprintf(" xsave=%x grp15_reg0=%x maskmovq_mem=%x movq2dq_mem=%x f2_cvtdq2ps=%x 0fe6=%x\n",
 		R(XF, 0x0F, 0xAE, 0x26), R(XM, 0x0F, 0xAE, 0xC0), R(XM, 0x0F, 0xF7, 0x06), R(XM, 0xF3, 0x0F, 0xD6, 0x06),
 		R(XM, 0xF2, 0x0F, 0x5B, 0xC1), R(XM, 0x0F, 0xE6, 0xC1));

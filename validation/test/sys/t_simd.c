@@ -2,33 +2,66 @@
    opcode, ModRM, imm8) into a code buffer, loads XMM0..7 / MM0..7 / MXCSR / EAX / ECX / ESI / EDI from
    memory, runs it, and prints the destination registers, MXCSR, EFLAGS and the memory operand.
    MXCSR always has every exception masked here (TCG does not raise unmasked SIMD exceptions, QEMU
-   issue 215); unmasked exceptions are tested in the MODEL-ONLY section (t_simdm.c). */
+   issue 215); unmasked exceptions are tested in the MODEL-ONLY section (t_simdm.c).
+
+   Extending (EXTENDING.md): `struct sop` also describes 0F 38 / 0F 3A forms (`map`) and VEX forms
+   (`vex`, `l`, `w`; VEX.vvvv names XMM2/YMM2), with flags ALLX (print XMM0..7) and YMMD (print the
+   YMM upper halves). New rows go into `xops` (run by the `ssex` loop, so the existing `sops` cases
+   keep their random sequence); only forms whose feature the model implements may be added (the
+   others are listed in test/isa_forms.py). With CPUID reporting XSAVE and AVX, test_simd sets
+   CR4.OSXSAVE and XCR0 = 7, and every case also loads YMM0..7[255:128] from YIN and stores them to
+   YOUT. */
 #include "sys.h"
 
 static u32 rs = 0x6A09E667;
 static u32 rnd(void) { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; }
 
-__attribute__((used, aligned(16))) u32 XIN[32], XOUT[32];
+__attribute__((used, aligned(16))) u32 XIN[32], XOUT[32], YIN[32], YOUT[32];
 __attribute__((used, aligned(16))) u32 MEMOP[12];
 __attribute__((used, aligned(16))) u32 MMIN[16], MMOUT[16];
 __attribute__((used, aligned(16))) u8 FXA[512];
 __attribute__((used)) u32 MXIN, MXOUT, FLOUT, GIN, GOUT, ESIIN;
 static u8 code[32] __attribute__((aligned(16)));
+static int ncode;   /* bytes of the instruction in `code` (a RET follows) */
 void (*volatile simd_codep)(void) = (void (*)(void))code;
+static int ymm_on;  /* CR4.OSXSAVE and XCR0 = 7 are set (CPUID reports XSAVE and AVX) */
+
+/* vinsertf128 ymmK, ymmK, [eax+16K], 1 and vextractf128 [eax+16K], ymmK, 1, as bytes (this file is
+   compiled without AVX) */
+#define LDY(k) ".byte 0xc4,0xe3,((~" #k ")&15)*8+5,0x18,0x40+" #k "*8," #k "*16,1\n\t"
+#define STY(k) ".byte 0xc4,0xe3,0x7d,0x19,0x40+" #k "*8," #k "*16,1\n\t"
+#define ALL8(m) m(0) m(1) m(2) m(3) m(4) m(5) m(6) m(7)
 
 /* Load the register state, run the code buffer, store the state. */
 static void run_sse(void) {
+	if (ymm_on) __asm__ volatile(ALL8(LDY) :: "a"(YIN) : "memory");
 	__asm__ volatile(
 		"ldmxcsr MXIN\n"
 		"movdqu XIN, %%xmm0\n movdqu XIN+16, %%xmm1\n movdqu XIN+32, %%xmm2\n movdqu XIN+48, %%xmm3\n"
 		"movdqu XIN+64, %%xmm4\n movdqu XIN+80, %%xmm5\n movdqu XIN+96, %%xmm6\n movdqu XIN+112, %%xmm7\n"
 		"movq MMIN, %%mm0\n movq MMIN+8, %%mm1\n"
 		"movl ESIIN, %%esi\n movl %%esi, %%edi\n movl GIN, %%eax\n movl %%eax, %%ecx\n"
+		"pushfl\n andl $~0x8D5, (%%esp)\n popfl\n"   /* arithmetic flags 0 before the instruction */
 		"call *simd_codep\n"
 		"pushfl\n popl FLOUT\n movl %%eax, GOUT\n stmxcsr MXOUT\n"
-		"movdqu %%xmm0, XOUT\n movdqu %%xmm1, XOUT+16\n"
+		"movdqu %%xmm0, XOUT\n movdqu %%xmm1, XOUT+16\n movdqu %%xmm2, XOUT+32\n movdqu %%xmm3, XOUT+48\n"
+		"movdqu %%xmm4, XOUT+64\n movdqu %%xmm5, XOUT+80\n movdqu %%xmm6, XOUT+96\n movdqu %%xmm7, XOUT+112\n"
 		"movq %%mm0, MMOUT\n movq %%mm1, MMOUT+8\n"
 		::: "memory", "eax", "ecx", "esi", "edi", "cc");
+	if (ymm_on) __asm__ volatile(ALL8(STY) :: "a"(YOUT) : "memory");
+	else memset(YOUT, 0, sizeof YOUT);
+}
+
+/* Optional XSAVE-managed state: with CPUID.1:ECX.XSAVE and AVX, set CR4.OSXSAVE and XCR0 = 7
+   (x87, SSE, AVX); otherwise leave it off. Nothing is printed, so the transcript does not depend on it. */
+static void osxsave_setup(int on) {
+	ymm_on = on && has_feature(1, 0, 2, 26) && has_feature(1, 0, 2, 28);
+	if (ymm_on) {
+		WRCR(4, RDCR(4) | 0x40000);
+		__asm__ volatile(".byte 0x0f,0x01,0xd1" :: "a"(7), "d"(0), "c"(0));   /* xsetbv */
+	} else if (has_feature(1, 0, 2, 26)) {
+		WRCR(4, RDCR(4) & ~0x40000);
+	}
 }
 
 static u64 rnd64(void) { u64 h = rnd(); return (h << 32) | rnd(); }
@@ -115,9 +148,14 @@ enum {
 	F32 = 0x100, F64 = 0x200, INT = 0x300, CNT = 0x400, RAW = 0, /* E operand type (bits 8..10) */
 	D32 = 0x800, D64 = 0x1000, DINT = 0x1800,                     /* destination operand type */
 	NODN = 0x2000, /* no denormal inputs (RCP/RSQRT), round to nearest */
-	NODAZ = 0x4000 /* DAZ clear (MIN/MAX: TCG returns the unflushed denormal) */
+	NODAZ = 0x4000, /* DAZ clear (MIN/MAX: TCG returns the unflushed denormal) */
+	ALLX = 0x40,   /* prints XMM0..7 (not only XMM0/XMM1) */
+	YMMD = 0x80    /* prints the YMM0..7 upper halves (VEX.256 forms) */
 };
-struct sop { u8 pfx, op; u16 fl; };
+/* One instruction form: mandatory prefix (0, 0x66, 0xF3, 0xF2; the VEX.pp of VEX forms), opcode,
+   flags; map 0 or 1 = 0F, 2 = 0F 38, 3 = 0F 3A (always an imm8); vex: VEX-encoded (vvvv = XMM2),
+   l: VEX.L (0, 1, or 2 = random), w: VEX.W. Rows of the original table give only the first three. */
+struct sop { u8 pfx, op; u16 fl; u8 map, vex, l, w; };
 #define FPOPS(o, x) { 0, o, MEM | F32 | D32 | x }, { 0x66, o, MEM | F64 | D64 | x }, { 0xF3, o, MEM | F32 | D32 | x }, { 0xF2, o, MEM | F64 | D64 | x }
 static const struct sop sops[] = {
 	FPOPS(0x51, 0), FPOPS(0x58, 0), FPOPS(0x59, 0), FPOPS(0x5C, 0), FPOPS(0x5D, NODAZ), FPOPS(0x5E, 0), FPOPS(0x5F, NODAZ),
@@ -157,6 +195,14 @@ static const u8 iops[] = {
 	0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
 	0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
 };
+/* Forms of later ISA extensions (SSE3 .. SSE4.2, AES, AVX, ...), added by the feature work once the
+   model implements them (test/isa_forms.py lists the others). Run by the `ssex` loop; the last row is
+   a terminator. Example: { 0xF2, 0x7C, MEM | F32 | D32 } (HADDPS), { 0x66, 0x00, MEM, 2 } (PSHUFB),
+   { 0x66, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 } (VADDPD, VEX.128/256). */
+static const struct sop xops[] = {
+	{ 0, 0, 0xFFFF }
+};
+#define NXOPS (sizeof xops / sizeof xops[0] - 1)
 /* MMX-only data movement: opcode, flags */
 static const struct sop mops[] = {
 	{ 0, 0x6E, MEM }, { 0, 0x7E, MEM | STORE }, { 0, 0x6F, MEM }, { 0, 0x7F, MEM | STORE },
@@ -174,19 +220,38 @@ static u32 rand_mxcsr(u16 fl) {
 	return mx;
 }
 
-/* Assemble pfx 0F op modrm [imm8] ret. The ModRM reg field is 0 (XMM0/MM0/EAX); the E operand is
-   register 1 or [ESI]. Returns 1 if the memory form was chosen. */
-static int assemble(u8 pfx, u8 op, u16 fl, u8 reg, u8 imm) {
+/* Assemble [pfx] 0F [38|3A] op modrm [imm8] ret, or the VEX form (C5 for map 1 with W = 0, else C4;
+   vvvv = 2). The ModRM reg field is `reg` (XMM0/MM0/EAX for 0); the E operand is register 1 or [ESI].
+   Returns 1 if the memory form was chosen. */
+static int assemble_x(const struct sop *o, u8 reg, u8 imm) {
+	u16 fl = o->fl;
 	int n = 0, mem = (fl & MEMONLY) || ((fl & MEM) && rnd() % 3 == 0);
-	if (pfx) code[n++] = pfx;
-	code[n++] = 0x0F; code[n++] = op;
+	int map = o->map ? o->map : 1;
+	if (o->vex) {
+		u8 pp = o->pfx == 0x66 ? 1 : o->pfx == 0xF3 ? 2 : o->pfx == 0xF2 ? 3 : 0;
+		u8 l = o->l == 2 ? rnd() % 2 : o->l;
+		u8 vb = (u8)((~2u & 15) << 3 | l << 2 | pp);
+		if (map == 1 && !o->w) { code[n++] = 0xC5; code[n++] = 0x80 | vb; }
+		else { code[n++] = 0xC4; code[n++] = 0xE0 | map; code[n++] = (u8)(o->w << 7) | vb; }
+	} else {
+		if (o->pfx) code[n++] = o->pfx;
+		code[n++] = 0x0F;
+		if (map == 2) code[n++] = 0x38;
+		if (map == 3) code[n++] = 0x3A;
+	}
+	code[n++] = o->op;
 	code[n++] = mem ? (u8)(0x06 | (reg << 3)) : (u8)(0xC1 | (reg << 3));
-	if (fl & IMM) code[n++] = imm;
+	if ((fl & IMM) || map == 3) code[n++] = imm;
+	ncode = n;
 	code[n++] = 0xC3;
 	return mem;
 }
+static int assemble(u8 pfx, u8 op, u16 fl, u8 reg, u8 imm) {
+	struct sop o = { pfx, op, fl };
+	return assemble_x(&o, reg, imm);
+}
 
-static void print_code(void) { for (int k = 0; code[k] != 0xC3; k++) { kputc("0123456789abcdef"[code[k] >> 4]); kputc("0123456789abcdef"[code[k] & 15]); } }
+static void print_code(void) { for (int k = 0; k < ncode; k++) { kputc("0123456789abcdef"[code[k] >> 4]); kputc("0123456789abcdef"[code[k] & 15]); } }
 
 static void sse_case(u32 n, const struct sop *o) {
 	u16 fl = o->fl;
@@ -197,7 +262,7 @@ static void sse_case(u32 n, const struct sop *o) {
 	if (o->op == 0x71 || o->op == 0x72) { static const u8 g[] = { 2, 4, 6 }; reg = g[rnd() % 3]; }
 	if (o->op == 0x73) { static const u8 g[] = { 2, 3, 6, 7 }; reg = g[rnd() % 4]; }
 	if ((o->op >= 0x71 && o->op <= 0x73) && rnd() % 2) imm %= 70;
-	int mem = assemble(o->pfx, o->op, fl, reg, imm);
+	int mem = assemble_x(o, reg, imm);
 	fill(XIN, dt == 1 ? 1 : dt == 2 ? 2 : dt == 3 ? 3 : 0, fl & NODN);
 	fill(XIN + 4, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
 	fill(MEMOP, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
@@ -215,6 +280,8 @@ static void sse_case(u32 n, const struct sop *o) {
 	kprintf(" mx=%x a=", MXIN); phex(XIN, 4); kputs(" b="); phex(mem ? MEMOP : XIN + 4, 4);
 	if (fl & MMXD) { kputs(" m="); phex(MMIN, 4); }
 	kprintf(" g=%x -> ", GIN); phex(XOUT, 4); kputc(' '); phex(XOUT + 4, 4);
+	if (fl & ALLX) for (int k = 2; k < 8; k++) { kputc(' '); phex(XOUT + 4 * k, 4); }
+	if (fl & YMMD) { kputs(" y="); for (int k = 0; k < 8; k++) { kputc(' '); phex(YOUT + 4 * k, 4); } }
 	if (fl & MMXD) { kputs(" m0="); phex(MMOUT, 2); }
 	kprintf(" g=%x mx=%x fl=%x", GOUT, MXOUT, FLOUT & 0x8D5);
 	if (fl & STORE) { kputs(" mem="); phex(MEMOP, 4); }
@@ -250,6 +317,7 @@ static void mmx_case(u32 n, u8 op, u16 fl) {
 void test_simd(void) {
 	WRCR(0, (RDCR(0) & ~0xC) | 0x22);
 	WRCR(4, RDCR(4) | 0x600);              /* OSFXSR, OSXMMEXCPT */
+	osxsave_setup(1);
 	u32 n = 0;
 	rs = fuzz_seed(rs);
 	u32 nmmx = param("mmx", 1500);
@@ -271,5 +339,12 @@ void test_simd(void) {
 			sse_case(n++, &o);
 		}
 	}
+	u32 nx = NXOPS ? param("ssex", 2000) : 0;
+	for (u32 k = 0; k < nx; k++) {
+		for (int w = 0; w < 32; w++) YIN[w] = rnd();
+		for (int w = 8; w < 32; w++) XIN[w] = rnd();   /* XMM2..7 (sse_case fills XMM0/XMM1) */
+		sse_case(n++, &xops[rnd() % (NXOPS ? NXOPS : 1)]);
+	}
+	osxsave_setup(0);
 	__asm__ volatile("fninit");
 }

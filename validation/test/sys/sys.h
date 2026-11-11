@@ -55,6 +55,17 @@ static inline void outl(u16 p, u32 v) { __asm__ volatile("outl %0, %1" :: "a"(v)
 #define WRDR(n, v) __asm__ volatile("mov %0, %%db" #n :: "r"((u32)(v)) : "memory")
 static inline u64 rdmsr(u32 n) { u32 lo, hi; __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(n)); return ((u64)hi << 32) | lo; }
 static inline void wrmsr(u32 n, u64 v) { __asm__ volatile("wrmsr" :: "c"(n), "a"((u32)v), "d"((u32)(v >> 32))); }
+static inline void cpuid(u32 leaf, u32 sub, u32 r[4]) {
+	__asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+/* CPUID feature bit: leaf, subleaf, register (0 EAX .. 3 EDX), bit (for leaves the CPU has) */
+static inline int has_feature(u32 leaf, u32 sub, int reg, int bit) {
+	u32 r[4];
+	cpuid(leaf & 0x80000000, 0, r);
+	if (leaf > r[0]) return 0;
+	cpuid(leaf, sub, r);
+	return (r[reg] >> bit) & 1;
+}
 static inline u32 rdflags(void) { u32 f; __asm__ volatile("pushfl; popl %0" : "=r"(f)); return f; }
 static inline void invlpg(u32 a) { __asm__ volatile("invlpg (%0)" :: "r"(a) : "memory"); }
 static inline void ltr(u16 s) { __asm__ volatile("ltr %0" :: "r"(s)); }
