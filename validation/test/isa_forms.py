@@ -37,19 +37,7 @@ NOT_YET_IMPLEMENTED = [
     # --- Sse --- (all implemented: see IMPLEMENTED)
     # --- Crypto ---
     # --- Xsave ---
-    # --- Avx2 (AVX2, FMA3, F16C; the AVX forms are in IMPLEMENTED): the VEX.256 forms of the integer
-    # opcodes, and the opcodes AVX does not have (broad rows: every pp/W/mod) ---
-    F('avx2', 'Avx2', 'vex', 1, 1, rng(0x60, 0x6D) + rng(0x70, 0x76) + rng(0xD1, 0xD5) + rng(0xD7, 0xDF) +
-      rng(0xE0, 0xE5) + rng(0xE8, 0xEF) + rng(0xF1, 0xF6) + rng(0xF8, 0xFE), None, 1),
-    F('avx2', 'Avx2', 'vex', 1, 2, [0x70], None, 1),
-    F('avx2', 'Avx2', 'vex', 1, 3, [0x70], None, 1),
-    F('avx2', 'Avx2', 'vex', 2, 1, rng(0x00, 0x0B) + rng(0x1C, 0x1E) + rng(0x20, 0x25) + rng(0x28, 0x2B) +
-      rng(0x30, 0x35) + rng(0x37, 0x40), None, 1),
-    F('avx2', 'Avx2', 'vex', 2, 1, [0x13, 0x16, 0x36] + rng(0x45, 0x47) + rng(0x58, 0x5A) + [0x78, 0x79, 0x8C, 0x8E] +
-      rng(0x90, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF)),
-    F('avx2', 'Avx2', 'vex', 2, 1, [0x18, 0x19], ('reg', None)),     # VBROADCASTSS/SD from a register
-    F('avx2', 'Avx2', 'vex', 3, 1, [0x00, 0x01, 0x02, 0x1D, 0x38, 0x39, 0x46]),
-    F('avx2', 'Avx2', 'vex', 3, 1, [0x0E, 0x0F, 0x42, 0x4C], None, 1),
+    # --- Avx2 --- (all implemented: see IMPLEMENTED)
     # --- Svm ---
     F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3)),
 ]
@@ -102,6 +90,38 @@ IMPLEMENTED = [
     F('avx', 'Avx', 'vex', 3, 1, [0x0E, 0x0F, 0x14, 0x15, 0x16, 0x17, 0x20, 0x21, 0x22, 0x41, 0x42, 0x44, 0x60,
       0x61, 0x62, 0x63, 0xDF], None, 0),
     F('avx', 'Avx', 'vex', 3, 1, [0x4C], None, 0, 0),               # VPBLENDVB
+    # --- Avx2 (x86_32/X86/Ext/Avx2.lean; generator: gen_avx2.py) --- exactly the AVX2, FMA3 and F16C
+    # forms of Zen 2 (VEX.L, VEX.W, ModRM.mod/reg), so the 'ud' family tests their neighbours as #UD
+    F('avx2', 'Avx2', 'vex', 1, 1, rng(0x60, 0x6D) + [0x70, 0x74, 0x75, 0x76] + rng(0xD1, 0xD5) + rng(0xD8, 0xDF) +
+      rng(0xE0, 0xE5) + rng(0xE8, 0xEF) + rng(0xF1, 0xF6) + rng(0xF8, 0xFE), None, 1),
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x71, 0x72], ('reg', 2), 1),     # VPSRLW/D ymm, imm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x71, 0x72], ('reg', 4), 1),     # VPSRAW/D ymm, imm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x71, 0x72, 0x73], ('reg', 6), 1),  # VPSLLW/D/Q ymm, imm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x73], ('reg', 2), 1),           # VPSRLQ ymm, imm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x73], ('reg', 3), 1),           # VPSRLDQ ymm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0x73], ('reg', 7), 1),           # VPSLLDQ ymm
+    F('avx2', 'Avx2', 'vex', 1, 1, [0xD7], ('reg', None), 1),        # VPMOVMSKB r32, ymm
+    F('avx2', 'Avx2', 'vex', 1, 2, [0x70], None, 1),                 # VPSHUFHW ymm
+    F('avx2', 'Avx2', 'vex', 1, 3, [0x70], None, 1),                 # VPSHUFLW ymm
+    F('avx2', 'Avx2', 'vex', 2, 1, rng(0x00, 0x0B) + rng(0x1C, 0x1E) + rng(0x20, 0x25) + [0x28, 0x29, 0x2B] +
+      rng(0x30, 0x35) + rng(0x37, 0x40), None, 1),
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x2A], ('mem', None), 1),        # VMOVNTDQA ymm
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x16, 0x36], None, 1, 0),        # VPERMPS, VPERMD
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x18], ('reg', None), None, 0),  # VBROADCASTSS xmm/ymm, xmm
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x19], ('reg', None), 1, 0),     # VBROADCASTSD ymm, xmm
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x45, 0x47]),                    # VPSRLVD/Q, VPSLLVD/Q
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x46, 0x58, 0x59, 0x78, 0x79], None, None, 0),   # VPSRAVD, VPBROADCASTx
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x5A], ('mem', None), 1, 0),     # VBROADCASTI128
+    F('avx2', 'Avx2', 'vex', 2, 1, [0x8C, 0x8E], ('mem', None)),     # VPMASKMOVD/Q
+    F('avx2', 'Avx2', 'vex', 2, 1, rng(0x90, 0x93), ('mem', None, (4,))),   # gathers (VSIB)
+    F('fma', 'Avx2', 'vex', 2, 1, rng(0x96, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF)),   # FMA3
+    F('f16c', 'Avx2', 'vex', 2, 1, [0x13], None, None, 0),           # VCVTPH2PS
+    F('f16c', 'Avx2', 'vex', 3, 1, [0x1D], None, None, 0),           # VCVTPS2PH
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x00, 0x01], None, 1, 1),        # VPERMQ, VPERMPD
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x02], None, None, 0),           # VPBLENDD
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x0E, 0x0F, 0x42], None, 1),     # VPBLENDW, VPALIGNR, VMPSADBW ymm
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x4C], None, 1, 0),              # VPBLENDVB ymm
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x38, 0x39, 0x46], None, 1, 0),  # VINSERTI128, VEXTRACTI128, VPERM2I128
     # --- Sys (generator: test/gen_sys.py) ---
     F('syscall', 'Sys', 'legacy', 1, None, [0x05, 0x07]),
     F('sep', 'Sys', 'legacy', 1, None, [0x34, 0x35]),

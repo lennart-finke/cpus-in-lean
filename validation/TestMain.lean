@@ -177,6 +177,16 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   if i.vex && i.vexL && i.map == 1 && i.pp ≥ 2 && qo.vec == 6 && lo.vec != 6 &&
      [0x51, 0x52, 0x53, 0x58, 0x59, 0x5A, 0x5C, 0x5D, 0x5E, 0x5F, 0xC2].contains i.byte then
     return lo
+  -- (Avx2) masked stores VMASKMOVPS/PD, VPMASKMOVD/Q (VEX.66.0F38 2E, 2F, 8E) whose selected elements
+  -- reach an inaccessible page: TCG stores element by element and leaves the elements before the
+  -- faulting one written; the model checks every selected element before it writes any (no partial
+  -- store, as for an ordinary page-crossing store; Intel SDM VMASKMOV only rules out faults of
+  -- masked-out elements, AMD APM vol. 4 VPMASKMOVD calls the details implementation dependent).
+  -- Accepted only when both raise the same #PF and the model left memory unchanged; only the memory
+  -- hash is replaced.
+  if i.vex && i.map == 2 && i.pp == 1 && [0x2E, 0x2F, 0x8E].contains i.byte && qo.vec == 14 &&
+     lo.vec == 14 && qo.err == lo.err && qo.cr2 == lo.cr2 && lo.hash == initHash then
+    return { qo with hash := lo.hash }
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo
   if rmwDest i then
