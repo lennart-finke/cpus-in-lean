@@ -16,10 +16,12 @@ Excluded: the x86 assembly `ChaCha20_ctr32` (`chacha-x86.pl`), the EVP cipher wr
 
 Statement (`Ssl/OpensslChacha20/Statement.lean`): `Spec.Chacha.crypt` (RFC 8439 §2.1–2.4) applied to the
 matrix `sigma ++ key ++ counter` that the function assembles, for every caller, every placement of the
-buffers, every key (8 words), counter/nonce (4 words) and input of at most 1 MiB. The output may be the
+buffers, every key (8 words), counter/nonce (4 words) and input that fits in memory and in a C object
+(at most 2^31 - 1 bytes). The output may be the
 input buffer (in-place encryption). The counter is 32-bit and wraps modulo 2^32, exactly
 `Spec.Chacha.advance`; the upstream comment says callers wanting a wider counter split the call. RFC 8439
 does not define the wrap; it is this function's behaviour, written into the specification. With `len = 0`
 nothing is read or written, so the statement allows any pointers then.
 
-Not stated: lengths above 1 MiB, and partially overlapping `out`/`inp`.
+Not stated: partially overlapping `out`/`inp`. The executable checks run inputs up to 200 bytes; nothing
+in the function depends on the length beyond the block loop and the 32-bit counter, whose wrap is checked.

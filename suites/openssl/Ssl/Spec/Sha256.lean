@@ -5,10 +5,14 @@ import Ssl.Bytes
 Padding (§5.1.1), message schedule and compression (§6.2.2), constants (§4.2.2), initial values
 (§5.3.2/§5.3.3). Checked against FIPS/NIST vectors by kernel evaluation below, and against a
 reference implementation by `tools/spec_vectors.py`. `pad` encodes the bit length in 64 bits, so
-the definition is SHA-256 for messages shorter than 2^61 bytes.
+the definition is SHA-256 for messages shorter than `lenBound` = 2^61 bytes, the standard's limit.
 -/
 namespace Ssl.Spec.Sha256
 open Ssl
+
+/-- FIPS 180-4 §1: SHA-256 and SHA-224 are defined for messages of fewer than 2^64 bits, that is
+fewer than `lenBound` bytes. -/
+def lenBound : Nat := 2 ^ 61
 
 def rotr (x : UInt32) (n : UInt32) : UInt32 := (x >>> n) ||| (x <<< (32 - n))
 /-- FIPS 180-4 §4.1.2 (`Sigma`/`sigma` are the standard's upper/lower-case sigma functions). -/

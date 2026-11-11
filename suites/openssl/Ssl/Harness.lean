@@ -4,17 +4,18 @@ import Ssl.Bytes
 # OpenSSL task call harness
 
 Every task is a contract about one call of a function of a linked i386 image, executed by the
-unchanged `X86.step` in an 8 MiB flat machine. The contracts are stated for an arbitrary caller:
+unchanged `X86.step` in a flat machine. The contracts are stated for an arbitrary caller:
 
-* **Caller state** (`Caller`): arbitrary memory contents, arbitrary general registers, arbitrary
-  arithmetic status flags and an arbitrary stack pointer. The remaining machine state is fixed by
-  `entry`: ring 0, flat 4 GiB segments, protected mode without paging, interrupts disabled, the
-  direction flag clear (as the calling convention requires), devices idle.
+* **Caller state** (`Caller`): a memory of arbitrary size (up to `ramLimit`) and contents, arbitrary
+  general registers, arbitrary arithmetic status flags and an arbitrary stack pointer. The remaining
+  machine state is fixed by `entry`: ring 0, flat 4 GiB segments, protected mode without paging,
+  interrupts disabled, the direction flag clear (as the calling convention requires), devices idle.
 * **Well-formed call** (`Calls`): the image bytes are in memory at their link address, the return
   address (the image's `halt` sentinel) and the stack arguments are at the stack pointer, and the
   `stack` bytes below the stack pointer are available to the callee and do not overlap the image.
-* **Buffers** (`Buffer`): every pointer argument designates a region inside memory that overlaps
-  neither the image nor the call's stack. Which buffers may alias is stated per task with `Apart`.
+* **Buffers** (`Buffer`): every pointer argument designates a region inside memory, no larger than
+  a C object can be (`maxObject`), that overlaps neither the image nor the call's stack. Which
+  buffers may alias is stated per task with `Apart`.
 * **Outcome** (`Returns`): the run reaches the sentinel without an earlier fault or halt, with the
   return address popped, the direction flag clear and the callee-saved registers restored; every
   byte of memory outside the stated writable set and outside the `stack` bytes below the entry
@@ -22,6 +23,23 @@ unchanged `X86.step` in an 8 MiB flat machine. The contracts are stated for an a
   a contract can be applied to the memory another call left behind.
 
 A proof of a task therefore also bounds the function's stack use by `stack`.
+
+## Fixed choices
+
+Everything a statement fixes rather than quantifies over, and why:
+
+* `ramLimit`, `maxObject` (below): where the model's RAM must end, and the C object-size limit.
+* The machine state of `entry` other than memory, general registers, arithmetic flags and stack
+  pointer: one execution environment (ring 0, no paging, interrupts off, flat segments, everything
+  else as the model resets it). The tasks say nothing about other environments.
+* The image's link address and symbol addresses (`Image.lean`): properties of the bytes, which are
+  not position independent.
+* Per target, in its `Statement.lean`: the stack bound of its calls (an upper bound chosen above
+  the use observed by `sslcheck`; a smaller one would be a stronger statement), the buffer sizes
+  the C interface fixes, and bounds that come from the algorithm's specification.
+
+There is no bound on the memory size from below (the preconditions need room for the image, the
+stack and the buffers) and none on message lengths other than those of the specifications.
 -/
 namespace Ssl
 open X86
@@ -32,7 +50,17 @@ structure Img where
   bytes : ByteArray
   halt : UInt32
 
-def memSize : Nat := 0x800000
+/-- RAM must end at or below this address: the page at `0xFEE00000` is the local APIC's
+(`X86.Apic.base` as the model resets it), where the model's memory accesses do not reach `mem`.
+Bytes of `mem` at or above it would not be memory. Everything below is RAM in the model. -/
+def ramLimit : Nat := 0xFEE00000
+
+/-- `ramLimit` is where the machine `entry` builds has its local APIC. -/
+theorem ramLimit_eq_apicBase : ramLimit = ({} : X86.Apic).base.toNat := by decide
+
+/-- The largest object a C implementation for i386 supports (`PTRDIFF_MAX`). A buffer handed to a C
+function is an object, and compiled code may rely on this limit. -/
+def maxObject : Nat := 0x7FFFFFFF
 
 /-! ## Reading memory -/
 
@@ -62,14 +90,15 @@ instance (lo : UInt32) (n : Nat) : DecidablePred (InRange lo n) := fun a =>
 
 def NoWrites (_ : UInt32) : Prop := False
 
-/-- `[lo, lo + n)` lies inside memory (an empty region is nowhere, so any pointer will do). -/
-def Fits (lo : UInt32) (n : Nat) : Prop := n = 0 ∨ lo.toNat + n ≤ memSize
+/-- `[lo, lo + n)` lies inside a memory of `size` bytes (an empty region is nowhere, so any pointer
+will do). -/
+def Fits (size : Nat) (lo : UInt32) (n : Nat) : Prop := n = 0 ∨ lo.toNat + n ≤ size
 
 /-- `[a, a + n)` and `[b, b + k)` do not overlap (an empty region overlaps nothing). -/
 def Apart (a : UInt32) (n : Nat) (b : UInt32) (k : Nat) : Prop :=
   n = 0 ∨ k = 0 ∨ a.toNat + n ≤ b.toNat ∨ b.toNat + k ≤ a.toNat
 
-instance (lo : UInt32) (n : Nat) : Decidable (Fits lo n) := by unfold Fits; infer_instance
+instance (size : Nat) (lo : UInt32) (n : Nat) : Decidable (Fits size lo n) := by unfold Fits; infer_instance
 instance (a : UInt32) (n : Nat) (b : UInt32) (k : Nat) : Decidable (Apart a n b k) := by
   unfold Apart; infer_instance
 
@@ -87,7 +116,8 @@ structure Regs where
   /-- Only the six arithmetic status flags (CF, PF, AF, ZF, SF, OF) of this word are used. -/
   flags : UInt32
 
-/-- The state a caller is in when it calls: any memory, registers, status flags and stack pointer. -/
+/-- The state a caller is in when it calls: a memory of any size and contents, any registers, status
+flags and stack pointer. -/
 structure Caller where
   mem : ByteArray
   regs : Regs
@@ -116,22 +146,25 @@ def Caller.stackLo (c : Caller) (stack : Nat) : UInt32 := c.sp - stack.toUInt32
 def stackSize (stack nargs : Nat) : Nat := stack + 4 * (nargs + 1)
 
 /-- A well-formed call of a function of `img` with stack arguments `args`, for which the callee may
-use `stack` bytes below the stack pointer: memory has the model's size and holds the image at its
-link address; the sentinel return address and the arguments are at the stack pointer; the stack
+use `stack` bytes below the stack pointer: memory ends at or below `ramLimit` and holds the image at
+its link address; the sentinel return address and the arguments are at the stack pointer; the stack
 region is inside memory and does not overlap the image. -/
 def Calls (img : Img) (c : Caller) (stack : Nat) (args : List UInt32) : Prop :=
-  c.mem.size = memSize ∧
-  img.base.toNat + img.bytes.size ≤ memSize ∧
+  c.mem.size ≤ ramLimit ∧
+  img.base.toNat + img.bytes.size ≤ c.mem.size ∧
   memBytes c.mem img.base img.bytes.size = img.bytes.data.toList ∧
   memWords c.mem c.sp (args.length + 1) = (img.halt :: args).toArray ∧
   stack ≤ c.sp.toNat ∧
-  c.sp.toNat + 4 * (args.length + 1) ≤ memSize ∧
+  c.sp.toNat + 4 * (args.length + 1) ≤ c.mem.size ∧
   Apart (c.stackLo stack) (stackSize stack args.length) img.base img.bytes.size
 
-/-- `[lo, lo + n)` is a buffer of the caller: inside memory, overlapping neither the image nor the
-stack region of a call with `nargs` stack arguments. -/
+/-- `[lo, lo + n)` is a buffer of the caller: inside memory, at most `maxObject` bytes, overlapping
+neither the image nor the stack region of a call with `nargs` stack arguments. In a well-formed
+call (`Calls`) its length is below 2^32, so it is passed to the function unchanged as a 32-bit
+argument. -/
 def Buffer (img : Img) (c : Caller) (stack nargs : Nat) (lo : UInt32) (n : Nat) : Prop :=
-  Fits lo n ∧ Apart lo n img.base img.bytes.size ∧ Apart lo n (c.stackLo stack) (stackSize stack nargs)
+  Fits c.mem.size lo n ∧ n ≤ maxObject ∧
+  Apart lo n img.base img.bytes.size ∧ Apart lo n (c.stackLo stack) (stackSize stack nargs)
 
 instance (img : Img) (c : Caller) (stack : Nat) (args : List UInt32) : Decidable (Calls img c stack args) := by
   unfold Calls; infer_instance
@@ -166,10 +199,11 @@ def Returned (img : Img) (m0 m1 : X86.Machine) : Prop :=
 def CalleeSaved (m0 m1 : X86.Machine) : Prop :=
   m1.cpu.ebx = m0.cpu.ebx ∧ m1.cpu.esi = m0.cpu.esi ∧ m1.cpu.edi = m0.cpu.edi ∧ m1.cpu.ebp = m0.cpu.ebp
 
-/-- Every byte of memory is unchanged, except those in the writable set `W` and the `stack` bytes
-below the entry stack pointer. -/
+/-- Memory keeps its size, and every byte of it is unchanged, except those in the writable set `W`
+and the `stack` bytes below the entry stack pointer. -/
 def Preserved (m0 m1 : X86.Machine) (stack : Nat) (W : UInt32 → Prop) : Prop :=
-  ∀ a : UInt32, a.toNat < memSize → ¬ W a → ¬ InRange (m0.cpu.esp - stack.toUInt32) stack a →
+  m1.mem.size = m0.mem.size ∧
+  ∀ a : UInt32, a.toNat < m0.mem.size → ¬ W a → ¬ InRange (m0.cpu.esp - stack.toUInt32) stack a →
     memByte m1.mem a = memByte m0.mem a
 
 /-- The call entered at `m0` returns, restores the callee-saved registers, changes no memory outside

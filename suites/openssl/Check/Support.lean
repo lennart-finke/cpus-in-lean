@@ -30,11 +30,14 @@ def words (n seed : Nat) : Array UInt32 := Id.run do
 
 def wordBytes (ws : Array UInt32) : List UInt8 := ws.toList.flatMap le32
 
-/-- A whole memory of pseudo-random bytes. -/
+/-- The memory size of the ordinary placements. -/
+def baseSize : Nat := 0x800000
+
+/-- `baseSize` pseudo-random bytes. -/
 def garbage (seed : UInt64) : ByteArray := Id.run do
   let mut s := seed
-  let mut a := ByteArray.emptyWithCapacity memSize
-  for _ in [0:memSize / 8] do
+  let mut a := ByteArray.emptyWithCapacity baseSize
+  for _ in [0:baseSize / 8] do
     s := lcg s
     let v := s ^^^ (s >>> 29)
     for k in [0:8] do
@@ -44,22 +47,37 @@ def garbage (seed : UInt64) : ByteArray := Id.run do
 def put (mem : ByteArray) (addr : UInt32) (b : List UInt8) : ByteArray :=
   (ByteArray.mk b.toArray).copySlice 0 mem addr.toNat b.length
 
-/-- Where a check puts the stack and its (small) buffers. -/
+/-- `n` zero bytes, built by doubling (a byte array of gigabytes must not go through `Array`). -/
+def zeros (n : Nat) : ByteArray := Id.run do
+  let mut a := ByteArray.mk (Array.replicate 4096 0)
+  while a.size < n do a := a ++ a
+  return a.extract 0 n
+
+/-- How large the caller's memory is, and where a check puts the stack and its (small) buffers. -/
 structure Layout where
+  size : Nat := baseSize
   sp : UInt32
   slots : Array UInt32
   deriving Inhabited
 
 def Layout.slot (l : Layout) (i : Nat) : UInt32 := l.slots[i]!
 
-/-- Three placements: the stack below the buffers; unaligned buffers below the image with the
-stack at the top of memory; and the stack directly above the image with buffers up to the last
-bytes of memory. -/
+/-- Four placements: the stack below the buffers; unaligned buffers below the image with the
+stack at the top of memory; the stack directly above the image with buffers up to the last
+bytes of memory; and a memory that ends with the last byte of the image, with the stack directly
+below the image. -/
 def layouts (img : Img) (stack : Nat) : List Layout :=
   [{ sp := 0x180000, slots := #[0x200000, 0x400000, 0x600000, 0x700000] },
    { sp := 0x7FFFE0, slots := #[0x1001, 0x3003, 0x5005, 0x7007] },
    { sp := ((img.base.toNat + img.bytes.size + stack + 3) / 4 * 4).toUInt32,
-     slots := #[0x700001, 0x710002, 0x720003, 0x7FFF00] }]
+     slots := #[0x700001, 0x710002, 0x720003, 0x7FFF00] },
+   { size := img.base.toNat + img.bytes.size, sp := img.base - 32,
+     slots := #[0x1001, 0x3003, 0x5005, 0x7007] }]
+
+/-- A memory of more than 2 GiB: the first buffer straddles address 2^31, the others and the stack
+(at the top of memory) lie above it, so every pointer of the call has its top bit set. -/
+def highLayouts : List Layout :=
+  [{ size := 0x80200000, sp := 0x801FFFE0, slots := #[0x7FFFFFF0, 0x80001001, 0x80003003, 0x80100005] }]
 
 /-- The class an executed instruction is counted under when comparing with the instruction fuzzer:
 opcode, the ModRM `reg` field for group opcodes, memory or register operand, operand size, REP. -/
@@ -74,6 +92,8 @@ def encKey (i : Inst) : String :=
   s!"op={hex i.op} {grp} {if i.isMem then "mem" else "reg"} opsz={i.opsz.toUInt32}{if i.rep != 0 then " rep" else ""}"
 
 structure T where
+  /-- Run the checks in the placements of `highLayouts` instead of `layouts`, on fewer cases. -/
+  high : Bool
   base : ByteArray
   seed : IO.Ref UInt64
   /-- Deepest stack use seen per target. -/
@@ -82,17 +102,24 @@ structure T where
   /-- Executed instruction classes, when recording. -/
   encs : Option (IO.Ref (Std.HashMap String Nat))
 
-def T.new (record : Bool := false) : IO T := do
+def T.new (record : Bool := false) (high : Bool := false) : IO T := do
   let encs ← if record then some <$> IO.mkRef {} else pure none
-  return { base := garbage 0x5EED, seed := ← IO.mkRef 1, depth := ← IO.mkRef [], calls := ← IO.mkRef 0, encs }
+  return { high, base := garbage 0x5EED, seed := ← IO.mkRef 1, depth := ← IO.mkRef [], calls := ← IO.mkRef 0, encs }
 
-/-- A caller with pseudo-random memory, registers and flags; the image, the given buffers and the
-call frame are placed in its memory. -/
-def T.caller (t : T) (img : Img) (sp : UInt32) (args : List UInt32) (bufs : List (UInt32 × List UInt8))
+def T.layouts (t : T) (img : Img) (stack : Nat) : List Layout :=
+  if t.high then highLayouts else Check.layouts img stack
+
+/-- A caller with pseudo-random registers and flags and a memory of the placement's size
+(pseudo-random up to `baseSize`, zero beyond); the image, the given buffers and the call frame are
+placed in its memory. -/
+def T.caller (t : T) (img : Img) (L : Layout) (args : List UInt32) (bufs : List (UInt32 × List UInt8))
     (ecx edx : Option UInt32 := none) : IO Caller := do
   let s0 ← t.seed.modifyGet fun s => (s, lcg s)
   let r (k : Nat) : UInt32 := ((lcg (s0 + k.toUInt64)) >>> 24).toUInt32
-  let mem := img.bytes.copySlice 0 t.base img.base.toNat img.bytes.size
+  let sp := L.sp
+  let mem := if L.size ≤ t.base.size then t.base.extract 0 L.size
+             else t.base ++ zeros (L.size - t.base.size)
+  let mem := img.bytes.copySlice 0 mem img.base.toNat img.bytes.size
   let mem := bufs.foldl (fun m (a, b) => put m a b) mem
   let mem := put mem sp ((img.halt :: args).flatMap le32)
   let regs : Regs :=
@@ -106,9 +133,14 @@ def T.caller (t : T) (img : Img) (sp : UInt32) (args : List UInt32) (bufs : List
       flags := r 7 }
   return { mem, sp, regs }
 
-/-- First address whose byte differs between `a` and `b`, outside the `allowed` regions. -/
+/-- First address whose byte differs between `a` and `b` (of equal size), outside the `allowed`
+regions. Memories of gigabytes are first compared by hash, with the allowed regions of `b` replaced
+by those of `a`; only a mismatch is then located byte by byte. -/
 def firstChange (a b : ByteArray) (allowed : List (Nat × Nat)) : Option Nat := Id.run do
-  for i in [0:memSize] do
+  if a.size > 4 * baseSize then
+    let b' := allowed.foldl (fun b' (lo, n) => a.copySlice lo b' lo (min n (a.size - lo))) b
+    if hash a == hash b' then return none
+  for i in [0:a.size] do
     if a.get! i != b.get! i then
       if !(allowed.any fun (lo, n) => lo ≤ i && i < lo + n) then return some i
   return none
@@ -133,7 +165,7 @@ def T.call (t : T) (target : String) (img : Img) (c : Caller) (fn : UInt32) (sta
     (m.cpu.ebx == c.regs.ebx && m.cpu.esi == c.regs.esi && m.cpu.edi == c.regs.edi && m.cpu.ebp == c.regs.ebp)
   let used := c.sp.toNat - lo.toNat
   ensure s!"{target}: used {used} bytes of stack, more than the stated {stack}" (used ≤ stack)
-  ensure s!"{target}: memory size" (m.mem.size == memSize)
+  ensure s!"{target}: memory size" (m.mem.size == c.mem.size)
   let allowed := (c.sp.toNat - stack, stack) :: W.map fun (a, n) => (a.toNat, n)
   if let some a := firstChange c.mem m.mem allowed then
     throw (IO.userError s!"{target}: byte at {a} changed outside the writable set and the stack")

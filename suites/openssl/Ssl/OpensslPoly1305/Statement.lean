@@ -12,8 +12,8 @@ i386, where `INT128_MAX` is not defined and `POLY1305_ASM` is off).
 contents as opaque: the state of a computation is the 236 bytes the previous call left in the
 context, wherever the caller keeps them.
 
-Statement: for every 32-byte key and every message of at most `maxLen` bytes, delivered as an
-arbitrary sequence of chunks, the calls `Poly1305_Init(ctx, key)`, `Poly1305_Update(ctx, chunk_i,
+Statement: for every 32-byte key and every message of any length (it need not fit in memory, only
+each chunk), delivered as an arbitrary sequence of chunks, the calls `Poly1305_Init(ctx, key)`, `Poly1305_Update(ctx, chunk_i,
 len_i)`…, `Poly1305_Final(ctx, mac)` each return, having written only the context (and the 16-byte
 tag in the last call) and at most `stackBound` bytes of stack; the tag is `Spec.Poly1305.poly1305
 key (chunks.flatten)` and `Final` leaves the context zeroed (`OPENSSL_cleanse(ctx, sizeof(*ctx))`).
@@ -25,7 +25,6 @@ namespace Ssl.OpensslPoly1305
 open X86 Ssl
 
 def img : Img := ⟨Image.base, Image.bytes, Image.sym_halt⟩
-def maxLen : Nat := 0x100000
 def ctxSize : Nat := 236
 /-- Stack any of the calls may use below its entry stack pointer. -/
 def stackBound : Nat := 256
@@ -79,15 +78,15 @@ def Stream (key : List UInt8) (chunks : List (List UInt8)) : Prop :=
 
 def Poly1305_correct : Prop :=
   ∀ (key : List UInt8) (chunks : List (List UInt8)),
-    key.length = 32 → chunks.flatten.length ≤ maxLen → Stream key chunks
+    key.length = 32 → Stream key chunks
 
 /-- The one-shot special case: a single `Poly1305_Update` with the whole message. -/
 def Poly1305_oneshot : Prop :=
-  ∀ (key msg : List UInt8), key.length = 32 → msg.length ≤ maxLen → Stream key [msg]
+  ∀ (key msg : List UInt8), key.length = 32 → Stream key [msg]
 
 /-- `Poly1305_oneshot` is an instance of `Poly1305_correct`, not an independent result. -/
 theorem Poly1305_oneshot_of_correct (h : Poly1305_correct) : Poly1305_oneshot :=
-  fun key msg hk hm => h key [msg] hk (by simpa using hm)
+  fun key msg hk => h key [msg] hk
 
 /-- `Poly1305_ctx_size()` returns `sizeof(struct poly1305_context)` = 236, writing nothing. -/
 def Poly1305_ctx_size_correct : Prop :=

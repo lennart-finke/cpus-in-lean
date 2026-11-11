@@ -15,9 +15,12 @@ been proved correct.
 
 Each obligation retains the original inputs, preconditions and postconditions. Calls must return,
 restore callee-saved registers and preserve memory outside the stated writable regions and the
-callee's stack area. Streaming messages are bounded by 1 MiB. The statements specify the portable
+callee's stack area. The caller's memory has any size and contents, and messages have any length the
+algorithm's specification allows (below 2^61 bytes for SHA-256; a single buffer is at most a C object,
+2^31 - 1 bytes). `Ssl/Harness.lean` lists every choice the statements fix. The statements specify the portable
 C implementations compiled with the recorded flags; they do not cover OpenSSL's assembly dispatch,
-TLS, providers, arbitrary memory layouts, or side-channel properties.
+TLS, providers, execution environments other than the one the harness fixes (ring 0, no paging,
+interrupts off), or side-channel properties.
 
 ## Run
 
@@ -27,6 +30,7 @@ From this directory:
 lake build
 ./verify.sh
 ./verify.sh --rebuild  # also rebuild C sources and require identical bytes and symbol addresses
+./verify.sh --high     # also the slow checks: buffers above address 2^31, SHA-256 past 2^32 bits
 ```
 
 The default check needs Lean (the repository toolchain) and Python 3, with no network access.

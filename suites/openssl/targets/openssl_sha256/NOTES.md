@@ -31,7 +31,8 @@ assembly `sha256_block_data_order` (`sha256-586.pl`; not built, no `SHA256_ASM`)
 
 Statements (`Ssl/OpensslSha256/Statement.lean`, spec `Ssl.Spec.Sha256`), each call by an arbitrary caller with
 its own placement of the buffers: (a) `SHA256_Init(ctx)`, then `SHA256_Update(ctx, chunk, len)` per chunk of an
-arbitrary chunking of a message of at most 2^20 bytes (each writes only the 112-byte context and returns 1),
+arbitrary chunking of a message of fewer than 2^61 bytes, the limit of FIPS 180-4 (each chunk fits in memory
+and in a C object; the message as a whole need not; each writes only the 112-byte context and returns 1),
 then `SHA256_Final(out, ctx)` returns 1 and writes `Spec.sha256 (chunks.flatten)` at `out`; (b) the same with
 `SHA224_*` and `Spec.sha224` (28 bytes); (c) `SHA256_Transform(ctx, block)` replaces `h[8]` by
 `Spec.compress h block`, writing only those 32 bytes. An `Update` with `len = 0` reads nothing, so any pointer
@@ -42,6 +43,7 @@ Wipe: `HASH_FINAL` does `c->num = 0; OPENSSL_cleanse(p, HASH_CBLOCK)` with `p = 
 (the bit count) and `md_len` survive the call. The statement says exactly that:
 `bytesAt m3 (ctx + 40) 68 = List.replicate 68 0`, not a wipe of all 112 bytes (which would be false).
 
-Not stated: messages above 2^20 bytes. The bound keeps `Nh` at 0, so the carry from `Nl` into `Nh` is code
-the statements do not exercise. `SHA256_Final` returns 1 for `md_len` ∈ {28, 32}, the only values reachable
-from `SHA256_Init`/`SHA224_Init`; its `return 0` branch for other values is likewise not exercised.
+The statements cover the carry of the bit count from `Nl` into `Nh`, which a message reaches at 512 MiB.
+`sslcheck high` checks it from the context the specification gives after 2^23 - 1 zero blocks; no
+executable check hashes that much on the model. `SHA256_Final` returns 1 for `md_len` ∈ {28, 32}, the only values reachable
+from `SHA256_Init`/`SHA224_Init`; its `return 0` branch for other values is not exercised.

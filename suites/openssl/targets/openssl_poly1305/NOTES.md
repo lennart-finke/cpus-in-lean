@@ -26,7 +26,8 @@ Excluded: the x86 assembly core (`poly1305-x86.pl`, `POLY1305_ASM`), the `__int1
 provider wrapper (`providers/implementations/macs/poly1305_prov.c`) and the ChaCha20-Poly1305 AEAD.
 
 Statement (`Ssl/OpensslPoly1305/Statement.lean`): `Spec.Poly1305.poly1305` (RFC 8439 §2.5) of the concatenated
-chunks, for every 32-byte key and arbitrary chunking of a message of at most 1 MiB: `Poly1305_Init`, one
+chunks, for every 32-byte key and arbitrary chunking of a message of any length (each chunk fits in memory
+and in a C object; the message as a whole need not): `Poly1305_Init`, one
 `Poly1305_Update` per chunk, `Poly1305_Final`, each call by an arbitrary caller with its own placement of the
 buffers. `Init` and `Update` write only the 236-byte context; `Final` writes the tag and leaves the context
 zeroed. `Poly1305_Init` does not initialise every field, and the statement does not need it to: whatever it
@@ -34,5 +35,5 @@ leaves is part of the opaque state. `Poly1305_Update` with `len = 0` reads nothi
 then. `Poly1305_oneshot` is the single-chunk instance of `Poly1305_correct`
 (`Poly1305_oneshot_of_correct`), not an independent result. `Poly1305_ctx_size()` returns 236.
 
-Not stated: messages above 1 MiB, and anything about the contents of the stack after `Final` (the wipe
+Not stated: anything about the contents of the stack after `Final` (the wipe
 covers the context only).

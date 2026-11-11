@@ -10,7 +10,8 @@ counter/nonce words, then xors `inp` with consecutive keystream blocks, incremen
 2^32 after each block (the caller is responsible for wider counters).
 
 Statement: for every caller (`Ssl.Harness`), every placement of the four buffers, every key of 8
-words, every counter/nonce of 4 words and every input of at most `maxLen` bytes, the call returns
+words, every counter/nonce of 4 words and every input that is a buffer (`Ssl.Buffer`: it fits in
+memory and is no larger than a C object; there is no other length bound), the call returns
 with the `src.length` bytes at `out` equal to `Spec.Chacha.crypt 20 (sigma ++ key ++ ctr) src`,
 having written nothing but those bytes and at most `stackBound` bytes of its own stack. The output
 may be the input buffer itself (`out = inp`, in-place encryption) or must not overlap it; it must
@@ -21,7 +22,6 @@ namespace Ssl.OpensslChacha20
 open X86 Ssl
 
 def img : Img := ⟨Image.base, Image.bytes, Image.sym_halt⟩
-def maxLen : Nat := 0x100000
 /-- Stack the call may use below its entry stack pointer. -/
 def stackBound : Nat := 512
 
@@ -38,7 +38,7 @@ def args (out inp keyp ctrp : UInt32) (src : List UInt8) : List UInt32 :=
 /-- A call `ChaCha20_ctr32(out, inp, |src|, keyp, ctrp)` with `key`, `ctr` and `src` in memory. -/
 def Pre (c : Caller) (out inp keyp ctrp : UInt32) (key ctr : Array UInt32) (src : List UInt8) : Prop :=
   Calls img c stackBound (args out inp keyp ctrp src) ∧
-  key.size = 8 ∧ ctr.size = 4 ∧ src.length ≤ maxLen ∧
+  key.size = 8 ∧ ctr.size = 4 ∧
   Buffer img c stackBound 5 out src.length ∧ Buffer img c stackBound 5 inp src.length ∧
   Buffer img c stackBound 5 keyp 32 ∧ Buffer img c stackBound 5 ctrp 16 ∧
   (out = inp ∨ Apart out src.length inp src.length) ∧

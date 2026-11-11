@@ -17,7 +17,8 @@ Statements (`Spec.Sha256` is FIPS 180-4), each call made by an arbitrary caller 
 its own placement of the buffers and at most `stackBound` bytes of stack:
 
 * streaming: `SHA256_Init(ctx)`, then `SHA256_Update(ctx, chunk_i, |chunk_i|)` once per chunk of an
-  arbitrary chunking of a message of at most `maxLen` bytes, then `SHA256_Final(out, ctx)`; every
+  arbitrary chunking of a message of fewer than 2^61 bytes (`Spec.Sha256.lenBound`, the limit of
+  FIPS 180-4; a message need not fit in memory, only each chunk), then `SHA256_Final(out, ctx)`; every
   call returns 1; `Init` and `Update` write only the context; `Final` writes the context and the 32
   bytes `Spec.sha256 (chunks.flatten)` at `out`, and leaves the block buffer and `num` (context
   bytes `[40, 108)`) zero. Upstream does not wipe `h`, the bit count or `md_len`;
@@ -29,7 +30,6 @@ namespace Ssl.OpensslSha256
 open X86 Ssl
 
 def img : Img := ⟨Image.base, Image.bytes, Image.sym_halt⟩
-def maxLen : Nat := 0x100000
 def ctxSize : Nat := 112
 /-- Offset of `data[16]` (the 64-byte block buffer) in `SHA256_CTX`; `num` follows at 104. -/
 def dataOff : UInt32 := 40
@@ -94,13 +94,13 @@ def Stream (ini upd fin : UInt32) (n : Nat) (digest : List UInt8) (chunks : List
             bytesAt m3 (ctx + dataOff) 68 = List.replicate 68 0
 
 def sha256_streaming_correct : Prop :=
-  ∀ (chunks : List (List UInt8)), chunks.flatten.length ≤ maxLen →
+  ∀ (chunks : List (List UInt8)), chunks.flatten.length < Spec.Sha256.lenBound →
     Stream Image.sym_SHA256_Init Image.sym_SHA256_Update Image.sym_SHA256_Final 32
       (Spec.Sha256.sha256 chunks.flatten) chunks
 
 /-- The same with `SHA224_Init`/`SHA224_Update`/`SHA224_Final` and the 28-byte digest. -/
 def sha224_streaming_correct : Prop :=
-  ∀ (chunks : List (List UInt8)), chunks.flatten.length ≤ maxLen →
+  ∀ (chunks : List (List UInt8)), chunks.flatten.length < Spec.Sha256.lenBound →
     Stream Image.sym_SHA224_Init Image.sym_SHA224_Update Image.sym_SHA224_Final 28
       (Spec.Sha256.sha224 chunks.flatten) chunks
 
