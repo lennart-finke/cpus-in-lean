@@ -1,10 +1,17 @@
-"""IA-32 FP inputs only. No CPU observation or model answer is used by generation."""
+"""IA-32 FP inputs only. No CPU observation or model answer is used by generation.
+
+Records use bundle format v2 (native_fp.py): the 648-byte v1 record followed by YMM0..7
+bits 255:128 (16 quadwords). A case family may require CPUID features: register it in
+FAMILIES with the feature names (native_fp.FEATURES, named as x86_32/X86/Cpuid.lean's
+`Feature`); its cases then carry `requires` in their metadata, run in their own campaigns,
+and are skipped (and reported) on a machine whose CPUID dump lacks a feature."""
 import random
 import struct
 
 from native_cases import focused_sse, constants
 
-SIZE = 648
+SIZE = 776   # v2 record (V1_SIZE = 648 plus 128 bytes of YMM upper halves)
+V1_SIZE = 648
 ONE = (0x8000000000000000, 0x3fff)
 VALUES = [
     (0, 0), (0, 0x8000), ONE, (ONE[0], 0xbfff),
@@ -35,7 +42,7 @@ IOPS = bytes.fromhex('60 61 62 63 64 65 66 67 68 69 6a 6b 74 75 76 d1 d2 d3 d4 d
 
 def record(code, *, a=ONE, b=ONE, cw=0x37f, sw=0, tags=255,
            mxcsr=0x1f80, xmm=None, mem=b'', seed=1, flags=0x202,
-           address=0x10000, permissions=(0x67, 0x67), stack=None, memory_kind=0):
+           address=0x10000, permissions=(0x67, 0x67), stack=None, memory_kind=0, ymmh=None):
     code = bytes.fromhex(code) if isinstance(code, str) else code
     assert 1 <= len(code) <= 15 and len(mem) <= 64
     regs = [0x12345678, 3, 0x76543210, address, 0x11800, address, address, address] + [0]*8
@@ -45,7 +52,8 @@ def record(code, *, a=ONE, b=ONE, cw=0x37f, sw=0, tags=255,
     stack = stack or [a,b]+[(ONE[0]+k,0x4000+k) for k in range(6)]
     fp = struct.pack('<4HQ', cw, sw, tags, 0, 0)
     fp += b''.join(struct.pack('<QH6x', *v) for v in stack)
-    return base+fp+mem.ljust(64,b'\0')
+    ymmh = ymmh or [0xfedcba9876543210 ^ (k*0x1010101010101) for k in range(16)]
+    return base+fp+mem.ljust(64,b'\0')+struct.pack('<16Q', *ymmh)
 
 
 def meta(family, name, code, **kw):
@@ -228,7 +236,17 @@ def simd_cases(rng, count):
         yield record(code),meta('sse_control','control',code)
 
 
+# Case families and the CPUID features they require (native_fp.FEATURES names). The
+# baseline (x87, MMX, SSE, SSE2 on an x86-64 machine) needs none. Later ISA extensions add
+# their own generator here, e.g. (sse3_cases, ('sse3',)).
+FAMILIES = [
+    (x87_cases, ()),
+    (simd_cases, ()),
+]
+
+
 def cases(seed=20261111, count=10000):
     rng=random.Random(seed)
-    yield from x87_cases(rng,count)
-    yield from simd_cases(rng,count)
+    for family, requires in FAMILIES:
+        for raw, m in family(rng, count):
+            yield raw, (dict(m, requires=list(requires)) if requires else m)

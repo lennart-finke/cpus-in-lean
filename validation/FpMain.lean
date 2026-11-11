@@ -2,7 +2,9 @@ import X86
 
 /-! Single-instruction IA-32 floating-point hardware replay. Input: an eight-byte count,
 followed by 648-byte native records (440-byte GPR/SSE record, 144-byte x87 state,
-64-byte memory patch). No native result is an input to this executable. -/
+64-byte memory patch). Format v2 (bit 63 of the count) appends YMM0..7 bits 255:128
+(128 bytes) to each record and their final values (16 fields) to each output row.
+No native result is an input to this executable. -/
 open X86
 
 def rdQ (v : ByteArray) (o : Nat) : UInt64 :=
@@ -16,7 +18,7 @@ def memoryByte (mem : ByteArray) (kind i : Nat) : UInt8 :=
       !(i < 2 || (4 ≤ i && i < 6) || (8 ≤ i && i < 10)) then 0
   else mem.get! (0x10000 + i)
 
-def fpVector (v : ByteArray) (o : Nat) : Except String (List UInt64) := do
+def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (List UInt64) := do
   let len := u8At v o
   if len == 0 || len > 15 then throw "invalid instruction length"
   let mut mem := zeroMem 0x40000
@@ -50,7 +52,10 @@ def fpVector (v : ByteArray) (o : Nat) : Except String (List UInt64) := do
     c := { c with fpr := c.fpr.set! (c.stIdx k) f }
   let xmm := (List.range 8).map fun k =>
     ({ lo := rdQ v (o + 176 + 16*k), hi := rdQ v (o + 184 + 16*k) } : V128)
-  c := { c with sse := { xmm := xmm.toArray, mxcsr := (u32At v (o + 432)).toUInt32 } }
+  let ymmh := if v2 then (List.range 8).toArray.map fun k =>
+      ({ lo := rdQ v (o + 648 + 16*k), hi := rdQ v (o + 656 + 16*k) } : V128)
+    else Array.replicate 8 {}
+  c := { c with sse := { xmm := xmm.toArray, mxcsr := (u32At v (o + 432)).toUInt32, ymmh } }
   let m : Machine := { cpu := c, mem }
   let (m, vec, err) ← match execInstr m with
     | .ok _ m' => pure (m', (3 : UInt64), (0 : UInt64))
@@ -72,20 +77,23 @@ def fpVector (v : ByteArray) (o : Nat) : Except String (List UInt64) := do
       hash := (hash ^^^ b.toUInt32) * 16777619
       h := (h ^^^ b.toUInt64) * 1099511628211
     pages := pages ++ [h]
-  return fields ++ [hash.toUInt64] ++ pages
+  let ymm := if v2 then (c.ymmh.toList.map fun x => [x.lo, x.hi]).flatten else []
+  return fields ++ [hash.toUInt64] ++ pages ++ ymm
 
 def main (args : List String) : IO UInt32 := do
   let [path] := args | do IO.eprintln "usage: x86fp native.bin"; return 2
   let v ← IO.FS.readBinFile path
-  let n := (rdQ v 0).toNat
-  if v.size < 8 || n == 0 || n > 1000000 || v.size != 8 + n*648 then
+  let v2 := rdQ v 0 >>> 63 == 1
+  let n := (rdQ v 0 &&& 0x7FFFFFFFFFFFFFFF).toNat
+  let size := if v2 then 776 else 648
+  if v.size < 8 || n == 0 || n > 1000000 || v.size != 8 + n*size then
     IO.eprintln "invalid vector file"; return 2
   let hx := fun (x : UInt64) =>
     let s := String.ofList (Nat.toDigits 16 x.toNat)
     "".pushn '0' (16 - s.length) ++ s
   IO.println s!"BEGIN {hx n.toUInt64}"
   for i in [0:n] do
-    match fpVector v (8 + i*648) with
+    match fpVector v (8 + i*size) v2 with
     | .error e => IO.eprintln s!"vector {i}: {e}"; return 1
     | .ok fields => IO.println (String.intercalate " " ((i.toUInt64 :: fields).map hx))
   IO.println "END"

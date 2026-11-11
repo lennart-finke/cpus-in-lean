@@ -11,7 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from native_fp import rows, normalize, differences, write_json
+from native_fp import rows, normalize, differences, write_json, KINDS, parse_cpuid, has_feature, FEATURES
 spec=importlib.util.spec_from_file_location('native_smoke',Path(__file__).parent/'native/smoke.py')
 smoke=importlib.util.module_from_spec(spec);spec.loader.exec_module(smoke)
 member=smoke.member
@@ -28,7 +28,7 @@ def main():
     spec=manifest['campaigns'][0];name=spec['name']
     archive=member('fp-oracle',(args.bundle/'oracle').read_bytes(),0o100755)
     archive+=member('fp.bin',(args.bundle/(name+'.bin')).read_bytes())
-    archive+=member('init',b'#!/bin/sh\nexport PATH=/bin:/sbin\necho FP_BEGIN\n/fp-oracle i386 < /fp.bin\necho FP_STATUS:$?\n/bin/busybox poweroff -f\n',0o100755)
+    archive+=member('init',b'#!/bin/sh\nexport PATH=/bin:/sbin\n/fp-oracle cpuid\necho FP_BEGIN\n/fp-oracle i386 < /fp.bin\necho FP_STATUS:$?\n/bin/busybox poweroff -f\n',0o100755)
     archive+=member('TRAILER!!!',b'',0)
     base=(repo/'x86_64/guest/initramfs.cpio').read_bytes()
     initrd=args.output/'initramfs.cpio';initrd.write_bytes(base+b'\0'*(-len(base)%512)+archive)
@@ -48,9 +48,13 @@ def main():
             except subprocess.TimeoutExpired:proc.kill();proc.wait()
     lines=[line.strip() for line in (args.output/'guest.log').read_text().splitlines()]
     if 'FP_STATUS:0' not in lines:raise RuntimeError('oracle failed; inspect guest.log')
+    c0=lines.index('BEGIN CPUID');c1=lines.index('END',c0)
+    (args.output/'cpuid.txt').write_text('\n'.join(lines[c0:c1+1])+'\n')
+    features=sorted(f for f in FEATURES if has_feature(parse_cpuid('\n'.join(lines[c0:c1+1])),f))
     start=lines.index(f'BEGIN {spec["count"]:016x}');end=lines.index('END',start)
     path=args.output/'native.out';path.write_text('\n'.join(lines[start:end+1])+'\n')
-    native=list(rows(path,spec['count'],83));model=list(rows(args.bundle/(name+'.model'),spec['count'],55))
+    cols=KINDS[manifest['kind']]
+    native=list(rows(path,spec['count'],cols['native']));model=list(rows(args.bundle/(name+'.model'),spec['count'],cols['model']))
     metadata=json.loads((args.bundle/(name+'.json')).read_text());bad=[]
     for meta,h,m in zip(metadata,native,model):
         diff=differences(meta,normalize(h),m)
@@ -58,7 +62,10 @@ def main():
     write_json(args.output/'tcg-differences.json',bad)
     calibration=[b for b in bad if b['family']=='calibration']
     if calibration:raise RuntimeError(f'calibration mismatch: {calibration}')
-    print(f'{spec["count"]} complete TCG observations; {len(bad)} differences retained; calibration passed. NOT hardware validation.')
+    ymm=sum(1 for h in native if len(h)==100 and h[99]==1)
+    print(f'CPUID dump: {c1-c0-1} rows; features: {" ".join(features)}')
+    print(f'{spec["count"]} complete TCG observations ({ymm} with YMM state); {len(bad)} differences retained; '
+          'calibration passed. NOT hardware validation.')
 
 
 if __name__=='__main__':main()

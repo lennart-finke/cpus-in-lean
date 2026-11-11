@@ -4,6 +4,13 @@
  * supplies the output context, then the handler restores the interrupted runner.
  * Both transitions use Linux's standard rt_sigreturn. No external process,
  * privileged device, tracing syscall, or expected model result is involved.
+ *
+ * FP backend, bundle format v2 (bit 63 of the input count): each record is followed by
+ * the input YMM0..7 bits 255:128 (8 x 16 bytes). They are installed in the AVX
+ * component (YMM_Hi128, at the offset CPUID.(0DH,2).EBX gives) of the XSAVE area in
+ * the signal frame, and the observed values plus an availability flag (0 when the
+ * kernel's frame has no AVX state) follow each output row.
+ * `oracle cpuid` prints every CPUID leaf and subleaf of the machine instead.
  */
 typedef unsigned long long u64;
 typedef unsigned int u32;
@@ -28,6 +35,9 @@ struct vector {u8 code[16];u64 r[16],flags;u32 seed,mode;u64 pte[2],xmm[32];u32 
 struct fp_input {u16 cw,sw,tw,pad;u64 reserved;u32 st[32];u8 memory[64];};
 static struct fp_input fp_input;
 _Static_assert(sizeof(struct fp_input)==208,"FP extension layout");
+/* v2: YMM0..7[255:128] input; observed values; YMM_Hi128 offset (0: no AVX in frames) */
+static u64 ymm_input[16],ymm_observed[16];
+static u32 ymm_offset,ymm_ok,v2;
 #endif
 struct action {u64 handler,flags,restorer,mask;};
 _Static_assert(sizeof(struct context)==256,"Linux sigcontext layout");
@@ -87,6 +97,15 @@ static void mark_sse(struct fpregs *fp,u64 uc_flags) {
 #endif
  } else fail("missing xstate magic",fp->reserved[12]);
 }
+#ifdef NATIVE_FP
+/* The AVX component of the signal frame's XSAVE area is usable: Linux's xstate frame
+ * (UC_FP_XSTATE, FP_XSTATE_MAGIC1) enables feature 2 and is large enough. */
+static int ymm_frame(struct fpregs *fp,u64 uc_flags) {
+ if(!ymm_offset || !(uc_flags&1) || fp->reserved[12]!=0x46505853)return 0;
+ u64 xfeatures=fp->reserved[14]|((u64)fp->reserved[15]<<32);
+ return (xfeatures&4) && fp->reserved[16]>=ymm_offset+256;
+}
+#endif
 static void handler(int sig,int *info,struct ucontext *u) {
  struct context *c=&u->cpu;
  if(!c->fpstate)fail("missing signal FPU context",sig);
@@ -102,11 +121,24 @@ static void handler(int sig,int *info,struct ucontext *u) {
   for(int i=0;i<32;i++)fp->st[i]=fp_input.st[i];
 #endif
   for(int i=0;i<32;i++){fp->xmm[2*i]=(u32)input.xmm[i];fp->xmm[2*i+1]=(u32)(input.xmm[i]>>32);}
-  mark_sse(fp,u->flags);phase=1;return;
+  mark_sse(fp,u->flags);
+#ifdef NATIVE_FP
+  ymm_ok=v2 && ymm_frame(fp,u->flags);
+  if(ymm_ok) {
+   memcpy((u8 *)fp+ymm_offset,ymm_input,128);
+   *(u64 *)((u8 *)fp+512)|=4; /* XSTATE_BV: AVX state present */
+  }
+#endif
+  phase=1;return;
  }
  if(phase!=1 || sig==10)fail("unexpected signal outside instruction",sig);
  if(c->rip<0x20000 || c->rip>=0x21000)fail("signal outside instruction buffer",c->rip);
  observed=*c;observed_fp=*fp;observed_signal=sig;observed_code=info[2];
+#ifdef NATIVE_FP
+ /* YMM_Hi128 in its initial configuration (XSTATE_BV[2] = 0) is zero. */
+ for(int i=0;i<16;i++)ymm_observed[i]=0;
+ if(ymm_ok && (*(u64 *)((u8 *)fp+512)&4))memcpy(ymm_observed,(u8 *)fp+ymm_offset,128);
+#endif
  /* Return to the suspended kill(SIGUSR1) call on the runner's original stack.
   * Keep the current kernel-generated xstate allocation and extension metadata. */
  u64 fpp=c->fpstate;*c=recovery;c->fpstate=fpp;u->flags|=6;
@@ -256,10 +288,40 @@ static void memory_check(void) {
  text(2,"PASS: memory load/store, read-only and unmapped fault calibration\n");
 }
 #endif
+static void cpuid(u32 leaf,u32 sub,u32 *r) {
+ __asm__ volatile("cpuid":"=a"(r[0]),"=b"(r[1]),"=c"(r[2]),"=d"(r[3]):"a"(leaf),"c"(sub));
+}
+/* Every leaf up to the reported maxima of the standard, hypervisor (if any) and
+ * extended ranges, subleaves 0..63 for each (a subleaf beyond the defined ones repeats
+ * or returns zeros; the comparison tool interprets them). */
+static void cpuid_dump(void) {
+ u32 r[4];
+ static const u32 base[]={0,0x40000000,0x80000000};
+ text(1,"BEGIN CPUID\n");
+ for(int b=0;b<3;b++) {
+  cpuid(base[b],0,r);u32 max=r[0];
+  if(b==1 && (max<0x40000000 || max>0x400000ff))continue;
+  if(max-base[b]>0xff)max=base[b]+0xff;
+  for(u32 leaf=base[b];leaf<=max;leaf++)for(u32 sub=0;sub<64;sub++) {
+   cpuid(leaf,sub,r);
+   hex(1,leaf);hex(1,sub);hex(1,r[0]);hex(1,r[1]);hex(1,r[2]);hex(1,r[3]);text(1,"\n");
+  }
+ }
+ text(1,"END\n");finish(0);
+}
 void start(u64 *stack) {
- if(stack[0]!=2){text(2,"usage: oracle i386|x86_64 < native.bin\n");finish(2);}
+ if(stack[0]!=2){text(2,"usage: oracle i386|x86_64|cpuid < native.bin\n");finish(2);}
  const char *arch=(const char *)stack[2];compat=arch[0]=='i';
- u64 count;read_all(&count,8);if(!count || count>1000000)fail("invalid count",count);
+ if(arch[0]=='c')cpuid_dump();
+ u64 count;read_all(&count,8);
+#ifdef NATIVE_FP
+ v2=count>>63;count&=~(1ull<<63);
+ if(v2) {
+  u32 r[4];cpuid(0,0,r);
+  if(r[0]>=0xd){cpuid(0xd,2,r);ymm_offset=r[1];}
+ }
+#endif
+ if(!count || count>1000000)fail("invalid count",count);
  pid=call(39,0,0,0,0,0,0);
  long mapping=call(9,0x20000,4096,3,0x22,-1,0);if(mapping!=0x20000)fail("cannot map code at 0x20000",mapping);code=(u8 *)mapping;
  long alt=call(9,0,1024*1024,3,0x22,-1,0);if(alt<0)fail("alternate signal stack allocation",alt);
@@ -283,6 +345,7 @@ void start(u64 *stack) {
   read_all(&input,sizeof(input));
 #ifdef NATIVE_FP
   read_all(&fp_input,sizeof(fp_input));
+  if(v2)read_all(ymm_input,128);
 #endif
 #ifdef NATIVE_MEMORY
   memory_prepare();
@@ -305,6 +368,7 @@ void start(u64 *stack) {
    hex(1,observed_fp.st[4*i]|((u64)observed_fp.st[4*i+1]<<32));
    hex(1,observed_fp.st[4*i+2]&0xffff);
   }
+  if(v2){for(int i=0;i<16;i++)hex(1,ymm_observed[i]);hex(1,ymm_ok);}
 #endif
   text(1,"\n");
  }

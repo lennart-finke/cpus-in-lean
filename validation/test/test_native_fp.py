@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 
 from fp_cases import cases, X87, TRANS, SIZE
-from native_fp import classify, differences, rows, verify, digest, normalize, compare, write_json
+from native_fp import (classify, differences, rows, verify, digest, normalize, compare, write_json,
+                       parse_cpuid, has_feature, KINDS)
 
 
 class Coverage(unittest.TestCase):
@@ -103,6 +104,44 @@ class Evidence(unittest.TestCase):
         self.assertEqual(r[30:52],list(range(22)))
         h[4]=0x33
         with self.assertRaises(ValueError):normalize(h)
+
+
+class FormatV2(unittest.TestCase):
+    def test_records_carry_ymm_upper_halves(self):
+        raw,m=next(iter(cases(1,1)))
+        self.assertEqual(len(raw),KINDS['ia32-fp-v2']['size'])
+        self.assertNotIn('requires',m)
+
+    def test_ymm_columns_compared_only_when_available(self):
+        h=[0]*100;h[1]=5;h[4]=0x23;h[55]=3;h[3]=0x20103
+        h[83:99]=list(range(16));h[99]=1
+        r=normalize(h);self.assertEqual(len(r),71);self.assertEqual(r[55:71],list(range(16)))
+        m=r.copy();m[60]^=1
+        meta=dict(instruction='nop',flags_mask=0x8d5,sw_mask=0xb8ff)
+        self.assertEqual(differences(meta,r,m)[0]['field'],'ymmh2.hi')
+        h[99]=0;r=normalize(h)
+        self.assertEqual(differences(meta,r,m),[])
+
+    def test_cpuid_dump_and_feature_gating(self):
+        dump=('BEGIN CPUID\n'+' '.join(f'{v:016x}' for v in (0,0,0xd,0,0,0))+'\n'+
+              ' '.join(f'{v:016x}' for v in (1,0,0x830f10,0,1,0))+'\n'+
+              ' '.join(f'{v:016x}' for v in (0x80000000,0,0x80000001,0,0,0))+'\nEND\n')
+        d=parse_cpuid(dump)
+        self.assertTrue(has_feature(d,'sse3'))
+        self.assertFalse(has_feature(d,'avx'))
+        self.assertFalse(has_feature(d,'bmi1'))   # leaf 7 absent
+        with self.assertRaises(ValueError):parse_cpuid(dump.replace('END\n',''))
+
+    def test_skipped_campaign_is_reported_not_compared(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);result=root/'results';result.mkdir()
+            write_json(root/'c.json',[dict(index=0,family='f',instruction='x',flags_mask=0x8d5,sw_mask=0xb8ff)])
+            write_json(root/'manifest.json',dict(kind='ia32-fp-v2',campaigns=[dict(name='c',count=1,requires=['avx'])],
+                sha256={'c.json':digest(root/'c.json')}))
+            write_json(result/'hardware.json',dict(kind='ia32-fp-v2',manifest_sha256=digest(root/'manifest.json'),
+                results={'c':dict(skipped='missing CPUID features: avx')}))
+            self.assertEqual(compare(root,result),0)
+            self.assertEqual(json.loads((result/'comparison.json').read_text())['skipped'],1)
 
 
 if __name__=='__main__':unittest.main()

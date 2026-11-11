@@ -49,6 +49,23 @@ and hardware/model values. The matching `.bin` record contains every input bit;
 the batch name identifies the corresponding input and raw output files.
 No failed record is rewritten using a model answer or a QEMU deviation rule.
 
+### Bundle format v2, CPUID dump, feature-gated families
+
+Bundles prepared now are `ia32-fp-v2`: each 648-byte input record is followed by
+YMM0..7 bits 255:128 (128 bytes), which the oracle installs in the AVX component
+of the signal frame's XSAVE area (offset from CPUID leaf 0DH subleaf 2); each row
+reports their final values, so legacy x87/SSE instructions are also checked to
+preserve the YMM upper halves. Where the kernel's signal frame has no AVX state,
+the oracle reports that (last column) and the YMM fields are not compared.
+`compare` still accepts `ia32-fp-v1` bundles and results.
+
+Before the campaigns, `run` stores every CPUID leaf and subleaf of the machine
+(`oracle cpuid`) as `cpuid.txt` in the results, and the reported features in
+`hardware.json`. A case family may require CPUID features (`fp_cases.FAMILIES`,
+names in `native_fp.FEATURES`); its cases form their own campaigns, which are
+skipped and reported when the machine lacks a feature. The current families
+require none.
+
 Run again with a fresh output directory:
 
 ```sh
