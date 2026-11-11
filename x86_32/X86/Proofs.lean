@@ -6,6 +6,7 @@ import X86.Proofs.Shift
 import X86.Proofs.Fpu
 import X86.Proofs.Simd
 import X86.Proofs.Ext
+import X86.Proofs.ExtXsave
 import X86.Proofs.ExtSse
 import X86.Proofs.ExtCrypto
 import X86.Proofs.ExtGpr

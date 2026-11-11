@@ -178,6 +178,7 @@ void sys_main(void) {
 	test_simd();
 	test_simd_exc();
 	test_sysa();
+	test_xsave();
 	test_sse();
 	test_crypto();
 	test_gpr();
@@ -188,6 +189,7 @@ void sys_main(void) {
 	test_x87_model();
 	test_x87_trans_model();
 	test_simd_model();
+	test_xsave_model();
 	test_crypto_model();
 	test_debug_fuzz_model();
 	test_paging_fuzz_model();

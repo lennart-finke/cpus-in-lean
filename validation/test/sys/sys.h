@@ -134,6 +134,8 @@ void test_cgf(void);
 void test_xfer_model(void);
 void test_sysa(void);
 void test_sysa_model(void);
+void test_xsave(void);
+void test_xsave_model(void);
 void test_sse(void);
 void test_sse_model(void);
 void test_crypto(void);

@@ -19,7 +19,7 @@ class Coverage(unittest.TestCase):
             self.assertEqual(raw[1:1+raw[0]].hex(),m['code'])
             self.assertEqual(struct.unpack_from('<Q',raw,144)[0]&0x100,0)
             self.assertLess(struct.unpack_from('<H',raw,444)[0],256)
-            self.assertLess(struct.unpack_from('<I',raw,436)[0],4)
+            self.assertLess(struct.unpack_from('<I',raw,436)[0],5)   # memory kinds 0..3, 4 = XSAVE image
             counts[m['family']]+=1
             ops.add(m['instruction'])
             if m['family']=='x87_matrix':control[m['instruction']].add((m['pc'],m['rc'],m['operand_class']))

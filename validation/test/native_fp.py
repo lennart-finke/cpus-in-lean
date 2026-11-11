@@ -43,6 +43,7 @@ FEATURES={
     'misalignSse':(0x80000001,0,2,7),'prefetchw':(0x80000001,0,2,8),'mwaitx':(0x80000001,0,2,29),
     'mmxext':(0x80000001,0,3,22),'rdtscp':(0x80000001,0,3,27),'clzero':(0x80000008,0,1,0),
     'rdpru':(0x80000008,0,1,4),'wbnoinvd':(0x80000008,0,1,9),
+    'xgetbv1':(0xd,1,0,2),
 }
 FEATURES.update({'clfsh':(1,0,3,19),'monitor':(1,0,2,3),'mcommit':(0x80000008,0,1,8)})  # Gpr families
 
@@ -154,7 +155,8 @@ def compare(directory, result):
     if host['kind']!=manifest['kind'] or host['manifest_sha256']!=digest(directory/'manifest.json'):
         raise ValueError('hardware provenance does not match bundle')
     cols=KINDS[manifest['kind']]
-    summary=dict(kind=manifest['kind'],strict_mismatches=0,observations=0,cases=0,skipped=0,campaigns={},
+    summary=dict(kind=manifest['kind'],strict_mismatches=0,observations=0,cases=0,skipped=0,
+                 ymm_unavailable=0,campaigns={},
                  excluded_fields=['reserved FCW bits','undefined FSW condition codes',
                                   'empty x87 register payloads','FIP/FDP/FOP (raw values retained)'])
     with (result/'mismatches.jsonl').open('w') as bad:
@@ -170,23 +172,29 @@ def compare(directory, result):
                 raise ValueError(name+': failed or modified hardware run')
             metadata=json.loads((directory/(name+'.json')).read_text())
             if len(metadata)!=spec['count']: raise ValueError('metadata count changed')
-            counts=collections.Counter();pointer_diffs=0
+            counts=collections.Counter();pointer_diffs=0;no_ymm=0
             # Exhaust both generators, including their END/extra-data validation.
             native=list(rows(path,spec['count'],cols['native']))
             model=list(rows(directory/(name+'.model'),spec['count'],cols['model']))
             for meta,h,m in zip(metadata,native,model):
                 h=normalize(h);diff=differences(meta,h,m)
+                # v2 rows whose signal frame had no AVX state: YMM columns not compared (counted)
+                if len(h)>len(LABELS)-16 and h[-1] is None: no_ymm+=1
                 pointer_diffs+=h[33:36]!=m[33:36]
                 if diff:
                     category=classify(meta,diff)
                     summary[category]+=1;counts[category]+=1
                     bad.write(json.dumps(dict(meta,campaign=name,category=category,differences=diff))+'\n')
             summary['cases']+=spec['count']
-            summary['campaigns'][name]=dict(counts,count=spec['count'],pointer_differences=pointer_diffs)
+            summary['ymm_unavailable']+=no_ymm
+            summary['campaigns'][name]=dict(counts,count=spec['count'],pointer_differences=pointer_diffs,
+                                            ymm_unavailable=no_ymm)
     write_json(result/'comparison.json',summary)
     print(f"{summary['cases']} cases; {summary['strict_mismatches']} strict mismatches; "
           f"{summary['observations']} approximation/domain observations"+
-          (f"; {summary['skipped']} skipped (CPUID feature missing)" if summary['skipped'] else ''),flush=True)
+          (f"; {summary['skipped']} skipped (CPUID feature missing)" if summary['skipped'] else '')+
+          (f"; YMM not compared in {summary['ymm_unavailable']} (no AVX state in the signal frame)"
+           if summary['ymm_unavailable'] else ''),flush=True)
     return 1 if summary['strict_mismatches'] else 2 if summary['observations'] else 0
 
 
@@ -198,7 +206,7 @@ def prepare(args):
     builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
     builder.build(ROOT/'test/native',out/'oracle',REPO/'x86_64/test/harness/link.py','fp')
     shutil.copyfile(__file__,out/'native_fp.py')
-    sources=[Path(__file__),ROOT/'test/fp_cases.py',ROOT/'test/native_cases.py',ROOT/'FpMain.lean',
+    sources=[Path(__file__),ROOT/'test/fp_cases.py',ROOT/'test/native_cases.py',ROOT/'test/native_xsave.py',ROOT/'FpMain.lean',
              ROOT/'test/native/build.py',ROOT/'test/native/signal_oracle.c',ROOT/'test/native/signal_enter.S',
              ROOT/'test/native/start.S',REPO/'x86_64/test/harness/link.py']
     sources+=[REPO/'x86_32/X86.lean']+sorted((REPO/'x86_32/X86').rglob('*.lean'))

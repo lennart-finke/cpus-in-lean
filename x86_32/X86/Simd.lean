@@ -584,33 +584,38 @@ Misaligned SSE mode, MM (bit 17; AMD APM vol. 1, 4.2.2: "The corresponding MXCSR
 1, regardless of whether MM is set or not"). -/
 def mxcsrMask : UInt32 := if implemented .misalignSse then 0x2FFFF else 0xFFFF
 
-def fxsave (i : Inst) : M Unit := do
-  let c ← cpu
-  if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
-  let lin ← vecAddr i 512 true true
+/-! The pieces of the FXSAVE image below are shared with XSAVE/XRSTOR, whose legacy region has the
+same layout (`X86/Ext/Xsave.lean`). -/
+
+/-- Bytes 0..23 of the FXSAVE image: FCW, FSW, abridged FTW (byte 5 written as 0), FOP, FIP, FCS,
+FDP, FDS (the upper halves of FCS and FDS written as 0). With `ptrs = false`, FOP, FIP, FCS, FDP and
+FDS are written as zeros (XSAVE with no x87 exception pending on processors with
+CPUID Fn8000_0008_EBX[XSaveErPtr], AMD APM vol. 2, 11.5.10). -/
+def fxsaveEnv (c : Cpu) (lin : UInt32) (ptrs : Bool := true) : M Unit := do
   let u ← isUser
   linWr lin 4 (c.fcw.toUInt32 ||| (c.fsw.toUInt32 <<< 16)) u
-  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| ((c.fop.toUInt32 &&& 0x7FF) <<< 16)) u
-  linWr (lin + 8) 4 c.fip u
-  linWr (lin + 12) 4 c.fcs.toUInt32 u
-  linWr (lin + 16) 4 c.fdp u
-  linWr (lin + 20) 4 c.fds.toUInt32 u
-  let sse := c.cr4 &&& CR4.OSFXSR != 0
-  if sse then
-    linWr (lin + 24) 4 c.mxcsr u
-    linWr (lin + 28) 4 mxcsrMask u
+  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| (if ptrs then (c.fop.toUInt32 &&& 0x7FF) <<< 16 else 0)) u
+  linWr (lin + 8) 4 (if ptrs then c.fip else 0) u
+  linWr (lin + 12) 4 (if ptrs then c.fcs.toUInt32 else 0) u
+  linWr (lin + 16) 4 (if ptrs then c.fdp else 0) u
+  linWr (lin + 20) 4 (if ptrs then c.fds.toUInt32 else 0) u
+
+/-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots (bytes 10..15 of a
+slot are not written). -/
+def fxsaveRegs (c : Cpu) (lin : UInt32) : M Unit := do
+  let u ← isUser
   for k in [0:8] do
     let v := c.st k
     let a := lin + 32 + 16 * k.toUInt32
     wrLin a 8 { lo := v.sig }
     linWr (a + 8) 2 v.se.toUInt32 u
-  if sse then
-    for k in [0:8] do wrLin (lin + 160 + 16 * k.toUInt32) 16 c.xmm[k]!
 
-def fxrstor (i : Inst) : M Unit := do
-  let c ← cpu
-  if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
-  let lin ← vecAddr i 512 false true
+/-- Bytes 160..287 of the FXSAVE image: XMM0..XMM7. -/
+def fxsaveXmm (c : Cpu) (lin : UInt32) : M Unit := do
+  for k in [0:8] do wrLin (lin + 160 + 16 * k.toUInt32) 16 c.xmm[k]!
+
+/-- Read bytes 0..23 of an FXSAVE image: (FCW/FSW, FTW/FOP, FIP, FCS, FDP, FDS). -/
+def fxrstorEnv (lin : UInt32) : M (UInt32 × UInt32 × UInt32 × UInt32 × UInt32 × UInt32) := do
   let u ← isUser
   let w0 ← linRd lin 4 u
   let w1 ← linRd (lin + 4) 4 u
@@ -618,31 +623,62 @@ def fxrstor (i : Inst) : M Unit := do
   let fcs ← linRd (lin + 12) 2 u
   let fdp ← linRd (lin + 16) 4 u
   let fds ← linRd (lin + 20) 2 u
-  let sse := c.cr4 &&& CR4.OSFXSR != 0
-  let mut mxcsr := c.mxcsr
-  if sse then
-    mxcsr ← linRd (lin + 24) 4 u
-    if mxcsr &&& ~~~mxcsrMask != 0 then gp 0
+  return (w0, w1, fip, fcs, fdp, fds)
+
+/-- Read ST0..ST7 (bytes 32..159) of an FXSAVE image. -/
+def fxrstorRegs (lin : UInt32) : M (Array F80) := do
+  let u ← isUser
   let mut regs : Array F80 := #[]
   for k in [0:8] do
     let a := lin + 32 + 16 * k.toUInt32
     let sig := (← rdLin a 8).lo
     let se ← linRd (a + 8) 2 u
     regs := regs.push { sig, se := se.toUInt16 }
+  return regs
+
+/-- The x87 state of an FXSAVE image loaded (`env` from `fxrstorEnv`, `regs` from `fxrstorRegs`):
+ST(k) goes to physical register (TOP + k) mod 8; as FLDENV, FSW.ES and B stay set only if an
+unmasked exception flag is set. -/
+def Cpu.loadFxX87 (c : Cpu) (env : UInt32 × UInt32 × UInt32 × UInt32 × UInt32 × UInt32)
+    (regs : Array F80) : Cpu :=
+  let (w0, w1, fip, fcs, fdp, fds) := env
+  let fsw := (w0 >>> 16).toUInt16
+  let top := ((fsw >>> 11) &&& 7).toNat
+  let fpr := (List.range 8).foldl (fun fpr k => fpr.set! ((top + k) % 8) regs[k]!) c.fpr
+  let c := { c with fcw := w0.toUInt16, fsw, fempty := ~~~(w1.toUInt8), fpr,
+                    fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
+                    fdp, fds := fds.toUInt16 }
+  if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then { c with fsw := c.fsw &&& 0x7F7F } else c
+
+def fxsave (i : Inst) : M Unit := do
+  let c ← cpu
+  if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
+  let lin ← vecAddr i 512 true true
+  let u ← isUser
+  fxsaveEnv c lin
+  let sse := c.cr4 &&& CR4.OSFXSR != 0
+  if sse then
+    linWr (lin + 24) 4 c.mxcsr u
+    linWr (lin + 28) 4 mxcsrMask u
+  fxsaveRegs c lin
+  if sse then fxsaveXmm c lin
+
+def fxrstor (i : Inst) : M Unit := do
+  let c ← cpu
+  if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
+  let lin ← vecAddr i 512 false true
+  let u ← isUser
+  let env ← fxrstorEnv lin
+  let sse := c.cr4 &&& CR4.OSFXSR != 0
+  let mut mxcsr := c.mxcsr
+  if sse then
+    mxcsr ← linRd (lin + 24) 4 u
+    if mxcsr &&& ~~~mxcsrMask != 0 then gp 0
+  let regs ← fxrstorRegs lin
   let mut xmm := c.xmm
   if sse then
     for k in [0:8] do xmm := xmm.set! k (← rdLin (lin + 160 + 16 * k.toUInt32) 16)
-  let fsw := (w0 >>> 16).toUInt16
-  let top := ((fsw >>> 11) &&& 7).toNat
-  let mut fpr := c.fpr
-  for k in [0:8] do fpr := fpr.set! ((top + k) % 8) regs[k]!
-  modCpu fun c => { c with fcw := w0.toUInt16, fsw, fempty := ~~~(w1.toUInt8), fpr,
-                           fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
-                           fdp, fds := fds.toUInt16, sse := { c.sse with mxcsr, xmm } }
-  -- as FLDENV: ES and B stay set only if an unmasked exception flag is set
-  let c ← cpu
-  if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then
-    modCpu fun c => { c with fsw := c.fsw &&& 0x7F7F }
+  modCpu fun c => { c.loadFxX87 env regs with sse := { c.sse with mxcsr, xmm } }
 
 /-- 0F AE: FXSAVE, FXRSTOR, LDMXCSR, STMXCSR, CLFLUSH (memory forms) and LFENCE, MFENCE,
 SFENCE (register forms). -/

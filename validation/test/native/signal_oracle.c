@@ -240,6 +240,9 @@ static u8 memory_byte(int i) {
            (i>=160 && i<288) || i>=464;
   if(!keep)return 0;
  }
+ /* XSAVE images (native_xsave.py): reserved bytes, MXCSR_MASK, register-slot padding, 288..463 */
+ if(input.pad==4 && i<512 && (i==5 || i==14 || i==15 || i==22 || i==23 || (i>=28 && i<32) ||
+    (i>=32 && i<160 && (i-32)%16>=10) || (i>=288 && i<464)))return 0;
  if((input.pad==2 || input.pad==3) && i<28 && !(i<2 || (i>=4 && i<6) || (i>=8 && i<10)))return 0;
  return arena[i];
 }

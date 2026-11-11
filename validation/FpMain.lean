@@ -16,6 +16,11 @@ def memoryByte (mem : ByteArray) (kind i : Nat) : UInt8 :=
         (160 ≤ i && i < 288) || 464 ≤ i) then 0
   else if (kind == 2 || kind == 3) && i < 28 &&
       !(i < 2 || (4 ≤ i && i < 6) || (8 ≤ i && i < 10)) then 0
+  -- XSAVE images (test/native_xsave.py): reserved bytes 5, 14..15, 22..23, MXCSR_MASK, the
+  -- padding of the x87 register slots and bytes 288..463 of the legacy region are not compared
+  else if kind == 4 && i < 512 &&
+      (i == 5 || i == 14 || i == 15 || i == 22 || i == 23 || (28 ≤ i && i < 32) ||
+       (32 ≤ i && i < 160 && (i-32)%16 ≥ 10) || (288 ≤ i && i < 464)) then 0
   else mem.get! (0x10000 + i)
 
 def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (List UInt64) := do
@@ -42,7 +47,10 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
     cs := { seg with sel := 0x23, attr := 0xC0FB },
     ds := seg, es := seg, ss := seg, fs := seg, gs := seg,
     -- CR0 as Linux sets it: PG, AM (alignment checking for EFLAGS.AC = 1), WP, NE, ET, MP, PE
-    cr0 := 0x80050033, cr3 := 0x3000, cr4 := 0x600, eip := 0x20100,
+    cr0 := 0x80050033, cr3 := 0x3000, eip := 0x20100,
+    -- as Linux on the target: CR4.OSFXSR, OSXMMEXCPT, OSXSAVE; XCR0 = 7; the x87, SSE and AVX
+    -- state loaded from the signal frame by XRSTOR with XSTATE_BV[2:0] = 111b (XINUSE = 7)
+    cr4 := 0x40600, xcr0 := 7, xsx := { inuse := 7 },
     eflags := (rdQ v (o + 144)).toUInt32,
     fcw := (u16At v (o + 440)).toUInt16, fsw := (u16At v (o + 442)).toUInt16,
     fempty := ~~~(u16At v (o + 444)).toUInt8 }
