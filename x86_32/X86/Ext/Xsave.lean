@@ -82,6 +82,15 @@ translated before the first access (#PF at the first byte of the first inaccessi
 instruction has no effect); XRSTOR/XRSTORS: header checks (#GP(0)), then the components are read,
 then the MXCSR reserved-bit check (#GP(0)); only then is any state changed.
 
+**Where AMD's text differs from Intel's** (unverified on hardware; the model follows Intel where AMD
+is ambiguous): APM vol. 4 XSAVE says MXCSR is saved "if either of RFBM bits 0 or 1" is set, while
+APM vol. 2, 11.5.9 and the XRSTOR page tie MXCSR to XMM/YMM_HI (Intel: RFBM[1] or RFBM[2]) — the
+model uses RFBM[1] or RFBM[2]; APM vol. 4 XRSTOR lists "bytes 63:16 of header are non-zero" as #GP
+without naming the form — the model checks bytes 8..23 for the standard form (SDM 13.8.1, as QEMU)
+and 16..63 for the compacted form; APM vol. 4 XRSTORS lists "(XSTATE_BV[i] & ~IA32_XSS[i]) = 1"
+as #GP, which would forbid restoring user components — the model uses the SDM's XRSTORS checks.
+The native campaign (`validation/test/native_xsave.py`) has cases for the first point.
+
 The accessed range is the legacy region and header (576 bytes) plus the extended components the
 instruction saves (XSAVE: RFBM; XSAVEOPT: RFBM ∧ XINUSE) or restores (RFBM ∧ XSTATE_BV), in the
 standard or compacted layout. Whether hardware faults on pages of components it does not touch is
