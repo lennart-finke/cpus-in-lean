@@ -266,11 +266,11 @@ def implemented : Feature → Bool
   | .cx16 => false
   | .fsgsbase => false
   -- X86/Ext/Smp.lean
-  | .x2apic => false
-  | .htt => false
-  | .cmpLegacy => false
-  | .topoExt => false
-  | .extApicSpace => false
+  | .x2apic => true
+  | .htt => true
+  | .cmpLegacy => true
+  | .topoExt => true
+  | .extApicSpace => true
   -- X86/Ext/Svm.lean
   | .svm => false
   | .svmFeatures => false
@@ -427,6 +427,58 @@ def osxsaveBit : UInt32 := 1 <<< 27
 def osxsave (c : Cpu) : UInt32 :=
   if implemented .xsave && c.cr4 &&& CR4.OSXSAVE != 0 then osxsaveBit else 0
 
+/-! ### Topology (SMP workstream)
+
+The machine has `Cpu.smpx.ncpu` = N logical processors, CPU k with initial APIC ID k. It is
+described as an EPYC 7742 package with only its first N threads enabled (as with a firmware
+down-core/SMT setting): APIC ID = 2·core + thread, two threads per core, eight threads per core complex
+sharing an L3. What depends on the package size reports the enabled threads, what describes the
+package's capacity stays the 7742's:
+* leaf 1: EBX[31:24] the initial APIC ID, EBX[23:16] LogicalProcessorCount = N and EDX.HTT = 1 for
+  N ≥ 2; for N = 1 HTT = 0 and the count is 0 (APM vol. 3, E.5.1, table E-5); likewise
+  8000_0001:ECX.CmpLegacy = (N ≥ 2);
+* leaf 0Bh (x2APIC topology): subleaf 0 shift 1 and the threads enabled in this CPU's core, subleaf 1
+  shift 7 (ApicIdSize) and N, EDX the x2APIC ID for every subleaf; other subleaves EAX = EBX = 0 and
+  ECX[7:0] = ECX input;
+* 8000_0008:ECX: ApicIdSize 7 (the package's 128-thread APIC ID space), NC = N − 1;
+* 8000_001D: NumSharingCache = min(2, N) − 1 for L1/L2, min(8, N) − 1 for L3;
+* 8000_001E: EAX the extended APIC ID by APIC mode (APM vol. 2, 16.12: 32-bit in x2APIC mode, 8-bit
+  in xAPIC mode, 0 while disabled), EBX ThreadsPerComputeUnit = min(2, N) − 1 and ComputeUnitId =
+  APIC ID >> 1, ECX node 0 of one node.
+With N = 128 this gives the dump's values for CPU 0 (leaf 1 EBX 00800800h, 8000_0008 ECX 707Fh,
+0Bh, 8000_001D, 8000_001E EBX 100h). -/
+
+/-- Leaf 1 EBX: initial APIC ID and logical processor count (N ≥ 2) over the reported `b`. -/
+def topoEbx1 (c : Cpu) (b : UInt32) : UInt32 :=
+  (c.smpx.apicId <<< 24) ||| (if c.smpx.ncpu ≥ 2 then (min c.smpx.ncpu 255) <<< 16 else 0) ||| (b &&& 0xFFFF)
+/-- Leaf 1 EDX: HTT only with N ≥ 2. -/
+def topoEdx1 (c : Cpu) (d : UInt32) : UInt32 := if c.smpx.ncpu ≥ 2 then d else d &&& ~~~((1 : UInt32) <<< 28)
+/-- 8000_0001 ECX: CmpLegacy only with N ≥ 2. -/
+def topoEcx81 (c : Cpu) (cx : UInt32) : UInt32 := if c.smpx.ncpu ≥ 2 then cx else cx &&& ~~~2
+/-- 8000_0008 ECX: NC = N − 1. -/
+def topoEcx88 (c : Cpu) (cx : UInt32) : UInt32 := (cx &&& ~~~0xFF) ||| ((c.smpx.ncpu - 1) &&& 0xFF)
+
+/-- The topology fields of `leaf`/`sub` for this CPU (see above), applied to the reported `r`. -/
+def topo (c : Cpu) (leaf sub : UInt32) (r : Regs) : Regs :=
+  let n := c.smpx.ncpu
+  let id := c.smpx.apicId
+  match leaf with
+  | 1 => (r.1, topoEbx1 c r.2.1, r.2.2.1, topoEdx1 c r.2.2.2)
+  | 0xB =>
+    if sub == 0 then (1, min 2 (n - (id &&& ~~~1)), 0x100, id)
+    else if sub == 1 then (7, n, 0x201, id)
+    else (0, 0, sub &&& 0xFF, id)
+  | 0x80000001 => (r.1, r.2.1, topoEcx81 c r.2.2.1, r.2.2.2)
+  | 0x80000008 => (r.1, r.2.1, topoEcx88 c r.2.2.1, r.2.2.2)
+  | 0x8000001D =>
+    if r.1 &&& 0x1F == 0 then r else
+    let share := min (if (r.1 >>> 5) &&& 7 == 3 then 8 else 2) n
+    ((r.1 &&& ~~~((0xFFF : UInt32) <<< 14)) ||| ((share - 1) <<< 14), r.2.1, r.2.2.1, r.2.2.2)
+  | 0x8000001E =>
+    let ext := match c.smpx.apicMode with | 0 => 0 | 1 => id &&& 0xFF | _ => id
+    (ext, ((min 2 n - 1) <<< 8) ||| ((id >>> 1) &&& 0xFF), 0, 0)
+  | _ => r
+
 /-- Leaves that only describe one feature: all zero unless it is implemented. -/
 def leafGate (leaf : UInt32) : Option Feature :=
   match leaf with
@@ -491,7 +543,9 @@ def amdLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
       -- OSXSAVE reflects CR4.OSXSAVE: the dump's bit 27 (set: the dump was taken under an OS) is
       -- replaced by the CR4 bit
       let cx := if leaf == 1 then (cx &&& ~~~osxsaveBit) ||| osxsave c else cx
-      (a, b, cx, d)
+      match leaf with
+      | 1 | 0xB | 0x80000001 | 0x80000008 | 0x8000001D | 0x8000001E => topo c leaf sub (a, b, cx, d)
+      | _ => (a, b, cx, d)
 
 /-- Highest basic and extended leaves of the legacy identity: 1 and 0x80000001 unless an implemented
 feature is reported in a higher leaf. -/
@@ -512,10 +566,14 @@ def legacyLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
   | 0 => (mb, 0x756E6547, 0x6C65746E, 0x49656E69)  -- "GenuineIntel"
   | 1 =>
     -- EBX[15:8]: the CLFLUSH line size in quadwords (8: 64 bytes), once CLFSH is reported
-    (0x00000619, if implemented .clfsh then 0x800 else 0, featBits 1 0 2 true ||| osxsave c, featBits 1 0 3 true)
+    (0x00000619, topoEbx1 c (if implemented .clfsh then 0x800 else 0), featBits 1 0 2 true ||| osxsave c,
+      topoEdx1 c (featBits 1 0 3 true))
   | 0x80000000 => (me, 0, 0, 0)
-  | 0x80000001 => (0, 0, featBits 0x80000001 0 2 true, featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask)
+  | 0x80000001 =>
+    (0, 0, topoEcx81 c (featBits 0x80000001 0 2 true), featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask)
   | 5 | 6 | 7 | 0xD | 0x80000007 | 0x80000008 | 0x8000000A => amdLeaf c leaf sub
+  -- the x2APIC topology leaf (SMP workstream), with x2APIC
+  | 0xB => if implemented .x2apic then amdLeaf c leaf sub else (0, 0, 0, 0)
   | _ => (0, 0, 0, 0)
 
 end Cpuid

@@ -133,12 +133,83 @@ instruction of the handler. -/
 @[inline] def pendHits (m : Machine) : Machine :=
   if m.dbHit == 0 then m else { m with dbPend := m.dbPend ||| m.dbHit, dbHit := 0 }
 
-/-- One step at an instruction boundary, in priority order: debug traps held from the previous
+/-! ## INIT, STARTUP and NMI messages (SMP workstream)
+
+What the local APIC passes to the core (`Apic.init`, `sipi`, `nmi`; cached in `Machine.xev`) is
+taken at an instruction boundary by `smpEvent?`, before everything else in `step`:
+* INIT (held pending in SMM): the INIT state of AMD APM vol. 2, table 14-1 (`Cpu.afterInit`) and the
+  APIC's reset values except base, mode and ID (`Apic.reset`); an application processor then waits for
+  a STARTUP IPI, the boot processor (BSC) starts at the reset vector FFFF:FFF0 as after RESET (there is
+  no firmware in the model: open bus);
+* in the INIT state the CPU executes nothing and holds every other event pending (APM 16.5: "the
+  target APIC is responsive only to the STARTUP IPI. All other interrupts (including SMI and NMI) are
+  held pending until the STARTUP IPI has been accepted"); a STARTUP IPI with vector VV starts it in real
+  mode at VV00:0000 (CS base VV000h);
+* a STARTUP IPI outside the INIT state is ignored;
+* NMI: PLACEHOLDER until system B's NMI architecture is merged (RECONCILE AT MERGE): vector 2 through
+  the IDT at the first boundary without a pending SMI or debug trap, outside SMM and the interrupt
+  shadow, waking HLT; NMI blocking until IRET is not modelled here. -/
+
+/-- The CPU state after INIT (AMD APM vol. 2, table 14-1 "Value after INIT", table 14-2 attributes):
+real mode at F000:FFF0 with CS base FFFF_0000h, CR0 = 10h with CD and NW kept, CR2–CR4, EFER, the
+general registers (EDX = processor signature `sig`), DR0–DR3, DR6, DR7 at their reset values; x87,
+MMX and SSE state, MSRs, TSC, SMBASE and XCR0 are not modified. -/
+def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
+  let seg : SegReg := { sel := 0, base := 0, limit := 0xFFFF, attr := 0x92 }
+  { c with
+    eax := 0, ebx := 0, ecx := 0, edx := sig, esp := 0, ebp := 0, esi := 0, edi := 0,
+    eip := 0xFFF0, eflags := 2,
+    cs := { sel := 0xF000, base := 0xFFFF0000, limit := 0xFFFF, attr := 0x9A },
+    ds := seg, es := seg, fs := seg, gs := seg, ss := seg,
+    ldtr := { attr := 0x82 }, tr := { attr := 0x83 },
+    gdtBase := 0, gdtLimit := 0xFFFF, idtBase := 0, idtLimit := 0xFFFF,
+    cr0 := 0x10 ||| (c.cr0 &&& (CR0.CD ||| CR0.NW)), cr2 := 0, cr3 := 0, cr4 := 0,
+    dr0 := 0, dr1 := 0, dr2 := 0, dr3 := 0, dr6 := 0xFFFF0FF0, dr7 := 0x400, bpOn := false,
+    efer := 0, halted := !bsp, shadow := false,
+    smpx := { c.smpx with waitSipi := !bsp, mwait := none } }
+
+/-- INIT of the running CPU. -/
+def Machine.initCpu (m : Machine) : Machine :=
+  let sig := (cpuid m.cpu 1 0).1
+  { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := { m.apic with init := false }.reset,
+           dbPend := 0 }.syncTimer.syncApic
+
+/-- A STARTUP IPI with vector `v` ends the INIT state: real mode at `v`00:0000. -/
+def Machine.startCpu (m : Machine) (v : UInt32) : Machine :=
+  { m with cpu := { m.cpu with cs := { sel := (v <<< 8).toUInt16, base := v <<< 12, limit := 0xFFFF, attr := 0x9A },
+                               eip := 0, halted := false, smpx := { m.cpu.smpx with waitSipi := false } },
+           apic := { m.apic with sipi := none } }.syncXev
+
+/-- Deliver a latched NMI (placeholder, see above). -/
+def Machine.deliverNmi (m : Machine) : Machine :=
+  let m := { m with apic := { m.apic with nmi := false }, cpu := { m.cpu with halted := false } }.syncXev
+  pendHits (raiseExc m 2 none true)
+
+/-- The slow path of `smpEvent?`. -/
+def smpEventSlow (m : Machine) : Option Machine :=
+  let a := m.apic
+  if a.init && !m.cpu.smm then some m.initCpu
+  else if m.cpu.smpx.waitSipi then
+    match a.sipi with
+    | some v => some (m.startCpu v)
+    | none => some m
+  else if a.sipi.isSome then some { m with apic := { a with sipi := none } }.syncXev
+  else if a.nmi && !m.smiPending && m.dbPend == 0 && !m.cpu.shadow && !m.cpu.smm then some m.deliverNmi
+  else none
+
+/-- INIT, STARTUP, the INIT state and NMI at an instruction boundary; `none`: nothing to do here. -/
+@[inline] def smpEvent? (m : Machine) : Option Machine := if m.xev then smpEventSlow m else none
+
+/-- One step at an instruction boundary, in priority order: INIT/STARTUP (and the INIT state) and
+NMI (`smpEvent?`, NMI after SMI and debug traps), SMI, debug traps held from the previous
 boundary, external interrupts, HLT, instruction-breakpoint faults, then the instruction itself
 followed by its debug traps (data/I/O breakpoints, single-step). Traps raised by MOV SS / POP SS are
 held past the next instruction (it executes in the interrupt shadow). -/
 def step (m : Machine) : Machine :=
   let m := if m.icount ≥ m.timerAt then m.timerFire else m
+  match smpEvent? m with
+  | some m => m
+  | none =>
   if m.smiPending && !m.cpu.smm && !m.cpu.shadow then
     -- SMI: above debug traps and interrupts; another SMI stays latched until RSM
     match smmEnter { m with smiPending := false } with

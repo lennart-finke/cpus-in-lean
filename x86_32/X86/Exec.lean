@@ -407,18 +407,14 @@ def eferMsr : MsrImpl where
     modCpu fun c => { c with efer := v.toUInt32 }
     flushTlbAll
 
-/-- IA32_APIC_BASE: base, global enable (bit 11), boot processor (bit 8). -/
+/-- IA32_APIC_BASE: base, global enable (bit 11), x2APIC mode (bit 10), boot processor (bit 8); the
+rules are `Machine.apicBaseWr` (SMP workstream, `X86/Io.lean`). -/
 def apicBaseMsr : MsrImpl where
-  rd := do
-    let a := (← getM).apic
-    return (a.base ||| (if a.enabled then 0x800 else 0) ||| 0x100).toUInt64
+  rd := do return (← getM).apicBaseRd
   wr v := do
-    if v &&& ~~~(0xFFFFF900 : UInt64) != 0 then gp 0
-    let en := v &&& 0x800 != 0
-    -- a global disable resets the APIC (its base is kept)
-    modM fun m =>
-      let a := if en then m.apic else {}
-      { m with apic := { a with base := v.toUInt32 &&& 0xFFFFF000, enabled := en } }.syncTimer.syncIntr
+    match (← getM).apicBaseWr v with
+    | some m => set m
+    | none => gp 0
 
 /-- The MSRs of the core model. -/
 def coreMsr? (n : UInt32) : Option MsrImpl :=

@@ -34,6 +34,14 @@ structure TsoLog where
   writes : Array Store := #[]
   deriving Repr, Inhabited
 
+/-- Another CPU's local APIC and INIT state, reachable by interrupt messages while that CPU is not the
+running one (`Machine.peers`; the rest of its state is kept by the scheduler, `X86/Mp.lean`). -/
+structure Peer where
+  apic : Apic := {}
+  /-- The CPU waits for a STARTUP IPI (its `Cpu.smpx.waitSipi`). -/
+  waitSipi : Bool := false
+  deriving Inhabited
+
 /-- Machine state beyond the integer core: local APIC, debug-event bookkeeping, SMI and APM latches.
 A parent of `Machine` for the same reason as `CpuExt`. -/
 structure MachineExt where
@@ -60,6 +68,15 @@ structure MachineExt where
   /-- APM control (port 0xB2: writing it raises an SMI) and status (0xB3) registers. -/
   apmCnt : UInt8 := 0
   apmSts : UInt8 := 0
+  /-- Multiprocessor (`X86/Mp.lean`): the local APICs of the other CPUs, indexed by CPU number (the
+  entry of the running CPU `cur` is unused); empty for a single CPU. -/
+  peers : Array Peer := #[]
+  cur : Nat := 0
+  /-- The I/O APIC (shared). -/
+  ioapic : IoApic := {}
+  /-- The running CPU has an NMI, INIT or STARTUP message pending or waits for STARTUP (cached from
+  `apic` and `cpu`, see `Machine.syncXev`): `step` then takes the slow path `smpEvent?`. -/
+  xev : Bool := false
   deriving Inhabited
 
 structure Machine extends MachineExt where
@@ -110,10 +127,38 @@ namespace Machine
 def masterHighest (m : Machine) : Option UInt8 :=
   m.pic0.highest (if (m.pic1.highest).isSome then 4 else 0)
 
+/-- Recompute the cached `xev` flag of the running CPU. -/
+@[inline] def syncXev (m : Machine) : Machine :=
+  { m with xev := m.apic.nmi || m.apic.init || m.apic.sipi.isSome || m.cpu.smpx.waitSipi }
+
+/-- An SMI the running CPU's APIC passed to the core becomes the SMI latch `smiPending`. -/
+@[inline] def syncSmi (m : Machine) : Machine :=
+  if m.apic.smi then { m with smiPending := true, apic := { m.apic with smi := false } } else m
+
+/-- LINT0 in fixed, SMI or NMI mode (APM 16.4.2): the PIC's INTR output is the input pin (active low
+with the polarity bit 13). An edge-triggered entry (SMI and NMI always are) raises its interrupt on
+each assertion; a level-triggered fixed entry while asserted with remote IRR (bit 14) clear, setting
+remote IRR (cleared by an EOI for its vector, `Apic.eoiVec`). -/
+def lint0Sync (m : Machine) : Machine :=
+  let a := m.apic
+  let e := a.lvt[3]!
+  let lvl := m.masterHighest.isSome != (e &&& 0x2000 != 0)
+  let levelFixed := e &&& 0x8000 != 0 && (e >>> 8) &&& 7 == 0
+  let fire := lvl && (if levelFixed then e &&& 0x4000 == 0 else !a.lint0In)
+  let a := { a with lint0In := lvl }
+  let a := if !fire then a
+    else if levelFixed then
+      let a' := a.localInt 3 true
+      { a' with lvt := a'.lvt.set! 3 (a'.lvt[3]! ||| 0x4000) }
+    else a.localInt 3
+  { m with apic := a }.syncSmi.syncXev
+
 /-- Recompute the cached INTR line: the PIC's output (the slave's INT drives master input 2) if it
-passes the local APIC's LINT0, or a fixed interrupt the APIC presents. -/
+passes the local APIC's LINT0, an external-interrupt message, or a fixed interrupt the APIC
+presents. -/
 def syncIntr (m : Machine) : Machine :=
-  { m with intr := (m.apic.picPasses && m.masterHighest.isSome) || m.apic.pending.isSome }
+  let m := if m.apic.lint0Live then m.lint0Sync else m
+  { m with intr := (m.apic.picPasses && m.masterHighest.isSome) || m.apic.extInt || m.apic.pending.isSome }
 
 /-- Recompute the next timer event. -/
 def syncTimer (m : Machine) : Machine :=
@@ -122,9 +167,209 @@ def syncTimer (m : Machine) : Machine :=
     | none => 0xFFFFFFFFFFFFFFFF
   { m with timerAt := min pit m.apic.timerNext }
 
-/-- Write to the local APIC's register page. -/
+/-- After a change of the running CPU's APIC: SMI latch, `xev`, INTR. -/
+@[inline] def syncApic (m : Machine) : Machine := m.syncSmi.syncXev.syncIntr
+
+/-! ### Interrupt messages between the APICs (AMD APM vol. 2, 16.5–16.6)
+
+Messages are delivered at once to every targeted APIC: the running CPU's (`apic`) or another CPU's
+(`peers`). Fixed and lowest-priority messages enter IRR; SMI, NMI, INIT, STARTUP and ExtINT become
+messages to the target's core, taken when that CPU next reaches an instruction boundary. -/
+
+/-- Number of CPUs. -/
+@[inline] def ncpu (m : Machine) : Nat := max 1 m.peers.size
+
+/-- The local APIC of CPU `k`. -/
+def apicAt (m : Machine) (k : Nat) : Apic :=
+  if k == m.cur then m.apic else (m.peers[k]?.map (·.apic)).getD {}
+
+/-- Change the local APIC of CPU `k`. -/
+def modApicAt (m : Machine) (k : Nat) (f : Apic → Apic) : Machine :=
+  if k == m.cur then { m with apic := f m.apic }
+  else if k < m.peers.size then { m with peers := m.peers.modify k fun p => { p with apic := f p.apic } }
+  else m
+
+/-- CPU `k` waits for a STARTUP IPI. -/
+def waitSipiAt (m : Machine) (k : Nat) : Bool :=
+  if k == m.cur then m.cpu.smpx.waitSipi else (m.peers[k]?.map (·.waitSipi)).getD false
+
+/-- HOOK for the NMI architecture (system workstream B), RECONCILE AT MERGE: latch an NMI for CPU `k`.
+Here the latch is the APIC's `nmi` message to the core; `smpEvent?` (`X86/Step.lean`) delivers it as
+a minimal placeholder (vector 2 at the next boundary, after SMI and debug traps, outside SMM; NMI
+blocking until IRET is system B's). Every NMI source of the SMP work (NMI IPIs and I/O APIC entries)
+goes through this function; LVT entries in NMI mode set the same flag (`Apic.lvtFire`). -/
+def latchNmi (m : Machine) (k : Nat) : Machine := m.modApicAt k fun a => { a with nmi := true }
+
+/-- Lowest-priority arbitration among `cands` for vector `v` (APM 16.6.2): a focus CPU (the vector
+in its ISR or IRR, with focus checking enabled by its SVR bit 9 = 0) accepts it, the one with the
+highest APIC ID if there are several (the APM leaves this open); otherwise the APIC with the lowest
+arbitration priority (APR), ties going to the highest APIC ID. -/
+def lowestPri (m : Machine) (v : UInt32) (cands : List Nat) : Option Nat :=
+  let higherId := fun (j k : Nat) => (m.apicAt j).physId > (m.apicAt k).physId
+  let focus := cands.filter fun k =>
+    let a := m.apicAt k
+    a.svr &&& 0x200 == 0 && (Apic.getBit a.isr v || Apic.getBit a.irr v)
+  match focus with
+  | f :: fs => some (fs.foldl (fun b k => if higherId k b then k else b) f)
+  | [] =>
+    match cands with
+    | c :: cs => some (cs.foldl (fun b k =>
+        let x := (m.apicAt k).apr
+        let y := (m.apicAt b).apr
+        if x < y || (x == y && higherId k b) then k else b) c)
+    | [] => none
+
+/-- CPU `k`'s APIC receives `msg` (any type but lowest priority and remote read). An INIT
+de-assert (trigger mode level, level 0) has no effect on the CPU; a STARTUP is accepted only by a
+CPU in (or entering) the INIT state, and the first one wins. -/
+def recv (m : Machine) (k : Nat) (msg : Msg) : Machine :=
+  match msg.mode with
+  | 0 => m.modApicAt k (·.acceptFixed msg.vec msg.level)
+  | 2 => m.modApicAt k fun a => { a with smi := true }
+  | 4 => m.latchNmi k
+  | 5 => if msg.level && !msg.assert then m else m.modApicAt k fun a => { a with init := true, sipi := none }
+  | 6 =>
+    if m.waitSipiAt k || (m.apicAt k).init then
+      m.modApicAt k fun a => if a.sipi.isSome then a else { a with sipi := some msg.vec }
+    else m
+  | 7 => m.modApicAt k fun a => { a with extInt := true }
+  | _ => m
+
+/-- Deliver `msg` to every APIC it targets; `false` if it targets none. The running CPU's derived
+state is not synchronized (callers use `syncApic`). -/
+def deliver (m : Machine) (msg : Msg) : Machine × Bool :=
+  let ts := (List.range m.ncpu).filter fun k => msg.targets k (m.apicAt k)
+  if ts.isEmpty then (m, false) else
+  if msg.mode == 1 then
+    match m.lowestPri msg.vec (ts.filter fun k => (m.apicAt k).swEnabled) with
+    | some k => (m.modApicAt k (·.acceptFixed msg.vec msg.level), true)
+    | none => (m, true)
+  else (ts.foldl (fun m k => m.recv k msg) m, true)
+
+/-- The message the ICR describes (xAPIC: destination ICR[63:56]; x2APIC: ICR[63:32]). -/
+def icrMsg (a : Apic) (src : Nat) : Msg :=
+  let lo := a.icrLo
+  { mode := (lo >>> 8) &&& 7, vec := lo &&& 0xFF, level := lo &&& 0x8000 != 0,
+    assert := lo &&& 0x4000 != 0, dest := if a.x2 then a.icrHi else a.icrHi >>> 24,
+    logical := lo &&& 0x800 != 0, sh := (lo >>> 18) &&& 3, x2 := a.x2, src := some src }
+
+/-- Remote read (message type 011b, APM 16.5): the register at offset VEC·16 of the APIC named by a
+physical destination is copied to the remote read register; ICR.RRS = 10b (valid) or 00b (no such
+APIC, a broadcast, shorthand or logical destination, or an unimplemented register). -/
+def remoteRead (m : Machine) (msg : Msg) : Machine :=
+  let tgt := if msg.sh != 0 || msg.logical || msg.dest &&& 0xFF == 0xFF then none
+    else (List.range m.ncpu).find? fun k => msg.targets k (m.apicAt k)
+  let v := tgt.bind fun k => (m.apicAt k).read (msg.vec <<< 4) m.icount
+  let a := m.apic
+  let lo := a.icrLo &&& ~~~0x30000
+  match v with
+  | some v => { m with apic := { a with rrr := v, icrLo := lo ||| 0x20000 } }
+  | none => { m with apic := { a with icrLo := lo } }
+
+/-- The running CPU sends the IPI its ICR describes (a write to ICR low, or to the x2APIC ICR or
+SELF IPI register). Fixed and lowest-priority messages with vectors 0..15 record SIV (and are sent);
+an IPI no APIC matches records SAE. -/
+def sendIcr (m : Machine) : Machine :=
+  let msg := icrMsg m.apic m.cur
+  if msg.mode == 3 then m.remoteRead msg else
+  let m := if (msg.mode == 0 || msg.mode == 1) && msg.vec < 16 then { m with apic := m.apic.error Esr.SIV } else m
+  let (m, ok) := m.deliver msg
+  if ok then m else { m with apic := m.apic.error Esr.SAE }
+
+/-! ### I/O APIC -/
+
+/-- Redirection entry `p` sends its message; a level-triggered entry sets remote IRR. -/
+def ioapicSend (m : Machine) (p : Nat) : Machine :=
+  let s := m.ioapic
+  let e := s.entry p
+  let m := if e &&& 0x8000 != 0 then { m with ioapic := { s with redir := s.redir.set! p (e ||| 0x4000) } } else m
+  (m.deliver (s.msg p)).1.syncApic
+
+/-- A level-triggered entry sends its message while its pin is asserted, it is unmasked and its
+remote IRR is clear. -/
+def ioapicService (m : Machine) (p : Nat) : Machine :=
+  let s := m.ioapic
+  let e := s.entry p
+  if e &&& 0x10000 == 0 && e &&& 0x8000 != 0 && e &&& 0x4000 == 0 && s.asserted p then m.ioapicSend p else m
+
+/-- Input pin `p` of the I/O APIC goes to `level`. -/
+def ioapicPin (m : Machine) (p : Nat) (level : Bool) : Machine :=
+  let s := m.ioapic
+  let bit : UInt32 := 1 <<< p.toUInt32
+  if (s.lines &&& bit != 0) == level then m else
+  let was := s.asserted p
+  let s := { s with lines := if level then s.lines ||| bit else s.lines &&& ~~~bit }
+  let m := { m with ioapic := s }
+  let e := s.entry p
+  if e &&& 0x10000 != 0 then m
+  else if e &&& 0x8000 == 0 then (if !was && s.asserted p then m.ioapicSend p else m)
+  else m.ioapicService p
+
+/-- EOI message for vector `v` from a local APIC: every level-triggered entry with that vector and
+remote IRR set has it cleared, and sends again if its pin is still asserted. -/
+def ioapicEoi (m : Machine) (v : UInt32) : Machine :=
+  (List.range IoApic.pins).foldl (fun m p =>
+    let e := m.ioapic.entry p
+    if e &&& 0x4000 != 0 && (e &&& 0xFF).toUInt32 == v then
+      { m with ioapic := { m.ioapic with redir := m.ioapic.redir.set! p (e &&& ~~~0x4000) } }.ioapicService p
+    else m) m
+
+/-- ISA interrupt line `irq` (0..15) goes to `level`: the PIC pair and the I/O APIC (IRQ 0 drives
+pin 2). -/
+def setIrq (m : Machine) (irq : Nat) (level : Bool) : Machine :=
+  let m := if irq < 8 then { m with pic0 := m.pic0.setLine irq.toUInt8 level }
+           else { m with pic1 := m.pic1.setLine (irq - 8).toUInt8 level }
+  m.ioapicPin (if irq == 0 then 2 else irq) level
+
+/-- I/O APIC register page: read at physical address `a` (IOREGSEL at 00h, IOWIN at 10h). -/
+def ioapicRead (m : Machine) (a : UInt32) : UInt32 :=
+  match a &&& 0xFC with
+  | 0x00 => m.ioapic.sel
+  | 0x10 => m.ioapic.readWin
+  | _ => 0
+
+/-- I/O APIC register page: write of `n` bytes at `a`. IOREGSEL takes any write to offset 00h, IOWIN
+aligned 32-bit writes; a redirection entry written with a level-triggered, asserted, unmasked pin
+sends at once. -/
+def ioapicWrite (m : Machine) (a n v : UInt32) : Machine :=
+  match a &&& 0xFF with
+  | 0x00 => { m with ioapic := { m.ioapic with sel := v &&& 0xFF } }
+  | 0x10 =>
+    if n != 4 then m else
+    let (s, p) := m.ioapic.writeWin v
+    let m := { m with ioapic := s }
+    match p with
+    | some p => m.ioapicService p
+    | none => m
+  | _ => m
+
+/-! ### Local APIC registers -/
+
+/-- EOI (APM 16.6.4): a level-triggered vector also sends an EOI message to the I/O APIC. -/
+def apicEoiVec (m : Machine) (r : Apic × Option UInt32) : Machine :=
+  let m := { m with apic := r.1 }
+  (match r.2 with | some v => m.ioapicEoi v | none => m).syncApic
+
+/-- Register read of the running CPU's APIC (xAPIC layout); an unimplemented register reads 0 and
+records IRA. -/
+def apicRead (m : Machine) (off : UInt32) : UInt32 × Machine :=
+  match m.apic.read off m.icount with
+  | some v => (v, m)
+  | none => (0, { m with apic := m.apic.error Esr.IRA }.syncApic)
+
+/-- Register write to the running CPU's APIC (xAPIC layout): EOI, ICR low (sends the IPI; the
+read-only remote-read status is kept), SEOI (with SN: EOI of the written vector, APM 16.7.1), the
+others through `Apic.write`; an unimplemented register records IRA. -/
 def apicWrite (m : Machine) (off v : UInt32) : Machine :=
-  { m with apic := m.apic.write off v m.icount }.syncTimer.syncIntr
+  match off with
+  | 0xB0 => m.apicEoiVec m.apic.eoi
+  | 0x300 =>
+    { m with apic := { m.apic with icrLo := (v &&& 0xCCFFF) ||| (m.apic.icrLo &&& 0x30000) } }.sendIcr.syncApic
+  | 0x420 => if m.apic.extCtl &&& 2 == 0 then m else m.apicEoiVec (m.apic.eoiVec (v &&& 0xFF))
+  | _ =>
+    match m.apic.write off v m.icount with
+    | some a => { m with apic := a }.syncTimer.syncApic
+    | none => { m with apic := m.apic.error Esr.IRA }.syncApic
 
 end Machine
 
@@ -191,26 +436,40 @@ Physical addresses are 64-bit: PAE paging reaches a 36-bit physical address spac
 @[inline] def openBus (n : UInt32) : UInt32 :=
   if n == 1 then 0xFF else if n == 2 then 0xFFFF else 0xFFFFFFFF
 
-/-- The local APIC claims the 4 KiB page at its base while globally enabled. -/
-@[inline] def isApic (m : Machine) (a : UInt32) : Bool := a &&& 0xFFFFF000 == m.apic.base && m.apic.enabled
+/-- The local APIC claims the 4 KiB page at its base while globally enabled in xAPIC mode
+(`Apic.mmio`). -/
+@[inline] def isApic (m : Machine) (a : UInt32) : Bool := a &&& 0xFFFFF000 == m.apic.mmio
+
+/-- The device pages: the local APIC's and the I/O APIC's (`ioApicBase`). -/
+@[inline] def isMmio (m : Machine) (a : UInt32) : Bool :=
+  isApic m a || a &&& 0xFFFFF000 == ioApicBase
+
+/-- Read of `n` bytes in a device page (the local APIC takes precedence over the I/O APIC). -/
+def mmioRd (a n : UInt32) : M UInt32 := fun m =>
+  if m.tso.isSome then .error (.unsupported "TSO: APIC MMIO") m else
+  let (v, m) := if isApic m a then m.apicRead (a &&& 0xFF0) else (m.ioapicRead a, m)
+  let v := v >>> ((a &&& 3) * 8)
+  .ok (if n == 4 then v else v &&& ((1 <<< (n * 8)) - 1)) m
+
+/-- Write of `n` bytes in a device page: the local APIC takes aligned 32-bit writes only (others are
+ignored), for the I/O APIC see `Machine.ioapicWrite`. -/
+def mmioWr (a n v : UInt32) : M Unit := fun m =>
+  if m.tso.isSome then .error (.unsupported "TSO: APIC MMIO") m
+  else if isApic m a then .ok () (if n == 4 && a &&& 3 == 0 then m.apicWrite (a &&& 0xFF0) v else m)
+  else .ok () (m.ioapicWrite a n v)
 
 @[inline] def physRd (p : UInt64) (n : UInt32) : M UInt32 := fun m =>
   if p >>> 32 != 0 then .ok (openBus n) m else
   let a := p.toUInt32
-  if isApic m a then
-    if m.tso.isSome then .error (.unsupported "TSO: APIC MMIO") m else
-    let v := m.apic.read (a &&& 0xFF0) m.icount >>> ((a &&& 3) * 8)
-    .ok (if n == 4 then v else v &&& ((1 <<< (n * 8)) - 1)) m
+  if isMmio m a then mmioRd a n m
   else match m.tso with
     | none => .ok (rdBytes m.mem a n) m
     | some l => .ok (rdBytes m.mem a n) { m with tso := some { l with reads := l.reads.push (a, n) } }
-/-- Physical write; APIC registers take aligned 32-bit writes only (others are ignored). -/
+/-- Physical write (device pages: `mmioWr`). -/
 @[inline] def physWr (p : UInt64) (n v : UInt32) : M Unit := fun m =>
   if p >>> 32 != 0 then .ok () m else
   let a := p.toUInt32
-  if isApic m a then
-    if m.tso.isSome then .error (.unsupported "TSO: APIC MMIO") m
-    else .ok () (if n == 4 && a &&& 3 == 0 then m.apicWrite (a &&& 0xFF0) v else m)
+  if isMmio m a then mmioWr a n v m
   else match m.tso with
     | none => .ok () { m with mem := wrBytes m.mem a n v }
     | some l => .ok () { m with mem := wrBytes m.mem a n v,

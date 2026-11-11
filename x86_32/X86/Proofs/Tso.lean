@@ -4,7 +4,7 @@ import X86.Proofs.Basic
 /-!
 # Facts about the TSO hook and the multiprocessor (`X86.Tso`)
 
-* With `Machine.tso = none` (every single-CPU machine) `physRd`/`physWr` are plain RAM accesses outside the APIC page,
+* With `Machine.tso = none` (every single-CPU machine) `physRd`/`physWr` are plain RAM accesses outside the device pages (local APIC, I/O APIC; `isMmio`),
   so the access log changes nothing about the single-CPU semantics.
 * Committing a CPU's oldest buffered store does not change that CPU's own view of memory.
 
@@ -13,7 +13,7 @@ the step's memory effect) is checked by running, not proved: `x86test --tso-log`
 -/
 namespace X86
 
-theorem physRd_none (p n : UInt32) (m : Machine) (h : m.tso = none) (hap : isApic m p = false) :
+theorem physRd_none (p n : UInt32) (m : Machine) (h : m.tso = none) (hap : isMmio m p = false) :
     physRd p.toUInt64 n m = .ok (rdBytes m.mem p n) m := by
   have hi : (p.toUInt64 >>> 32 != 0) = false := by
     have : p.toUInt64 >>> 32 = 0 := by simp only [X86.shr64]; bv_decide
@@ -21,7 +21,7 @@ theorem physRd_none (p n : UInt32) (m : Machine) (h : m.tso = none) (hap : isApi
   have lo : p.toUInt64.toUInt32 = p := by bv_decide
   simp only [physRd, hi, lo, hap, Bool.false_eq_true, ite_false, h]
 
-theorem physWr_none (p n v : UInt32) (m : Machine) (h : m.tso = none) (hap : isApic m p = false) :
+theorem physWr_none (p n v : UInt32) (m : Machine) (h : m.tso = none) (hap : isMmio m p = false) :
     physWr p.toUInt64 n v m = .ok () { m with mem := wrBytes m.mem p n v } := by
   have hi : (p.toUInt64 >>> 32 != 0) = false := by
     have : p.toUInt64 >>> 32 = 0 := by simp only [X86.shr64]; bv_decide

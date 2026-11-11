@@ -1,4 +1,5 @@
 import X86.Machine
+import X86.Cpuid
 /-!
 # I/O port bus
 
@@ -9,9 +10,9 @@ namespace X86
 
 namespace Machine
 
-/-- Propagate the UART interrupt output to IRQ4. -/
+/-- Propagate the UART interrupt output to IRQ4 (PIC and I/O APIC). -/
 def syncUart (m : Machine) : Machine :=
-  { m with pic0 := m.pic0.setLine 4 m.uart.irq }.syncIntr
+  (m.setIrq 4 m.uart.irq).syncIntr
 
 /-- A timer event is due: PIT channel 0 output rose (pulse IRQ0 and schedule the next edge),
 and/or the APIC timer expired. -/
@@ -19,19 +20,20 @@ def timerFire (m : Machine) : Machine :=
   let m := match m.pit.ch0.nextFire with
     | some t =>
       if tickToIcount t ≤ m.icount then
-        let pic0 := (m.pic0.setLine 0 true).setLine 0 false
-        { m with pic0, pit := { m.pit with ch0 := m.pit.ch0.fired } }
+        let m := (m.setIrq 0 true).setIrq 0 false
+        { m with pit := { m.pit with ch0 := m.pit.ch0.fired } }
       else m
     | none => m
   let m := if m.apic.timerNext ≤ m.icount then { m with apic := m.apic.timerFired } else m
-  m.syncTimer.syncIntr
+  m.syncTimer.syncApic
 
 /-- Interrupt acknowledge cycle: returns the vector supplied by the local APIC (fixed interrupt)
-or, through LINT0, by the PICs. -/
+or, through LINT0 or an external-interrupt message (ExtINT), by the PICs. -/
 def intAck (m : Machine) : UInt8 × Machine :=
   match m.apic.pending with
   | some v => (v.toUInt8, { m with apic := m.apic.ack v }.syncIntr)
   | none =>
+  let m := if m.apic.extInt then { m with apic := { m.apic with extInt := false } }.syncIntr else m
   match m.masterHighest with
   | some 2 =>
     match m.pic1.highest with
@@ -101,6 +103,43 @@ def out8 (m : Machine) (port : UInt32) (v : UInt8) : Machine :=
     if 0x3F8 ≤ port && port ≤ 0x3FF then
       { m with uart := m.uart.write (port - 0x3F8) v }.syncUart
     else m
+
+/-! ## IA32_APIC_BASE (MSR 1Bh; AMD APM vol. 2, 16.3.1, 16.9) -/
+
+/-- The register as RDMSR reads it: base address bits 47:12, AE (bit 11), EXTD (bit 10), BSC (bit 8). -/
+def apicBaseRd (m : Machine) : UInt64 :=
+  let a := m.apic
+  (a.baseHi.toUInt64 <<< 32) ||| a.base.toUInt64 ||| (if a.enabled then 0x800 else 0) |||
+    (if a.x2 then 0x400 else 0) ||| (if a.bsp then 0x100 else 0)
+
+/-- WRMSR to IA32_APIC_BASE; `none` is #GP(0). Reserved: bits 63:48 (above MAXPHYADDR 48), 9 and 7:0,
+and EXTD without CPUID x2APIC; BSC is read-only (written values are ignored). Mode transitions (APM
+table 16-5, figure 16-32, 16.9.1): AE = 0 with EXTD = 1 is invalid, x2APIC mode can only be left to
+the disabled state, and the disabled state can only be left to xAPIC mode. A global disable resets
+the APIC (`Apic.reset`, keeping base, BSC and ID); entering x2APIC mode derives the logical x2APIC
+ID (LDR = cluster ID[19:4] << 16 | 1 << ID[3:0], APM 16.14), does not preserve ICR high, and makes the
+APIC ID written in xAPIC mode the x2APIC ID (APM 16.9.1). The mode is mirrored into
+`Cpu.smpx.apicMode` (CPUID 8000_001E:EAX). -/
+def apicBaseWr (m : Machine) (v : UInt64) : Option Machine :=
+  let a := m.apic
+  let ae := v &&& 0x800 != 0
+  let ex := v &&& 0x400 != 0
+  if v &&& 0xFFFF0000000002FF != 0 || (ex && !implemented .x2apic) then none
+  else if !ae && ex then none
+  else if a.x2 && ae && !ex then none
+  else if !a.enabled && ae && ex then none
+  else
+    let wasEn := a.enabled
+    let wasX2 := a.x2
+    let a := { a with base := v.toUInt32 &&& 0xFFFFF000, baseHi := (v >>> 32).toUInt32 &&& 0xFFFF }
+    let a := if !ae then ({ a with enabled := false, x2 := false } : Apic).reset
+      else if !wasEn then { a with enabled := true }
+      else if ex && !wasX2 then
+        { a with x2 := true, icrHi := 0, ldr := ((a.id >>> 4) <<< 16) ||| ((1 : UInt32) <<< (a.id &&& 0xF)) }
+      else a
+    let mode : UInt8 := if !ae then 0 else if ex then 2 else 1
+    some ({ m with apic := a.withMmio, cpu := { m.cpu with smpx := { m.cpu.smpx with apicMode := mode } } }
+      |>.syncTimer |>.syncApic)
 
 end Machine
 
