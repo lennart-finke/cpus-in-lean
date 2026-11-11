@@ -277,6 +277,9 @@ FAMILIES = [
     (simd_cases, ()),
     (alignment_cases, ()),
 ]
+# General-purpose extensions (x86_32/X86/Ext/Gpr.lean): gpr_cases.py
+from gpr_cases import FAMILIES as _GPR_FAMILIES  # noqa: E402
+FAMILIES += _GPR_FAMILIES
 
 
 def cases(seed=20261111, count=10000):

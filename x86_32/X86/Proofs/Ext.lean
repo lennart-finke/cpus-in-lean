@@ -21,19 +21,23 @@ def formerCpuid (leaf : UInt32) : Regs :=
   | 0x80000001 => (0, 0, 0, 1 <<< 20)
   | _ => (0x00000619, 0, 0, 0x07808365)
 
-/-- The reported leaves with system A's features (SYSENTER, SYSCALL, TSC, PSE, PSE-36, PGE, MCE,
-MCA, MTRR, PAT, SMEP, SMAP, UMIP, AltMovCr8, FFXSR, TCE, OSVW, WDT, invariant TSC, ARAT, EffFreq,
-IBPB/IBRS/STIBP/SSBD) on top of `formerCpuid`'s: highest leaves 7 and 0x80000008. -/
+/-- The reported leaves with the features implemented since `formerCpuid`'s (the removed
+`cpuidVals`): Gpr (MONITOR, MOVBE, POPCNT, RDRAND, CLFSH, BMI1/2, ADX, RDSEED, CLFLUSHOPT, CLWB,
+RDPID, ABM, PREFETCHW, MONITORX, RDTSCP, CLZERO, IRPERF, RDPRU, WBNOINVD, MCOMMIT) and system A
+(SYSENTER, SYSCALL, TSC, PSE, PSE-36, PGE, MCE, MCA, MTRR, PAT, SMEP, SMAP, UMIP, AltMovCr8, FFXSR,
+TCE, OSVW, WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD): highest leaves 7 and
+0x80000008. -/
 def sysALeaf (l sub : UInt32) : Regs :=
   match l with
   | 0 => (7, 0x756E6547, 0x6C65746E, 0x49656E69)
-  | 1 => (0x619, 0, 0, 0x0783FBFD)
+  | 1 => (0x619, 0x800, 0x40C00008, 0x078BFBFD)
+  | 5 => (0x40, 0x40, 3, 0x11)
   | 6 => (4, 0, 1, 0)
-  | 7 => if sub == 0 then (0, 0x100080, 4, 0) else (0, 0, 0, 0)
+  | 7 => if sub == 0 then (0, 0x19C0188, 0x400004, 0) else (0, 0, 0, 0)
   | 0x80000000 => (0x80000008, 0, 0, 0)
-  | 0x80000001 => (0, 0, 0x22210, 0x2100800)
+  | 0x80000001 => (0, 0, 0x20022330, 0x0A100800)
   | 0x80000007 => (0, 0, 0, 0x100)
-  | 0x80000008 => (0x3030, 0x0102D000, 0x707F, 0x10000)
+  | 0x80000008 => (0x3030, 0x0102D311, 0x707F, 0x10000)
   | _ => (0, 0, 0, 0)
 
 /-- CPUID with the present feature set: out-of-range leaves report leaf 7 (Intel behaviour of the
@@ -52,16 +56,17 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
     else ((7 : UInt32), sub)) = p
   obtain ⟨l, s⟩ := p
   have hx : implemented .xsave = false := rfl
-  have h12 : Cpuid.featBits 1 0 2 true = 0 := by decide
-  have h13 : Cpuid.featBits 1 0 3 true = 0x0783FBFD := by decide
-  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x22210 := by decide
-  have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x2100800 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x40C00008 := by decide
+  have h13 : Cpuid.featBits 1 0 3 true = 0x078BFBFD := by decide
+  have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x20022330 := by decide
+  have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x0A100800 := by decide
+  have hc : implemented .clfsh = true := rfl
   by_cases h0 : l = 0
   · subst h0; rfl
   by_cases h1 : l = 1
-  · subst h1; simp [h12, h13, hx, sysALeaf]
+  · subst h1; simp [h12, h13, hx, hc, sysALeaf]
   by_cases h5 : l = 5
-  · subst h5; simp [Cpuid.amdLeaf, Cpuid.leafGate, sysALeaf, show implemented .monitor = false from rfl]
+  · subst h5; simp [Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, sysALeaf]; decide
   by_cases h6 : l = 6
   · subst h6; simp [Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, sysALeaf]; decide
   by_cases h7 : l = 7
@@ -86,9 +91,10 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
 /-- MOV CR4 accepts the former bits and UMIP, SMEP, SMAP (system A). -/
 theorem cr4Writable_former : Cpuid.cr4Writable = 0x07FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP := by decide
 
-/-- WRMSR EFER accepts NXE and system A's SCE, LMSLE, FFXSR, TCE, INTWB. -/
+/-- WRMSR EFER accepts NXE, system A's SCE, LMSLE, FFXSR, TCE, INTWB and Gpr's MCOMMIT. -/
 theorem eferWritable_former :
-    Cpuid.eferWritable = EFER.NXE ||| EFER.SCE ||| EFER.LMSLE ||| EFER.FFXSR ||| EFER.TCE ||| EFER.INTWB := by
+    Cpuid.eferWritable = EFER.NXE ||| EFER.SCE ||| EFER.LMSLE ||| EFER.FFXSR ||| EFER.TCE ||| EFER.INTWB |||
+      EFER.MCOMMIT := by
   decide
 
 theorem vexExec_real {m : Machine} {i : Inst} (h : m.cpu.cr0 &&& CR0.PE = 0) :

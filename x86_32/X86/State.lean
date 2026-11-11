@@ -62,8 +62,24 @@ structure SseState where
 architectural CPU state adds fields to its own structure below, so that parallel work does not edit
 the same lines. They are fields of `CpuExt` (not copied by integer-instruction updates). -/
 
-/-- State of `X86/Ext/Gpr.lean` (e.g. a MONITOR address range). -/
+/-- State of `X86/Ext/Gpr.lean` (see its module documentation). -/
 structure GprState where
+  /-- The monitor hardware of MONITOR/MONITORX: the physical address of the armed 64-byte line
+  (`none`: not armed) and the line's 16 dwords when it was armed. -/
+  monLine : Option UInt64 := none
+  monData : Array UInt32 := #[]
+  /-- The deterministic entropy source of RDRAND/RDSEED: the SplitMix64 state. -/
+  rng : UInt64 := 0
+  /-- TSC_AUX (MSR C000_0103h), read by RDTSCP and RDPID; bits 63:32 are reserved. -/
+  tscAux : UInt32 := 0
+  /-- HWCR (MSR C001_0015h) bit 10, MonMwaitUserEn: MONITOR/MWAIT allowed at CPL > 0. -/
+  monMwaitUserEn : Bool := false
+  /-- MPERF and APERF (MSRs E7h, E8h, read by RDPRU) as offsets from the instruction count. -/
+  mperfOff : UInt64 := 0
+  aperfOff : UInt64 := 0
+  /-- Core performance counters PerfCtr0..5 (48 bits) and their event selects PerfEvtSel0..5. -/
+  perfCtr : Array UInt64 := Array.replicate 6 0
+  perfEvtSel : Array UInt64 := Array.replicate 6 0
   deriving Repr, Inhabited
 
 /-- State of `X86/Ext/Sys.lean`: the MSRs used on hot paths (SYSENTER/SYSCALL linkage, TSC, PAT).

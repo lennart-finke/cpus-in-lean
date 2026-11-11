@@ -160,12 +160,6 @@ def readOnly (v : UInt64) : MsrImpl where
   rd := return v
   wr _ := gp 0
 
-/-- A counter that advances with the instruction count (TSC-like), stored as an offset in
-`Cpu.msrs`. -/
-def counter (n : UInt32) : MsrImpl where
-  rd := do return (← getM).icount + (← rdStore n)
-  wr v := do wrStore n (v - (← getM).icount)
-
 /-- The memory types an MTRR may hold (AMD APM vol. 2, table 7-6: UC, WC, WT, WP, WB). A reserved
 type is #GP(0) as in the Intel SDM (vol. 3, 11.11.2); the APM does not say. -/
 @[inline] def mtrrType (t : UInt64) : Bool := t == 0 || t == 1 || t == 4 || t == 5 || t == 6
@@ -181,7 +175,6 @@ def patOk (v : UInt64) : Bool :=
 not available; 23 (the core's legacy MCi view, MCG_CTL present: MCG_CAP = 0x117) is assumed. -/
 def mcBanks : UInt32 := 23
 
-def hwcrMsr : UInt32 := 0xC0010015
 def syscfgMsr : UInt32 := 0xC0010010
 
 /-- SYSCFG[MtrrFixDramModEn] (bit 19): the RdMem/WrMem bits (4:3 of each type field) of the
@@ -220,12 +213,14 @@ def mtrr (n : UInt32) (mask : UInt64) (typed : Bool) : MsrImpl where
 def physMask : UInt64 := 0xFFFFFFFFF000
 
 /-- Machine-check bank register `n` (0x400 + 4·bank + k; AMD APM vol. 2, 9.3.2): CTL, ADDR, MISC
-are stored; MCi_STATUS accepts only zero unless HWCR[McStatusWrEn] (bit 18) is set, as on AMD
-processors (the bit Linux's mce-inject sets; PPR UNCONFIRMED). -/
+are stored; MCi_STATUS accepts only zero (#GP(0) otherwise), as on AMD processors while
+HWCR[McStatusWrEn] (bit 18, the bit Linux's mce-inject sets) is clear. HWCR belongs to the Gpr module,
+which does not keep bit 18, so writing a non-zero status is never possible in the model
+(approximation; PPR UNCONFIRMED). -/
 def mcBank (n : UInt32) : MsrImpl where
   rd := rdStore n
   wr v := do
-    if (n - 0x400) &&& 3 == 1 && v != 0 && (← rdStore hwcrMsr 0x01000010) &&& 0x40000 == 0 then gp 0
+    if (n - 0x400) &&& 3 == 1 && v != 0 then gp 0
     wrStore n v
 
 /-- Canonical 48-bit linear address (bits 63:47 equal), for LSTAR/CSTAR (AMD APM vol. 2, 6.1.1:
@@ -241,15 +236,15 @@ plausible Zen 2 values that could not be checked against the family 17h PPR.
 * 0x48 SPEC_CTRL: IBRS (0), STIBP (1), SSBD (2) read/write, other bits #GP (APM vol. 2, 3.2.9).
 * 0x49 PRED_CMD: write-only; bit 0 IBPB (no effect: the model has no predictors), other bits and
   RDMSR #GP.
-* 0xE7 MPERF, 0xE8 APERF (CPUID 6:ECX[EffFreq]): count instructions (constant frequency).
+* 0xE7 MPERF, 0xE8 APERF (CPUID 6:ECX[EffFreq]), C001_0015 HWCR: implemented by `Gpr.msr?`, which
+  comes first in the lookup.
 * 0xFE MTRRcap: read-only 0x508 (8 variable ranges, fixed ranges, WC; APM table A-3 reset value).
 * 0x174..0x176 SYSENTER_CS/ESP/EIP: bits 15:0 / 31:0 kept, upper bits ignored (UNCONFIRMED).
 * 0x179 MCG_CAP read-only, 0x17A MCG_STATUS (bits 2:0), 0x17B MCG_CTL, 0x400.. MCi banks.
 * 0x200..0x20F variable MTRRs, 0x250/0x258/0x259/0x268..0x26F fixed MTRRs, 0x2FF MTRRdefType,
   0x277 PAT.
 * C000_0081..84 STAR, LSTAR, CSTAR (canonical, else #GP), SFMASK (bits 63:32 RAZ).
-* C001_0010 SYSCFG (reset 0x20601, bits 63:27 MBZ), C001_0015 HWCR (reset 0x01000010, bit 24
-  TscFreqSel read-only; UNCONFIRMED), C001_0016..19 IORRs, C001_001A TOP_MEM (reset 0x4000000),
+* C001_0010 SYSCFG (reset 0x20601, bits 63:27 MBZ), C001_0016..19 IORRs, C001_001A TOP_MEM (reset 0x4000000),
   C001_001D TOP_MEM2, C001_001F NB_CFG, C001_0074 CPU watchdog timer (bits 6:0), C001_0140/0141
   OSVW_ID_Length/OSVW_Status (0: no OS-visible errata), C001_1004/1005 CPUID override MSRs (read
   the reported CPUID feature words; writes are stored but do not change CPUID: an approximation),
@@ -266,8 +261,6 @@ def msr? (n : UInt32) : Option MsrImpl :=
   else if n == 0x49 then
     if !implemented .ibpb then none else
     some { rd := gp 0, wr := fun v => if v &&& ~~~1 != 0 then gp 0 else pure () }
-  else if n == 0xE7 || n == 0xE8 then
-    if implemented .effFreq then some (counter n) else none
   else if n == 0xFE then
     if implemented .mtrr then some (readOnly 0x508) else none
   else if n == 0x174 || n == 0x175 || n == 0x176 then
@@ -319,9 +312,6 @@ def msr? (n : UInt32) : Option MsrImpl :=
                            else if n == 0xC0000083 then { s with cstar := v }
                            else { s with sfmask := v.toUInt32 } } }
   else if n == syscfgMsr then some (checked n 0x7FFFFFF 0x20601)
-  else if n == hwcrMsr then
-    some { rd := rdStore n 0x01000010
-           wr := fun v => wrStore n ((v &&& ~~~0x01000000) ||| 0x01000000) }
   else if n == 0xC0010016 || n == 0xC0010018 then some (checked n (physMask ||| 0x18))  -- IORRBase
   else if n == 0xC0010017 || n == 0xC0010019 then some (checked n (physMask ||| 0x800)) -- IORRMask
   else if n == 0xC001001A then some (checked n 0xFFFFFF800000 0x4000000)                -- TOP_MEM
