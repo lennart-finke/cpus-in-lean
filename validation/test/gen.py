@@ -20,7 +20,7 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
   Zen 2: unused 0F 38 / 0F 3A / VEX opcodes, VEX after 66/F2/F3/LOCK, unknown VEX maps, EVEX and
   XOP register forms, ...), 'len' (such encodings padded with prefixes to 15 bytes (#UD) or 16
   bytes (#GP(0)); for 16 bytes QEMU reports #UD, see TestMain.lean) and 'ext' (forms in
-  isa_forms.IMPLEMENTED, none yet). Forms listed in
+  isa_forms.IMPLEMENTED: gen_gpr.py for the general-purpose extensions). Forms listed in
   isa_forms.NOT_YET_IMPLEMENTED (which QEMU's EPYC-Rome CPU executes) are never generated.
 """
 import os, random, struct, sys
