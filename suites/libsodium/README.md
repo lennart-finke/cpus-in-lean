@@ -36,10 +36,14 @@ dead.
 - The image is built with `-DCONFIGURED=1` and none of libsodium's `HAVE_*` macros, so
   `sodium_memzero` and `sodium_memcmp` are the portable `volatile` loops. A platform build may call
   `explicit_bzero` or `memset_s` instead, which these tasks do not cover.
-- `sodium_pad` is stated for block sizes up to 2^24. With a 32-bit `size_t` its test for the
-  position of the `0x80` byte, `((i ^ xpadlen) - 1U) >> ((sizeof(size_t) - 1) * CHAR_BIT)`, is no
-  longer zero at other positions once `i ^ xpadlen` exceeds 2^24. This was found by reading the
-  source and has not been run.
+- `sodium_pad` is stated for block sizes up to 2^24, the largest bound for which it holds. With a
+  32-bit `size_t` its test for the position of the `0x80` byte,
+  `((i ^ xpadlen) - 1U) >> ((sizeof(size_t) - 1) * CHAR_BIT)`, is no longer zero at other positions
+  once `i ^ xpadlen` exceeds 2^24. Run on the model, the image pads correctly at block size 2^24
+  and leaves non-zero padding bytes at 2^24 + 1; at `0x01000010` `sodium_unpad` rejects the result.
+- The pointers through which `sodium_hex2bin`, `sodium_base642bin` and `sodium_pad` store a length
+  are not null: the functions skip the store for a null pointer, and address 0 is ordinary memory
+  in the model.
 
 ## Run
 

@@ -52,10 +52,11 @@ def EncodePre (c : Caller) (args : List UInt32) (outp binp : UInt32) (cap encLen
 
 /-- A call of a decoder with arguments `args`: the `cap`-byte output buffer at `binp`, the text at
 `textp`, the 4-byte output length at `lenp`, pairwise not overlapping; the output has room for the
-`n` decoded bytes. -/
+`n` decoded bytes. `lenp` is not null (the decoders store no length through a null pointer, and
+address 0 is ordinary memory here). -/
 def DecodePre (c : Caller) (args : List UInt32) (binp textp lenp : UInt32) (cap n : Nat)
     (text : List UInt8) : Prop :=
-  Calls img c stackBound args ∧
+  Calls img c stackBound args ∧ lenp ≠ 0 ∧
   Buffer img c stackBound args.length binp cap ∧ Buffer img c stackBound args.length textp text.length ∧
   Buffer img c stackBound args.length lenp 4 ∧
   Apart binp cap textp text.length ∧ Apart binp cap lenp 4 ∧ Apart lenp 4 textp text.length ∧
@@ -160,15 +161,19 @@ def memzero_correct : Prop :=
 
 /-! ## Padding -/
 
-/-- The largest block size `sodium_pad` is stated for. The function locates the `0x80` byte with
+/-- The largest block size `sodium_pad` is stated for, and the largest for which `pad_correct`
+holds. The function locates the `0x80` byte with
 `((i ^ xpadlen) - 1U) >> ((sizeof(size_t) - 1) * CHAR_BIT)`, which for the 32-bit `size_t` of this
-image is 0 for `i ≠ xpadlen` only while `i ^ xpadlen ≤ 2^24`. -/
+image is 0 for `i ≠ xpadlen` only while `i ^ xpadlen ≤ 2^24`. Up to this bound `i` and `xpadlen`
+are both below 2^24, so the test is exact. One above it, padding an empty buffer whose bytes have
+their low bit set leaves those bits in the padding. -/
 def maxBlock : Nat := 0x1000000
 
 /-- `sodium_pad(lenp, bufp, |x|, block, cap)`: `x` at the start of the `cap`-byte buffer at `bufp`,
-the 4-byte output length at `lenp`, not overlapping; the padded length fits the buffer. -/
+the 4-byte output length at `lenp`, not overlapping; the padded length fits the buffer. `lenp` is
+not null (the function stores no length through a null pointer). -/
 def PadPre (c : Caller) (lenp bufp : UInt32) (x : List UInt8) (block cap : Nat) : Prop :=
-  Calls img c stackBound [lenp, bufp, x.length.toUInt32, block.toUInt32, cap.toUInt32] ∧
+  Calls img c stackBound [lenp, bufp, x.length.toUInt32, block.toUInt32, cap.toUInt32] ∧ lenp ≠ 0 ∧
   Buffer img c stackBound 5 bufp cap ∧ Buffer img c stackBound 5 lenp 4 ∧ Apart bufp cap lenp 4 ∧
   memBytes c.mem bufp x.length = x ∧ 0 < block ∧ block ≤ maxBlock ∧ paddedLength x.length block ≤ cap
 
