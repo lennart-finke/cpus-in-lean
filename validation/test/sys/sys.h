@@ -126,6 +126,7 @@ void test_simd(void);
 void test_simd_exc(void);
 void test_simd_model(void);
 void test_paging_fuzz(void);
+void test_paging_tlb_fuzz(void);
 void test_debug_fuzz(void);
 void test_debug_fuzz_model(void);
 void test_paging_fuzz_model(void);

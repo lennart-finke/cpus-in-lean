@@ -176,6 +176,7 @@ void sys_main(void) {
 	test_paging();
 	test_pae();
 	test_paging_fuzz();
+	test_paging_tlb_fuzz();
 	test_debug();
 	test_debug_fuzz();
 	test_callgate();

@@ -13,7 +13,7 @@ EXTRA=${5:-}
 CDIR="$DIR/campaign/$BASE"
 mkdir -p "$CDIR"
 "$DIR/build.sh"
-FUZZERS="x87 x87t mmx sse pgf dbf tsf cgf"
+FUZZERS="x87 x87t mmx sse pgf pgt dbf tsf cgf"
 ARGS=""
 for f in $FUZZERS; do ARGS="$ARGS $f=$COUNT"; done
 # Model time is about 1.5 ms per case: allow QEMU the same order of magnitude.
