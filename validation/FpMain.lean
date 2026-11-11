@@ -41,7 +41,8 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
   let mut c : Cpu := {
     cs := { seg with sel := 0x23, attr := 0xC0FB },
     ds := seg, es := seg, ss := seg, fs := seg, gs := seg,
-    cr0 := 0x80010033, cr3 := 0x3000, cr4 := 0x600, eip := 0x20100,
+    -- CR0 as Linux sets it: PG, AM (alignment checking for EFLAGS.AC = 1), WP, NE, ET, MP, PE
+    cr0 := 0x80050033, cr3 := 0x3000, cr4 := 0x600, eip := 0x20100,
     eflags := (rdQ v (o + 144)).toUInt32,
     fcw := (u16At v (o + 440)).toUInt16, fsw := (u16At v (o + 442)).toUInt16,
     fempty := ~~~(u16At v (o + 444)).toUInt8 }

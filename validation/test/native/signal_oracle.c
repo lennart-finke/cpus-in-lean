@@ -74,7 +74,9 @@ static void read_all(void *p,u64 n) {
 static void set_regs(struct context *c,const struct vector *v) {
  c->rax=v->r[0];c->rcx=v->r[1];c->rdx=v->r[2];c->rbx=v->r[3];c->rsp=v->r[4];c->rbp=v->r[5];c->rsi=v->r[6];c->rdi=v->r[7];
  c->r8=v->r[8];c->r9=v->r[9];c->r10=v->r[10];c->r11=v->r[11];c->r12=v->r[12];c->r13=v->r[13];c->r14=v->r[14];c->r15=v->r[15];
- c->rip=0x20100;c->cs=compat?0x23:0x33;c->ss=0x2b;c->flags=(c->flags&~0x50dd5ull)|(v->flags&0xdd5);
+ /* EFLAGS.AC (0x40000) is an input too: with Linux's CR0.AM = 1 a misaligned access then raises #AC
+  * (SIGBUS, trap 17), the user-visible alignment check (fp_cases.alignment_cases). */
+ c->rip=0x20100;c->cs=compat?0x23:0x33;c->ss=0x2b;c->flags=(c->flags&~0x50dd5ull)|(v->flags&0x40dd5);
 }
 static void get_regs(const struct context *c,u64 *r) {
  r[0]=c->rax;r[1]=c->rcx;r[2]=c->rdx;r[3]=c->rbx;r[4]=c->rsp;r[5]=c->rbp;r[6]=c->rsi;r[7]=c->rdi;

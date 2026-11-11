@@ -98,7 +98,7 @@ def normalize(h):
     """A native row in the model's column order (v2 rows: plus the YMM upper halves, or None
     for them when the signal frame had no AVX state)."""
     if h[4]!=0x23: raise ValueError('oracle did not execute in IA-32 compatibility mode')
-    signals={3:5,6:4,12:11,13:11,14:11,16:8,19:8}
+    signals={3:5,6:4,12:11,13:11,14:11,16:8,17:7,19:8}   # 17 #AC: SIGBUS
     if h[55] not in signals or h[1]!=signals[h[55]]: raise ValueError('unexpected signal/vector pair')
     ip=h[3]-(h[55]==3)
     row=[h[0],h[55],h[56],ip,h[5]]+[r&0xffffffff for r in h[6:14]]+h[22:38]+[h[54]]+h[61:83]+h[58:61]
