@@ -58,6 +58,7 @@ isr_noerr:
 	.endr
 
 isr_common:
+	cld				/* the C handlers assume DF = 0 (the interrupted code may have DF = 1) */
 	pushl %gs
 	pushl %fs
 	pushl %es

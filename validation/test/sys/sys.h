@@ -142,5 +142,8 @@ void test_crypto(void);
 void test_crypto_model(void);
 void test_gpr(void);
 void test_gpr_model(void);
+void test_sysb(void);
+void test_sysb_model(void);
+void test_vme_model(void);
 
 #endif
