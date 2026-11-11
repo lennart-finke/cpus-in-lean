@@ -145,5 +145,7 @@ void test_gpr_model(void);
 /* long mode (t_long.c): run alone with the command line long=1 */
 void test_long(void);
 void test_long_model(void);
+void test_avx(void);
+void test_avx_model(void);
 
 #endif

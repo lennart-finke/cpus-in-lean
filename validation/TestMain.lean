@@ -116,6 +116,31 @@ def rmwDest (i : Inst) : Bool :=
      i.op == 0x1A4 || i.op == 0x1A5 || i.op == 0x1AC || i.op == 0x1AD ||      -- SHLD, SHRD
      i.op == 0x63))                                                           -- ARPL
 
+/-- (Avx) VEX encodings that are #UD on the CPU (and in the model) but that TCG (QEMU 11.1.2)
+executes:
+* the MMX-register forms with a VEX prefix (VEX.pp = 00 of the 0F-map MMX instructions, of the SSSE3
+  0F 38 00..0B, 1C..1E and of PALIGNR 0F 3A 0F): VEX encodes only the XMM/YMM forms (SDM vol. 2,
+  appendix A, tables A-3..A-5: the "v" forms are the 66/F2/F3 columns; AMD APM vol. 4 lists no VEX form
+  of an MMX instruction);
+* legacy-only SSE forms without a VEX encoding: SSE4.1 PBLENDVB/BLENDVPS/BLENDVPD with the implicit
+  XMM0 (66 0F 38 10, 14, 15; their VEX forms are 0F 3A 4C, 4A, 4B), SSE4a MOVNTSS/MOVNTSD (F3/F2 0F 2B),
+  VEX.66/F3/F2.0F 77 (VZEROUPPER/VZEROALL exist only with VEX.pp = 00, APM: "X.1111.L.00");
+* VEX.L = 1 of VEX.128-only forms (APM vol. 4 exception tables "VEX.L = 1"): VMOVD r/m32, xmm
+  (66 0F 7E), VMOVLPS/PD and VMOVHPS/PD stores (0F 13, 17);
+* the register forms of memory-only forms (APM "ModRM.mod = 11b" / SDM "#UD if ... register"):
+  VMOVLPD, VMOVHPD (66 0F 12, 16), VMOVNTDQ (66 0F E7), VMOVNTPS/PD (0F 2B). -/
+def tcgVexUd (i : Inst) : Bool :=
+  i.vex && (
+    (i.pp == 0 && ((i.map == 1 && (isPint i.byte || [0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x7E, 0x7F, 0xC4,
+        0xC5, 0xD7, 0xE7, 0xF7].contains i.byte)) ||
+      (i.map == 2 && (i.byte ≤ 0x0B || (0x1C ≤ i.byte && i.byte ≤ 0x1E))) || (i.map == 3 && i.byte == 0x0F))) ||
+    (i.map == 2 && i.pp == 1 && [0x10, 0x14, 0x15].contains i.byte) ||
+    (i.map == 1 && i.pp ≥ 2 && i.byte == 0x2B) ||
+    (i.map == 1 && i.pp != 0 && i.byte == 0x77) ||
+    (i.vexL && i.map == 1 && ((i.pp == 1 && i.byte == 0x7E) || (i.pp ≤ 1 && (i.byte == 0x13 || i.byte == 0x17)))) ||
+    (!i.isMem && i.map == 1 && ((i.pp == 1 && [0x12, 0x16, 0xE7].contains i.byte) ||
+      (i.pp ≤ 1 && i.byte == 0x2B))))
+
 /-- QEMU (TCG) behaviours that differ from the hardware the model was checked against (README):
 * RMW destinations: TCG reads first, so a #PF on the destination has the W bit clear; its read
   translation sets only A where the write-intent translation sets A and D (or faults before setting
@@ -135,6 +160,22 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- with a 66, F2 or F3 prefix they are #UD (SDM vol. 2, 3.1.1.1 and the instruction pages; Bochs
   -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
   if !i.vex && i.pp != 0 && ((0x2C8 ≤ i.op && i.op ≤ 0x2CD) || i.op == 0x3CC) && lo.vec == 6 then
+    return lo
+  -- (Avx) VEX encodings TCG executes although they are #UD (QEMU's completion or fault, or the
+  -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
+  -- `tcgVexUd`)
+  if lo.vec == 6 && tcgVexUd i then return lo
+  -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
+  -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
+  -- not-present page faults at that page's first byte. Only that #PF is replaced.
+  if i.vex && i.vexL && i.isMem && i.map == 1 && ((i.pp == 2 && i.byte == 0xE6) || (i.pp == 0 && i.byte == 0x5A)) &&
+     qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then return lo
+  -- (Avx) VEX-encoded scalar instructions with F3/F2 (VSQRTSS .. VMAXSD, VCMPSS/SD,
+  -- VCVTSS2SD/VCVTSD2SS) ignore VEX.L ("VEX.LIG", SDM vol. 2 instruction pages; AMD APM vol. 4
+  -- encodings "X.src.X.10"); TCG raises #UD for VEX.L = 1 (its X86_VEX_REPScalar rule). Only that #UD
+  -- is replaced; the model's outcome must not be #UD.
+  if i.vex && i.vexL && i.map == 1 && i.pp ≥ 2 && qo.vec == 6 && lo.vec != 6 &&
+     [0x51, 0x52, 0x53, 0x58, 0x59, 0x5A, 0x5C, 0x5D, 0x5E, 0x5F, 0xC2].contains i.byte then
     return lo
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo

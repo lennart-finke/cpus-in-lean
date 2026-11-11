@@ -212,6 +212,7 @@ def prepare(args):
     sources+=[REPO/'x86_32/X86.lean']+sorted((REPO/'x86_32/X86').rglob('*.lean'))
     sources+=[ROOT/'test/native_crypto.py']   # Crypto case families (fp_cases.FAMILIES)
     sources+=[ROOT/'test/gpr_cases.py']   # Gpr families (fp_cases.FAMILIES)
+    sources+=[ROOT/'test/native_avx.py',ROOT/'test/gen_avx.py',ROOT/'test/isa_forms.py']   # Avx families
     for source in sources:
         target=out/'sources'/source.relative_to(REPO)
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)

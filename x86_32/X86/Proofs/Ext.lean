@@ -27,12 +27,12 @@ RDPID, ABM, PREFETCHW, MONITORX, RDTSCP, CLZERO, IRPERF, RDPRU, WBNOINVD, MCOMMI
 SSE4.1, SSE4.2, SSE4A, MisAlignSse), Crypto (AES, PCLMULQDQ, SHA), Xsave (XSAVE, XSAVEOPT, XSAVEC,
 XGETBV1, XSAVES, XSaveErPtr; leaf 0xD and OSXSAVE depend on the CPU state) and system A (SYSENTER,
 SYSCALL, TSC, PSE, PSE-36, PGE, MCE, MCA, MTRR, PAT, SMEP, SMAP, UMIP, AltMovCr8, FFXSR, TCE, OSVW,
-WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD) and long mode (LM, Page1GB, LahfSahf, FSGSBASE):
-highest leaves 0xD and 0x80000008. -/
+WDT, invariant TSC, ARAT, EffFreq, IBPB/IBRS/STIBP/SSBD), long mode (LM, Page1GB, LahfSahf, FSGSBASE)
+and Avx (AVX): highest leaves 0xD and 0x80000008. -/
 def sysALeaf (c : Cpu) (l sub : UInt32) : Regs :=
   match l with
   | 0 => (0xD, 0x756E6547, 0x6C65746E, 0x49656E69)
-  | 1 => (0x619, 0x800, 0x46D8020B ||| Cpuid.osxsave c, 0x078BFBFD)
+  | 1 => (0x619, 0x800, 0x56D8020B ||| Cpuid.osxsave c, 0x078BFBFD)
   | 5 => (0x40, 0x40, 3, 0x11)
   | 6 => (4, 0, 1, 0)
   | 7 => if sub == 0 then (0, 0x219C0189, 0x400004, 0) else (0, 0, 0, 0)
@@ -57,7 +57,7 @@ theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = presentC
   generalize (if leaf ≤ 0xD || (0x80000000 ≤ leaf && leaf ≤ 0x80000008) then (leaf, sub)
     else ((0xD : UInt32), sub)) = p
   obtain ⟨l, s⟩ := p
-  have h12 : Cpuid.featBits 1 0 2 true = 0x46D8020B := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x56D8020B := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x078BFBFD := by decide
   have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x200223F1 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 0x2E100800 := by decide

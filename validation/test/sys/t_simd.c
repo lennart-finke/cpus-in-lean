@@ -17,7 +17,7 @@ static u32 rs = 0x6A09E667;
 static u32 rnd(void) { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; }
 
 __attribute__((used, aligned(16))) u32 XIN[32], XOUT[32], YIN[32], YOUT[32];
-__attribute__((used, aligned(16))) u32 MEMOP[12];
+__attribute__((used, aligned(32))) u32 MEMOP[12];
 __attribute__((used, aligned(16))) u32 MMIN[16], MMOUT[16];
 __attribute__((used, aligned(16))) u8 FXA[512];
 __attribute__((used)) u32 MXIN, MXOUT, FLOUT, GIN, GOUT, ESIIN;
@@ -167,8 +167,10 @@ enum {
 	ONENAN = 0x8000 /* at most one NaN among the FP inputs (map 3 rows, DPPS/DPPD: none), see onenan() */
 };
 /* One instruction form: mandatory prefix (0, 0x66, 0xF3, 0xF2; the VEX.pp of VEX forms), opcode,
-   flags; map 0 or 1 = 0F, 2 = 0F 38, 3 = 0F 3A (always an imm8); vex: VEX-encoded (vvvv = XMM2),
-   l: VEX.L (0, 1, or 2 = random), w: VEX.W. Rows of the original table give only the first three. */
+   flags; map 0 or 1 = 0F, 2 = 0F 38, 3 = 0F 3A (always an imm8); vex: VEX-encoded, 1 = VEX.vvvv names
+   XMM2/YMM2 (a source, or the destination of the shifts by imm8), 2 = VEX.vvvv = 1111b (forms without
+   a VEX.vvvv operand: any other value is #UD); l: VEX.L (0, 1, or 2 = random), w: VEX.W. Rows of the
+   original table give only the first three. */
 struct sop { u8 pfx, op; u16 fl; u8 map, vex, l, w; };
 #define FPOPS(o, x) { 0, o, MEM | F32 | D32 | x }, { 0x66, o, MEM | F64 | D64 | x }, { 0xF3, o, MEM | F32 | D32 | x }, { 0xF2, o, MEM | F64 | D64 | x }
 static const struct sop sops[] = {
@@ -255,6 +257,158 @@ static const struct sop xops[] = {
 	{ 0x66, 0xDF, MEM, 2 }, { 0x66, 0xDF, MEM, 3 }, { 0x66, 0x44, MEM, 3 },
 	{ 0, 0xC8, MEM, 2 }, { 0, 0xC9, MEM, 2 }, { 0, 0xCA, MEM, 2 }, { 0, 0xCB, MEM, 2 }, { 0, 0xCC, MEM, 2 },
 	{ 0, 0xCD, MEM, 2 }, { 0, 0xCC, MEM, 3 },
+	/* AVX (Avx): every AVX instruction, VEX.128 and VEX.256 (l = 2: random); scalar forms with VEX.L = 0
+	   (they ignore VEX.L, but TCG raises #UD or keeps bits 255:128 for VEX.L = 1; avxm.lig checks it) */
+	{ 0x00, 0x10, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0x11, MEM | STORE | ALLX | YMMD, 1, 2, 2 },
+	{ 0x00, 0x28, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0x29, MEM | STORE | ALLX | YMMD, 1, 2, 2 },
+	{ 0x00, 0x2B, MEMONLY | STORE | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0x14, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x00, 0x15, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x00, 0x13, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0x00, 0x17, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 }, { 0x00, 0x50, F32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x00, 0xC6, MEM | IMM | ALLX | YMMD, 1, 1, 2 }, { 0x00, 0x54, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x00, 0x55, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x00, 0x56, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x00, 0x57, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x66, 0x10, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x11, MEM | STORE | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0x28, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x29, MEM | STORE | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0x2B, MEMONLY | STORE | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x14, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x66, 0x15, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x13, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 }, { 0x66, 0x17, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0x66, 0x50, F64 | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0xC6, MEM | IMM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x54, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x66, 0x55, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x56, MEM | ALLX | YMMD, 1, 1, 2 }, { 0x66, 0x57, MEM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x00, 0x12, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x12, MEMONLY | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x16, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x16, MEMONLY | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF3, 0x10, MEMONLY | F32 | D32 | ALLX | YMMD, 1, 2, 0 }, { 0xF3, 0x10, F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF3, 0x11, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 }, { 0xF3, 0x11, F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF3, 0x2A, MEM | INT | D32 | ALLX | YMMD, 1, 1, 0 }, { 0xF3, 0x2C, MEM | F32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x2D, MEM | F32 | ALLX | YMMD, 1, 2, 2 }, { 0xF2, 0x10, MEMONLY | F64 | D64 | ALLX | YMMD, 1, 2, 0 },
+	{ 0xF2, 0x10, F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0xF2, 0x11, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0xF2, 0x11, F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0xF2, 0x2A, MEM | INT | D64 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x2C, MEM | F64 | ALLX | YMMD, 1, 2, 2 }, { 0xF2, 0x2D, MEM | F64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x12, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 }, { 0xF3, 0x16, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF2, 0x12, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0x2E, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x00, 0x2F, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0x2E, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x2F, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0x51, MEM | F32 | D32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x51, MEM | F64 | D64 | ALLX | YMMD, 1, 2, 2 }, { 0xF3, 0x51, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x51, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0x00, 0x58, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 }, { 0xF3, 0x58, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0x00, 0x59, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x59, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 }, { 0xF3, 0x59, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x59, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0x00, 0x5C, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x5C, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 }, { 0xF3, 0x5C, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x5C, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0x00, 0x5E, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x5E, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 }, { 0xF3, 0x5E, MEM | F32 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x5E, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x5D, MEM | F32 | D32 | NODAZ | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x5D, MEM | F64 | D64 | NODAZ | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF3, 0x5D, MEM | F32 | D32 | NODAZ | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x5D, MEM | F64 | D64 | NODAZ | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x5F, MEM | F32 | D32 | NODAZ | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x5F, MEM | F64 | D64 | NODAZ | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF3, 0x5F, MEM | F32 | D32 | NODAZ | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0x5F, MEM | F64 | D64 | NODAZ | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0xC2, MEM | F32 | D32 | IMM | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0xC2, MEM | F64 | D64 | IMM | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF3, 0xC2, MEM | F32 | D32 | IMM | ALLX | YMMD, 1, 1, 0 },
+	{ 0xF2, 0xC2, MEM | F64 | D64 | IMM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x52, MEM | F32 | D32 | NODN | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x52, MEM | F32 | D32 | NODN | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x53, MEM | F32 | D32 | NODN | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x53, MEM | F32 | D32 | NODN | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x5A, MEM | F32 | D64 | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0x5A, MEM | F64 | D32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x5A, MEM | F32 | D64 | ALLX | YMMD, 1, 1, 0 }, { 0xF2, 0x5A, MEM | F64 | D32 | ALLX | YMMD, 1, 1, 0 },
+	{ 0x00, 0x5B, MEM | INT | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0x5B, MEM | F32 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0x5B, MEM | F32 | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0xE6, MEM | F64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF3, 0xE6, MEM | INT | ALLX | YMMD, 1, 2, 2 }, { 0xF2, 0xE6, MEM | F64 | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x7C, MEM | F64 | D64 | ONENAN | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF2, 0x7C, MEM | F32 | D32 | ONENAN | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0x7D, MEM | F64 | D64 | ONENAN | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF2, 0x7D, MEM | F32 | D32 | ONENAN | ALLX | YMMD, 1, 1, 2 },
+	{ 0x66, 0xD0, MEM | F64 | D64 | ONENAN | ALLX | YMMD, 1, 1, 2 },
+	{ 0xF2, 0xD0, MEM | F32 | D32 | ONENAN | ALLX | YMMD, 1, 1, 2 }, { 0x66, 0x60, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x61, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x62, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x63, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x64, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x65, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x66, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x67, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x68, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x69, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x6A, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x6B, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x6C, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x6D, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x74, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x75, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x76, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xD1, MEM | CNT | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xD2, MEM | CNT | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xD3, MEM | CNT | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xD4, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xD5, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xD8, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xD9, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xDA, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xDB, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xDC, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xDD, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xDE, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xDF, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xE0, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xE1, MEM | CNT | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xE2, MEM | CNT | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xE3, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xE4, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xE5, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xE8, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xE9, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xEA, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xEB, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xEC, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xED, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xEE, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xEF, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xF1, MEM | CNT | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xF2, MEM | CNT | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xF3, MEM | CNT | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xF4, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xF5, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xF6, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xF8, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xF9, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xFA, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xFB, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xFC, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xFD, MEM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xFE, MEM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x6E, MEM | ALLX | YMMD, 1, 2, 0 }, { 0x66, 0x7E, MEM | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0xF3, 0x7E, MEM | ALLX | YMMD, 1, 2, 0 }, { 0x66, 0xD6, MEM | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0x66, 0x6F, MEM | ALLX | YMMD, 1, 2, 2 }, { 0xF3, 0x6F, MEM | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x7F, MEM | STORE | ALLX | YMMD, 1, 2, 2 }, { 0xF3, 0x7F, MEM | STORE | ALLX | YMMD, 1, 2, 2 },
+	{ 0x66, 0x70, MEM | IMM | ALLX | YMMD, 1, 2, 0 }, { 0xF3, 0x70, MEM | IMM | ALLX | YMMD, 1, 2, 0 },
+	{ 0xF2, 0x70, MEM | IMM | ALLX | YMMD, 1, 2, 0 }, { 0x66, 0x71, IMM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0x72, IMM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0x73, IMM | ALLX | YMMD, 1, 1, 0 },
+	{ 0x66, 0xC4, MEM | IMM | ALLX | YMMD, 1, 1, 0 }, { 0x66, 0xC5, IMM | ALLX | YMMD, 1, 2, 0 },
+	{ 0x66, 0xD7, 0 | ALLX | YMMD, 1, 2, 0 }, { 0x66, 0xE7, MEMONLY | STORE | ALLX | YMMD, 1, 2, 2 },
+	{ 0xF2, 0xF0, MEMONLY | ALLX | YMMD, 1, 2, 2 }, { 0x66, 0xF7, STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0x00, 0x77, 0 | ALLX | YMMD, 1, 2, 2 }, { 0x00, 0xAE, MEMONLY | STORE | ALLX | YMMD, 1, 2, 0 },
+	{ 0x66, 0x00, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x01, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x02, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x03, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x04, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x05, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x06, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x07, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x08, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x09, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x0A, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x0B, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x1C, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x1D, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x1E, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x0C, MEM | ALLX | YMMD, 2, 1, 2 },
+	{ 0x66, 0x0D, MEM | ALLX | YMMD, 2, 1, 2 }, { 0x66, 0x0E, MEM | ALLX | YMMD, 2, 2, 2 },
+	{ 0x66, 0x0F, MEM | ALLX | YMMD, 2, 2, 2 }, { 0x66, 0x17, MEM | ALLX | YMMD, 2, 2, 2 },
+	{ 0x66, 0x18, MEMONLY | ALLX | YMMD, 2, 2, 2 }, { 0x66, 0x19, MEMONLY | ALLX | YMMD, 2, 2, 1 },
+	{ 0x66, 0x1A, MEMONLY | ALLX | YMMD, 2, 2, 1 }, { 0x66, 0x20, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x21, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x22, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x23, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x24, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x25, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x30, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x31, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x32, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x33, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x34, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x35, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x28, MEM | INT | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x29, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x2B, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x37, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x38, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x39, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x3A, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x3B, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x3C, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x3D, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x3E, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x3F, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x40, MEM | INT | DINT | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0x2A, MEMONLY | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0x41, MEM | ALLX | YMMD, 2, 2, 0 },
+	{ 0x66, 0x2C, MEMONLY | ALLX | YMMD, 2, 1, 2 }, { 0x66, 0x2D, MEMONLY | ALLX | YMMD, 2, 1, 2 },
+	{ 0x66, 0x2E, MEMONLY | STORE | ALLX | YMMD, 2, 1, 2 }, { 0x66, 0x2F, MEMONLY | STORE | ALLX | YMMD, 2, 1, 2 },
+	{ 0x66, 0xDB, MEM | ALLX | YMMD, 2, 2, 0 }, { 0x66, 0xDC, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0xDD, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0xDE, MEM | ALLX | YMMD, 2, 1, 0 },
+	{ 0x66, 0xDF, MEM | ALLX | YMMD, 2, 1, 0 }, { 0x66, 0x04, MEM | ALLX | YMMD, 3, 2, 2 },
+	{ 0x66, 0x05, MEM | ALLX | YMMD, 3, 2, 2 }, { 0x66, 0x06, MEM | ALLX | YMMD, 3, 1, 1 },
+	{ 0x66, 0x08, MEM | F32 | D32 | ALLX | YMMD, 3, 2, 2 }, { 0x66, 0x09, MEM | F64 | D64 | ALLX | YMMD, 3, 2, 2 },
+	{ 0x66, 0x0A, MEM | F32 | D32 | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x0B, MEM | F64 | D64 | ALLX | YMMD, 3, 1, 0 },
+	{ 0x66, 0x0C, MEM | ALLX | YMMD, 3, 1, 2 }, { 0x66, 0x0D, MEM | ALLX | YMMD, 3, 1, 2 },
+	{ 0x66, 0x0E, MEM | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x0F, MEM | ALLX | YMMD, 3, 1, 0 },
+	{ 0x66, 0x14, MEMONLY | STORE | ALLX | YMMD, 3, 2, 0 }, { 0x66, 0x15, MEMONLY | STORE | ALLX | YMMD, 3, 2, 0 },
+	{ 0x66, 0x16, MEMONLY | STORE | ALLX | YMMD, 3, 2, 0 }, { 0x66, 0x17, MEMONLY | STORE | ALLX | YMMD, 3, 2, 0 },
+	{ 0x66, 0x18, MEM | ALLX | YMMD, 3, 1, 1 }, { 0x66, 0x19, MEM | STORE | ALLX | YMMD, 3, 2, 1 },
+	{ 0x66, 0x20, MEM | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x21, MEM | F32 | D32 | ALLX | YMMD, 3, 1, 0 },
+	{ 0x66, 0x22, MEM | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x40, MEM | F32 | D32 | ONENAN | ALLX | YMMD, 3, 1, 2 },
+	{ 0x66, 0x41, MEM | F64 | D64 | ONENAN | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x42, MEM | ALLX | YMMD, 3, 1, 0 },
+	{ 0x66, 0x44, MEM | ALLX | YMMD, 3, 1, 0 }, { 0x66, 0x4A, MEM | ALLX | YMMD, 3, 1, 2 },
+	{ 0x66, 0x4B, MEM | ALLX | YMMD, 3, 1, 2 }, { 0x66, 0x4C, MEM | ALLX | YMMD, 3, 1, 0 },
+	{ 0x66, 0x60, MEM | ALLX | YMMD, 3, 2, 0 }, { 0x66, 0x61, MEM | ALLX | YMMD, 3, 2, 0 },
+	{ 0x66, 0x62, MEM | ALLX | YMMD, 3, 2, 0 }, { 0x66, 0x63, MEM | ALLX | YMMD, 3, 2, 0 },
+	{ 0x66, 0xDF, MEM | ALLX | YMMD, 3, 2, 0 },
 	{ 0, 0, 0xFFFF }
 };
 #define NXOPS (sizeof xops / sizeof xops[0] - 1)
@@ -285,7 +439,7 @@ static int assemble_x(const struct sop *o, u8 reg, u8 imm) {
 	if (o->vex) {
 		u8 pp = o->pfx == 0x66 ? 1 : o->pfx == 0xF3 ? 2 : o->pfx == 0xF2 ? 3 : 0;
 		u8 l = o->l == 2 ? rnd() % 2 : o->l;
-		u8 vb = (u8)((~2u & 15) << 3 | l << 2 | pp);
+		u8 vb = (u8)((o->vex == 2 ? 15 : ~2u & 15) << 3 | l << 2 | pp);
 		if (map == 1 && !o->w) { code[n++] = 0xC5; code[n++] = 0x80 | vb; }
 		else { code[n++] = 0xC4; code[n++] = 0xE0 | map; code[n++] = (u8)(o->w << 7) | vb; }
 	} else {
@@ -295,6 +449,7 @@ static int assemble_x(const struct sop *o, u8 reg, u8 imm) {
 		if (map == 3) code[n++] = 0x3A;
 	}
 	code[n++] = o->op;
+	if (o->vex && map == 1 && o->op == 0x77) { ncode = n; code[n++] = 0xC3; return 0; }   /* VZEROUPPER/ALL */
 	code[n++] = mem ? (u8)(0x06 | (reg << 3)) : (u8)(0xC1 | (reg << 3));
 	if ((fl & IMM) || map == 3) code[n++] = imm;
 	ncode = n;
@@ -312,8 +467,10 @@ static void sse_case(u32 n, const struct sop *o) {
 	u16 fl = o->fl;
 	int et = (fl >> 8) & 7, dt = (fl >> 11) & 3;
 	u8 imm = rnd();
-	if (o->op == 0xC2) imm &= 7;
+	if (o->op == 0xC2) imm &= o->vex ? 31 : 7;           /* VEX: the 32 predicates */
+	if (o->vex && o->map == 3 && (o->op == 0x4A || o->op == 0x4B || o->op == 0x4C)) imm &= 0x7F;   /* is4: XMM0..7 (TCG ignores the 32-bit rule for imm8[7]) */
 	u8 reg = 0;
+	if (o->vex && o->map == 1 && o->op == 0xAE) reg = 3;   /* VSTMXCSR */
 	if (o->op == 0x71 || o->op == 0x72) { static const u8 g[] = { 2, 4, 6 }; reg = g[rnd() % 3]; }
 	if (o->op == 0x73) { static const u8 g[] = { 2, 3, 6, 7 }; reg = g[rnd() % 4]; }
 	if ((o->op >= 0x71 && o->op <= 0x73) && rnd() % 2) imm %= 70;
@@ -321,11 +478,21 @@ static void sse_case(u32 n, const struct sop *o) {
 	fill(XIN, dt == 1 ? 1 : dt == 2 ? 2 : dt == 3 ? 3 : 0, fl & NODN);
 	fill(XIN + 4, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
 	fill(MEMOP, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
-	if (o->op == 0x58 || o->op == 0x59 || o->op == 0x5C || o->op == 0x5E) {
-		denan(XIN, XIN + 4, et == 2);
-		denan(XIN, MEMOP, et == 2);
+	if (o->vex) {   /* VEX: the first source is XMM2/YMM2; inputs of bits 255:128 too */
+		fill(XIN + 8, dt == 1 ? 1 : dt == 2 ? 2 : dt == 3 ? 3 : 0, fl & NODN);
+		fill(YIN, dt == 1 ? 1 : dt == 2 ? 2 : dt == 3 ? 3 : 0, fl & NODN);
+		fill(YIN + 8, dt == 1 ? 1 : dt == 2 ? 2 : dt == 3 ? 3 : 0, fl & NODN);
+		fill(YIN + 4, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
+		fill(MEMOP + 4, et == 1 ? 1 : et == 2 ? 2 : et == 3 ? 3 : et == 4 ? 4 : 0, fl & NODN);
 	}
-	if (fl & ONENAN) onenan(XIN, mem ? MEMOP : XIN + 4, et == 2, o->map == 3 ? 0 : 1);
+	u32 *a1 = o->vex ? XIN + 8 : XIN;
+	if (o->map <= 1 && (o->op == 0x58 || o->op == 0x59 || o->op == 0x5C || o->op == 0x5E)) {
+		denan(a1, XIN + 4, et == 2);
+		denan(a1, MEMOP, et == 2);
+		if (o->vex) { denan(YIN + 8, YIN + 4, et == 2); denan(YIN + 8, MEMOP + 4, et == 2); }
+	}
+	if (fl & ONENAN) onenan(a1, mem ? MEMOP : XIN + 4, et == 2, o->map == 3 ? 0 : 1);
+	if ((fl & ONENAN) && o->vex) onenan(YIN + 8, mem ? MEMOP + 4 : YIN + 4, et == 2, o->map == 3 ? 0 : 1);
 	fill(MMIN, et == 3 ? 3 : 0, 0);
 	if (et == 3 && rnd() % 2) MMIN[2] = XIN[4], MMIN[3] = XIN[5];
 	GIN = et == 3 ? genint() : rnd();
@@ -335,12 +502,13 @@ static void sse_case(u32 n, const struct sop *o) {
 	kprintf("sse %d ", n); print_code();
 	kprintf(" mx=%x a=", MXIN); phex(XIN, 4); kputs(" b="); phex(mem ? MEMOP : XIN + 4, 4);
 	if (fl & MMXD) { kputs(" m="); phex(MMIN, 4); }
+	if (o->vex) { kputs(" v="); phex(XIN + 8, 4); }
 	kprintf(" g=%x -> ", GIN); phex(XOUT, 4); kputc(' '); phex(XOUT + 4, 4);
 	if (fl & ALLX) for (int k = 2; k < 8; k++) { kputc(' '); phex(XOUT + 4 * k, 4); }
 	if (fl & YMMD) { kputs(" y="); for (int k = 0; k < 8; k++) { kputc(' '); phex(YOUT + 4 * k, 4); } }
 	if (fl & MMXD) { kputs(" m0="); phex(MMOUT, 2); }
 	kprintf(" g=%x mx=%x fl=%x", GOUT, MXOUT, FLOUT & 0x8D5);
-	if (fl & STORE) { kputs(" mem="); phex(MEMOP, 4); }
+	if (fl & STORE) { kputs(" mem="); phex(MEMOP, o->vex ? 8 : 4); }
 	kputc('\n');
 }
 
@@ -399,7 +567,7 @@ void test_simd(void) {
 	for (u32 k = 0; k < nx; k++) {
 		for (int w = 0; w < 32; w++) YIN[w] = rnd();
 		for (int w = 8; w < 32; w++) XIN[w] = rnd();   /* XMM2..7 (sse_case fills XMM0/XMM1) */
-		sse_case(n++, &xops[rnd() % (NXOPS ? NXOPS : 1)]);
+		sse_case(n++, &xops[k < NXOPS ? k : rnd() % NXOPS]);   /* every row at least once */
 	}
 	osxsave_setup(0);
 	__asm__ volatile("fninit");
