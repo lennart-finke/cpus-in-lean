@@ -78,6 +78,22 @@ structure SvmState where
 structure LongModeState where
   deriving Repr, Inhabited
 
+/-- State of `X86/Ext/Xsave.lean`: the tracking behind XSAVEOPT/XSAVEC/XSAVES (SDM vol. 1, 13.6).
+`inuse` holds the XINUSE bits last set (1) or cleared (0) by XRSTOR/XRSTORS; the effective XINUSE
+also has bit i set while state component i is not in its initial configuration (`Xsave.xinuse`).
+The `info*` fields are XRSTOR_INFO of the last XRSTOR/XRSTORS (CPL, linear address of the area,
+XCOMP_BV), with the requested-feature bitmap it restored or initialized (`rfbm`) and the instruction
+count at which it ran (`at`), from which XMODIFIED is derived (`Xsave.unmodified`). -/
+structure XsaveState where
+  inuse : UInt64 := 0
+  infoValid : Bool := false
+  infoCpl : UInt32 := 0
+  infoLaxa : UInt32 := 0
+  infoComp : UInt64 := 0
+  rfbm : UInt64 := 0
+  atCount : UInt64 := 0
+  deriving Repr, Inhabited
+
 /-- CPU state beyond the integer core: x87, EFER, PAE registers, SMM. Integer code never touches it,
 so it is one (parent) field of `Cpu`: the many `Cpu` updates of integer instructions do not copy
 these fields, and symbolic proofs carry a single constant instead of a dozen. -/
@@ -115,6 +131,7 @@ structure CpuExt where
   sysx : SysState := {}
   svmx : SvmState := {}
   lmx : LongModeState := {}
+  xsx : XsaveState := {}
   deriving Repr, Inhabited
 
 structure Cpu extends CpuExt where

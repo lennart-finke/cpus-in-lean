@@ -209,12 +209,12 @@ def implemented : Feature → Bool
   | .pclmulqdq => false
   | .sha => false
   -- X86/Ext/Xsave.lean
-  | .xsave => false
-  | .xsaveopt => false
-  | .xsavec => false
-  | .xgetbv1 => false
-  | .xsaves => false
-  | .xsaveErPtr => false
+  | .xsave => true
+  | .xsaveopt => true
+  | .xsavec => true
+  | .xgetbv1 => true
+  | .xsaves => true
+  | .xsaveErPtr => true
   -- X86/Ext/Avx.lean
   | .avx => false
   -- X86/Ext/Avx2.lean
@@ -301,16 +301,59 @@ def eferWritable : UInt32 :=
   ifImpl .nx EFER.NXE ||| ifImpl .syscall EFER.SCE ||| ifImpl .lm EFER.LME |||
   ifImpl .svm EFER.SVME ||| ifImpl .ffxsr EFER.FFXSR ||| ifImpl .tce EFER.TCE
 
-/-- XCR0 bits the processor supports (CPUID 0xD.0:EDX:EAX): x87 and SSE with XSAVE, AVX state
-with AVX. (The 7742 also reports PKRU, bit 9, in leaf 0xD although CPUID 7:ECX.PKU is 0; the
-model has no PKRU.) -/
-def xcr0Supported : UInt64 :=
-  if implemented .xsave then XCR0.X87 ||| XCR0.SSE ||| (if implemented .avx then XCR0.YMM else 0)
-  else 0
+/-- XCR0 bits the processor supports (CPUID 0xD.0:EDX:EAX): with XSAVE, x87, SSE and the AVX state
+component YMM_Hi128. The AVX state exists (XSETBV can enable it, XSAVE/XRSTOR save and restore
+`SseState.ymmh`) independently of the AVX instructions: "processor support for extended prefix
+encoding is independent of processor support of YMM states" (AMD APM vol. 2, 11.5.5); the 7742 has
+both.
 
-/-- Size of the standard-format XSAVE area for the components in `mask` (SDM vol. 1, 13.4:
-legacy region 512 bytes, header 64, AVX state at offset 576, 256 bytes). -/
-def xsaveSize (mask : UInt64) : UInt32 := if mask &&& XCR0.YMM != 0 then 0x340 else 0x240
+PKRU (bit 9): the 7742's dump reports it in leaf 0xD (0xD.0:EAX = 0x207, subleaf 9 = 64 bytes at
+offset 0x340) although CPUID 7:ECX.PKU is 0. AMD defines XCR0[9] as the state of memory protection
+keys (APM vol. 2, 11.5.2 "MPK: PKRU state management"), and the PKRU register only exists with the
+MPK feature (CPUID Fn0000_0007_ECX[PKU], APM vol. 2, 5.6.7), which the 7742 does not report. The
+model has no PKRU register, so it does not report bit 9: leaf 0xD lists x87, SSE and AVX only, its
+maximum size is 0x340 (the dump: 0x380), and XSETBV with XCR0[9] = 1 raises #GP(0) (on the real
+7742 it presumably succeeds; unverified). -/
+def xcr0Supported : UInt64 :=
+  if implemented .xsave then XCR0.X87 ||| XCR0.SSE ||| XCR0.YMM else 0
+
+/-- IA32_XSS bits the processor supports (CPUID 0xD.1:EDX:ECX): none on the 7742 (dump: 0xD.1 ECX =
+EDX = 0; CET, the only supervisor states AMD defines, APM vol. 2, 3.2.8, is not on Zen 2). -/
+def xssSupported : UInt64 := 0
+
+/-- State components i ≥ 2 the model has: (size, standard-format offset, CPUID 0xD.i ECX), as
+CPUID 0xD.i:EAX/EBX/ECX report them. Only the AVX state YMM_Hi128 (dump: 0xD.2 = 0x100, 0x240, 0, 0;
+ECX[1] = 0: not 64-byte aligned in the compacted format). -/
+def xcomp (i : Nat) : Option (UInt32 × UInt32 × UInt32) :=
+  if i == 2 then some (0x100, 0x240, 0) else none
+
+/-- Size of the standard-format XSAVE area holding the components in `mask` (SDM vol. 1, 13.4.3:
+the legacy region and header take 576 bytes, component i ≥ 2 lies at its CPUID 0xD.i offset). -/
+def xsaveSize (mask : UInt64) : UInt32 :=
+  (List.range 62).foldl (fun s i =>
+    match xcomp (i + 2) with
+    | some (sz, off, _) => if (mask >>> (i + 2).toUInt64) &&& 1 != 0 then max s (off + sz) else s
+    | none => s) 0x240
+
+/-- Offset of component i ≥ 2 in the compacted format with XCOMP_BV[62:0] = `mask` (SDM vol. 1,
+13.4.3): 576, plus the sizes of the components j < i in `mask`, rounded up to 64 if CPUID 0xD.i
+ECX[1] = 1. -/
+def compactOffset (mask : UInt64) (i : Nat) : UInt32 :=
+  (List.range (i - 2)).foldl (fun off j =>
+    match xcomp (j + 2) with
+    | some (sz, _, _) => if (mask >>> (j + 2).toUInt64) &&& 1 != 0 then off + sz else off
+    | none => off) 0x240
+  |> fun off => match xcomp i with
+    | some (_, _, ecx) => if ecx &&& 2 != 0 then (off + 63) &&& ~~~63 else off
+    | none => off
+
+/-- Size of the compacted-format XSAVE area for the components in `mask`. -/
+def compactSize (mask : UInt64) : UInt32 :=
+  (List.range 62).foldl (fun s i =>
+    match xcomp (i + 2) with
+    | some (sz, _, _) =>
+      if (mask >>> (i + 2).toUInt64) &&& 1 != 0 then max s (compactOffset mask (i + 2) + sz) else s
+    | none => s) 0x240
 
 end Cpuid
 
@@ -368,6 +411,13 @@ def raw (leaf sub : UInt32) : Option Regs :=
   | 0x80000020 => some (0x00000000, 0x00000002, 0x00000000, 0x00000000)
   | _ => none
 
+/-- CPUID 1:ECX bit 27, OSXSAVE. -/
+def osxsaveBit : UInt32 := 1 <<< 27
+
+/-- CPUID 1:ECX.OSXSAVE: CR4.OSXSAVE, with XSAVE (APM vol. 3, E.3.2; SDM vol. 2, CPUID). -/
+def osxsave (c : Cpu) : UInt32 :=
+  if implemented .xsave && c.cr4 &&& CR4.OSXSAVE != 0 then osxsaveBit else 0
+
 /-- Leaves that only describe one feature: all zero unless it is implemented. -/
 def leafGate (leaf : UInt32) : Option Feature :=
   match leaf with
@@ -394,14 +444,24 @@ def featBits (leaf sub : UInt32) (k : Nat) (onlyImpl : Bool) : UInt32 :=
 def maskReg (leaf sub : UInt32) (k : Nat) (v : UInt32) : UInt32 :=
   v &&& ~~~(featBits leaf sub k false &&& ~~~featBits leaf sub k true)
 
-/-- Leaf 0xD (XSAVE), computed from the supported components, XCR0 and IA32_XSS. -/
+/-- Leaf 0xD (XSAVE), computed from the supported components, XCR0 and IA32_XSS (SDM vol. 2,
+CPUID leaf 0DH; AMD APM vol. 3, E.3.8 Fn0000_000D): subleaf 0 = supported XCR0 bits, the
+standard-format size for the enabled XCR0 (EBX) and for all supported components (ECX); subleaf 1 =
+XSAVEOPT/XSAVEC/XGETBV1/XSAVES, the compacted size for XCR0 | IA32_XSS (EBX, as the 7742's dump:
+0x340 with XCR0 = 7), the supported IA32_XSS bits; subleaf i ≥ 2 = size, offset, flags of a supported
+component, zeros otherwise. -/
 def leafD (c : Cpu) (sub : UInt32) : Regs :=
   if !implemented .xsave then (0, 0, 0, 0)
   else match sub with
     | 0 => (xcr0Supported.toUInt32, xsaveSize c.xcr0, xsaveSize xcr0Supported, (xcr0Supported >>> 32).toUInt32)
-    | 1 => (featBits 0xD 1 0 true, xsaveSize (c.xcr0 ||| c.xss), 0, 0)
-    | 2 => if implemented .avx then (0x100, 0x240, 0, 0) else (0, 0, 0, 0)
-    | _ => (0, 0, 0, 0)
+    | 1 => (featBits 0xD 1 0 true, compactSize (c.xcr0 ||| c.xss), xssSupported.toUInt32,
+            (xssSupported >>> 32).toUInt32)
+    | _ =>
+      if sub < 63 && (xcr0Supported ||| xssSupported) >>> sub.toUInt64 &&& 1 != 0 then
+        match xcomp sub.toNat with
+        | some (sz, off, ecx) => (sz, off, ecx, 0)
+        | none => (0, 0, 0, 0)
+      else (0, 0, 0, 0)
 
 /-- A leaf as reported with the AMD structure (feature-masked dump values), for a leaf in range. -/
 def amdLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
@@ -416,8 +476,9 @@ def amdLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
       let d := maskReg leaf sub 3 (reg r 3)
       -- 8000_0001:EDX bits that mirror 1:EDX
       let d := if leaf == 0x80000001 then d &&& ~~~Feature.mirrorMask ||| (featBits 1 0 3 true &&& Feature.mirrorMask) else d
-      -- OSXSAVE reflects CR4.OSXSAVE
-      let cx := if leaf == 1 && implemented .xsave && c.cr4 &&& CR4.OSXSAVE != 0 then cx ||| (1 <<< 27) else cx
+      -- OSXSAVE reflects CR4.OSXSAVE: the dump's bit 27 (set: the dump was taken under an OS) is
+      -- replaced by the CR4 bit
+      let cx := if leaf == 1 then (cx &&& ~~~osxsaveBit) ||| osxsave c else cx
       (a, b, cx, d)
 
 /-- Highest basic and extended leaves of the legacy identity: 1 and 0x80000001 unless an implemented
@@ -438,8 +499,7 @@ def legacyLeaf (c : Cpu) (leaf sub : UInt32) : Regs :=
   match leaf with
   | 0 => (mb, 0x756E6547, 0x6C65746E, 0x49656E69)  -- "GenuineIntel"
   | 1 =>
-    let osx : UInt32 := if implemented .xsave && c.cr4 &&& CR4.OSXSAVE != 0 then 1 <<< 27 else 0
-    (0x00000619, 0, featBits 1 0 2 true ||| osx, featBits 1 0 3 true)
+    (0x00000619, 0, featBits 1 0 2 true ||| osxsave c, featBits 1 0 3 true)
   | 0x80000000 => (me, 0, 0, 0)
   | 0x80000001 => (0, 0, featBits 0x80000001 0 2 true, featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask)
   | 5 | 6 | 7 | 0xD | 0x80000007 | 0x80000008 | 0x8000000A => amdLeaf c leaf sub

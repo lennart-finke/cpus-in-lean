@@ -3,9 +3,9 @@ import X86.Proofs.Basic
 /-!
 # Foundation of the Zen 2 extensions
 
-* `cpuid_former`: with the present feature set and the legacy identity, CPUID returns exactly what
-  the model returned before the table-driven CPUID (`formerCpuid`, the removed `cpuidVals`), for
-  every leaf and subleaf.
+* `cpuid_former`: with the present feature set and the legacy identity, CPUID leaves 0, 1,
+  0x80000000 and 0x80000001 are what the model returned before the table-driven CPUID
+  (`formerCpuid`, the removed `cpuidVals`) plus the XSAVE features (restated by the XSAVE work).
 * `cr4Writable_former`, `eferWritable_former`: the derived MOV CR4 / WRMSR EFER masks are the former
   constants.
 * `vexExec_real`, `vexExec_vm86`, `vexExec_prefix`: a VEX-encoded instruction raises #UD in real and
@@ -21,46 +21,24 @@ def formerCpuid (leaf : UInt32) : Regs :=
   | 0x80000001 => (0, 0, 0, 1 <<< 20)
   | _ => (0x00000619, 0, 0, 0x07808365)
 
-theorem legacyMax_former : Cpuid.legacyMax = (1, 0x80000001) := by decide
+theorem legacyMax_former : Cpuid.legacyMax = (0xD, 0x80000008) := by decide
 
-theorem cpuid_former (c : Cpu) (leaf sub : UInt32) : cpuid c leaf sub = formerCpuid leaf := by
-  have h12 : Cpuid.featBits 1 0 2 true = 0 := by decide
+/-- Restated for the XSAVE features (`X86/Ext/Xsave.lean`): leaves 0, 1, 0x80000000 and 0x80000001
+are the former ones except for the highest leaves (0xD, 0x80000008: leaf 0xD and XSaveErPtr in
+0x80000008:EBX) and CPUID 1:ECX, which reports XSAVE (bit 26) and OSXSAVE = CR4.OSXSAVE (bit 27). -/
+theorem cpuid_former (c : Cpu) (sub : UInt32) :
+    cpuid c 0 sub = (0xD, 0x756E6547, 0x6C65746E, 0x49656E69) ∧
+    cpuid c 1 sub = (0x00000619, 0, (1 <<< 26) ||| Cpuid.osxsave c, 0x07808365) ∧
+    cpuid c 0x80000000 sub = (0x80000008, 0, 0, 0) ∧
+    cpuid c 0x80000001 sub = formerCpuid 0x80000001 := by
+  have h12 : Cpuid.featBits 1 0 2 true = 1 <<< 26 := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x07808365 := by decide
   have he2 : Cpuid.featBits 0x80000001 0 2 true = 0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = 1 <<< 20 := by decide
-  have hx : implemented .xsave = false := rfl
   simp only [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, formerCpuid]
-  by_cases h0 : leaf = 0
-  · subst h0; simp
-  by_cases h1 : leaf = 1
-  · subst h1; simp [h12, h13, hx]
-  by_cases h8 : leaf = 0x80000000
-  · subst h8; simp
-  by_cases h9 : leaf = 0x80000001
-  · subst h9; simp [he2, he3]
-  have hr : (leaf ≤ 1 || (0x80000000 ≤ leaf && leaf ≤ 0x80000001)) = false := by
-    simp only [Bool.or_eq_false_iff, decide_eq_false_iff_not, Bool.and_eq_false_iff]
-    constructor
-    · intro hle
-      have : leaf.toNat ≤ 1 := hle
-      have : leaf.toNat = 0 ∨ leaf.toNat = 1 := by omega
-      rcases this with h | h
-      · exact h0 (UInt32.toNat_inj.mp (by simpa using h))
-      · exact h1 (UInt32.toNat_inj.mp (by simpa using h))
-    · by_cases hlo : 0x80000000 ≤ leaf
-      · right; intro hhi
-        have a : (0x80000000 : UInt32).toNat ≤ leaf.toNat := hlo
-        have b : leaf.toNat ≤ (0x80000001 : UInt32).toNat := hhi
-        simp at a b
-        have : leaf.toNat = 0x80000000 ∨ leaf.toNat = 0x80000001 := by omega
-        rcases this with h | h
-        · exact h8 (UInt32.toNat_inj.mp (by simpa using h))
-        · exact h9 (UInt32.toNat_inj.mp (by simpa using h))
-      · left; simpa using hlo
-  simp only [hr, Bool.false_eq_true, ↓reduceIte, h0, h1, h8, h9]
-  simp [h12, h13, hx]
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> simp [h12, h13, he2, he3]
 
-theorem cr4Writable_former : Cpuid.cr4Writable = 0x07FC := by decide
+theorem cr4Writable_former : Cpuid.cr4Writable = 0x07FC ||| CR4.OSXSAVE := by decide
 
 theorem eferWritable_former : Cpuid.eferWritable = EFER.NXE := by decide
 
