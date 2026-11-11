@@ -18,6 +18,9 @@ import Std.Tactic.BVDecide
 * `cli_if_cpl3`, `sti_if_cpl3`, `popfMask_if_cpl3`, `vmePopFlags_if`, `vmeIntFlags_if`: with VME or
   PVI (or without), virtual-8086 / CPL-3 code with IOPL < 3 cannot change EFLAGS.IF through CLI, STI,
   POPF, IRET or a redirected INT n; `vmeActive_cpl3`: VME applies only at CPL 3.
+* `intN_noVme`: outside virtual-8086 mode or with CR4.VME = 0, INT n is the plain software interrupt
+  (no access to the TSS interrupt-redirection bitmap); `leaveV86_cpl`: an event from virtual-8086
+  mode pushes its frame at CPL 0 (supervisor accesses).
 * `irPerf_disabled`: with HWCR.IRPerfEn = 0 IRPerfCount does not move.
 * `patchLevel_amd_wr`, `patchLevel_amd_rd`: on the AMD identity MSR 0x8B is read-only (WRMSR #GP(0)).
 -/
@@ -88,6 +91,25 @@ theorem raiseExcF_double {n : Nat} {m m' : Machine} {ext : Bool} {vec v : UInt8}
     rcases hs with h | h | h | h <;> subst h <;> decide
   simp only [raiseExcF, hdb', Bool.false_and, ite_false, h, hk, Bool.false_eq_true, onSecond, hv, hc,
     ite_true, hpf]
+
+/-! ## INT n and the interrupt redirection bitmap -/
+
+/-- Outside virtual-8086 mode, or with CR4.VME = 0, INT n is the plain software interrupt
+(`intPlain`): it does not read the TSS interrupt redirection bitmap (no TSS access, no fault from
+the TSS limit or the I/O map base). -/
+theorem intN_noVme (n : UInt8) (m : Machine)
+    (h : (m.cpu.vm86 && m.cpu.cr4 &&& CR4.VME != 0) = false) : intN n m = intPlain n m := by
+  simp only [intN, cpu, bind, EStateM.bind, h, Bool.false_eq_true, ite_false, EStateM.pure]
+
+/-- An interrupt or exception from virtual-8086 mode (protected mode, `deliver`) pushes its frame at
+CPL 0: supervisor accesses, not user accesses, and not alignment-checked. -/
+theorem leaveV86_cpl (c : Cpu) (ss : SegReg) (esp : UInt32) (d : Desc) (sel : UInt16) (h : c.pe = true) :
+    (c.leaveV86 ss esp (d.toSeg (sel &&& 0xFFFC))).cpl = 0 := by
+  have hv0 : c.eflags &&& ~~~Flag.VM &&& Flag.VM = 0 := by
+    simp only [Flag.VM]; generalize c.eflags = e; bv_decide
+  have hv : (c.eflags &&& ~~~Flag.VM &&& Flag.VM != 0) = false := by simp [hv0]
+  have hs : sel.toUInt32 &&& 65532 &&& 3 = 0 := by bv_decide
+  simp [Cpu.cpl, Cpu.leaveV86, Cpu.vm86, Cpu.pe, Desc.toSeg, hv, hs, show c.cr0 &&& CR0.PE != 0 from h]
 
 /-! ## NMI -/
 
