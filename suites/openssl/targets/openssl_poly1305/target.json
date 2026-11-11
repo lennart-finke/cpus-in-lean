@@ -1,0 +1,6 @@
+{
+  "module": "OpensslPoly1305",
+  "sources": ["vendor/crypto/poly1305/poly1305.c", "vendor/crypto/mem_clr.c"],
+  "roots": ["Poly1305_Init", "Poly1305_Update", "Poly1305_Final", "Poly1305_ctx_size"],
+  "cflags": ["-Ivendor/include", "-Iinclude"]
+}

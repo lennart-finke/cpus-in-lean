@@ -1,0 +1,17 @@
+X86 T156
+"PodWR Fre PodWR Fri PodWR Fre"
+Cycle=Fri PodWR Fre PodWR Fre PodWR
+Relax=
+Safe=Fri Fre PodWR
+Generator=diy7 (version 7.58)
+Prefetch=0:x=F,0:y=T,1:y=F,1:x=T
+Com=Fr Fr
+Orig=PodWR Fre PodWR Fri PodWR Fre
+{
+}
+ P0          | P1          ;
+ MOV [x],$1  | MOV [y],$1  ;
+ MOV EAX,[y] | MOV EAX,[z] ;
+             | MOV [z],$1  ;
+             | MOV EBX,[x] ;
+exists (0:EAX=0 /\ 1:EAX=0 /\ 1:EBX=0)

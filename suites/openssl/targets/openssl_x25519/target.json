@@ -1,0 +1,6 @@
+{
+  "module": "OpensslX25519",
+  "sources": ["vendor/crypto/ec/curve25519.c", "vendor/crypto/mem_clr.c", "stubs.c"],
+  "roots": ["ossl_x25519", "ossl_x25519_public_from_private"],
+  "cflags": ["-Ivendor/include", "-Iinclude"]
+}

@@ -1,0 +1,7 @@
+X86 SB+xchgs
+"XCHG with memory is locked: forbidden"
+{ x=0; y=0; 0:EBX=1; 1:EBX=1; }
+ P0           | P1           ;
+ XCHG [x],EBX | XCHG [y],EBX ;
+ MOV EAX,[y]  | MOV EAX,[x]  ;
+exists (0:EAX=0 /\ 1:EAX=0)

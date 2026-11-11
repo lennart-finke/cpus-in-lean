@@ -1,0 +1,15 @@
+X86 T170
+"PodWW Coe PodWR Fre PodWR Fre"
+Cycle=Fre PodWW Coe PodWR Fre PodWR
+Relax=
+Safe=Fre Coe PodWW PodWR
+Generator=diy7 (version 7.58)
+Prefetch=0:x=F,0:y=W,1:y=F,1:z=T,2:z=F,2:x=T
+Com=Co Fr Fr
+Orig=PodWW Coe PodWR Fre PodWR Fre
+{
+}
+ P0         | P1          | P2          ;
+ MOV [x],$1 | MOV [y],$2  | MOV [z],$1  ;
+ MOV [y],$1 | MOV EAX,[z] | MOV EAX,[x] ;
+exists ([y]=2 /\ 1:EAX=0 /\ 2:EAX=0)

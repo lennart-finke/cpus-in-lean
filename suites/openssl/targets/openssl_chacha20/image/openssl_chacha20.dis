@@ -1,0 +1,379 @@
+
+openssl_chacha20.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+00100000 <ChaCha20_ctr32>:
+  100000:      	pushl	%ebp
+  100001:      	pushl	%ebx
+  100002:      	pushl	%edi
+  100003:      	pushl	%esi
+  100004:      	subl	$0x80, %esp
+  10000a:      	movl	0x9c(%esp), %ebx
+  100011:      	movl	0xa4(%esp), %eax
+  100018:      	movl	0xa0(%esp), %ecx
+  10001f:      	movl	$0x61707865, (%esp)     # imm = 0x61707865
+  100026:      	movl	$0x3320646e, 0x4(%esp)  # imm = 0x3320646E
+  10002e:      	movl	$0x79622d32, 0x8(%esp)  # imm = 0x79622D32
+  100036:      	movl	$0x6b206574, 0xc(%esp)  # imm = 0x6B206574
+  10003e:      	movl	(%ecx), %edx
+  100040:      	movl	%edx, 0x10(%esp)
+  100044:      	movl	0x4(%ecx), %edx
+  100047:      	movl	%edx, 0x14(%esp)
+  10004b:      	movl	0x8(%ecx), %edx
+  10004e:      	movl	%edx, 0x18(%esp)
+  100052:      	movl	0xc(%ecx), %edx
+  100055:      	movl	%edx, 0x1c(%esp)
+  100059:      	movl	0x10(%ecx), %edx
+  10005c:      	movl	%edx, 0x20(%esp)
+  100060:      	movl	0x14(%ecx), %edx
+  100063:      	movl	%edx, 0x24(%esp)
+  100067:      	movl	0x18(%ecx), %edx
+  10006a:      	movl	%edx, 0x28(%esp)
+  10006e:      	movl	0x1c(%ecx), %ecx
+  100071:      	movl	%ecx, 0x2c(%esp)
+  100075:      	movl	(%eax), %ecx
+  100077:      	movl	%ecx, 0x30(%esp)
+  10007b:      	movl	0x4(%eax), %ecx
+  10007e:      	movl	%ecx, 0x34(%esp)
+  100082:      	movl	0x8(%eax), %ecx
+  100085:      	movl	%ecx, 0x38(%esp)
+  100089:      	movl	0xc(%eax), %eax
+  10008c:      	movl	%eax, 0x3c(%esp)
+  100090:      	testl	%ebx, %ebx
+  100092:      	je	0x1000ed <ChaCha20_ctr32+0xed>
+  100094:      	movl	0x98(%esp), %ebp
+  10009b:      	movl	0x94(%esp), %esi
+  1000a2:      	nop
+  1000a3:      	nop
+  1000a4:      	nop
+  1000a5:      	nop
+  1000a6:      	nop
+  1000a7:      	nop
+  1000a8:      	nop
+  1000a9:      	nop
+  1000aa:      	nop
+  1000ab:      	nop
+  1000ac:      	nop
+  1000ad:      	nop
+  1000ae:      	nop
+  1000af:      	nop
+  1000b0:      	cmpl	$0x40, %ebx
+  1000b3:      	movl	$0x40, %edi
+  1000b8:      	cmovbl	%ebx, %edi
+  1000bb:      	leal	0x40(%esp), %ecx
+  1000bf:      	movl	%esp, %edx
+  1000c1:      	calll	0x100100 <chacha20_core>
+  1000c6:      	xorl	%eax, %eax
+  1000c8:      	nop
+  1000c9:      	nop
+  1000ca:      	nop
+  1000cb:      	nop
+  1000cc:      	nop
+  1000cd:      	nop
+  1000ce:      	nop
+  1000cf:      	nop
+  1000d0:      	movzbl	0x40(%esp,%eax), %ecx
+  1000d5:      	xorb	(%ebp,%eax), %cl
+  1000d9:      	movb	%cl, (%esi,%eax)
+  1000dc:      	incl	%eax
+  1000dd:      	cmpl	%eax, %edi
+  1000df:      	jne	0x1000d0 <ChaCha20_ctr32+0xd0>
+  1000e1:      	addl	%edi, %esi
+  1000e3:      	addl	%edi, %ebp
+  1000e5:      	incl	0x30(%esp)
+  1000e9:      	subl	%edi, %ebx
+  1000eb:      	jne	0x1000b0 <ChaCha20_ctr32+0xb0>
+  1000ed:      	addl	$0x80, %esp
+  1000f3:      	popl	%esi
+  1000f4:      	popl	%edi
+  1000f5:      	popl	%ebx
+  1000f6:      	popl	%ebp
+  1000f7:      	retl
+  1000f8:      	int3
+  1000f9:      	int3
+  1000fa:      	int3
+  1000fb:      	int3
+  1000fc:      	int3
+  1000fd:      	int3
+  1000fe:      	int3
+  1000ff:      	int3
+
+00100100 <chacha20_core>:
+  100100:      	pushl	%ebp
+  100101:      	pushl	%ebx
+  100102:      	pushl	%edi
+  100103:      	pushl	%esi
+  100104:      	subl	$0x7c, %esp
+  100107:      	movl	%ecx, 0x24(%esp)
+  10010b:      	leal	0x3c(%esp), %eax
+  10010f:      	pushl	$0x40
+  100111:      	movl	%edx, 0x18(%esp)
+  100115:      	pushl	%edx
+  100116:      	pushl	%eax
+  100117:      	calll	0x100400 <memcpy>
+  10011c:      	addl	$0xc, %esp
+  10011f:      	movl	0x4c(%esp), %ebp
+  100123:      	movl	0x3c(%esp), %eax
+  100127:      	movl	%eax, 0x8(%esp)
+  10012b:      	movl	0x40(%esp), %eax
+  10012f:      	movl	%eax, 0x10(%esp)
+  100133:      	movl	0x6c(%esp), %eax
+  100137:      	movl	%eax, (%esp)
+  10013a:      	movl	0x5c(%esp), %eax
+  10013e:      	movl	%eax, 0x20(%esp)
+  100142:      	movl	0x50(%esp), %edi
+  100146:      	movl	0x70(%esp), %ecx
+  10014a:      	movl	0x60(%esp), %eax
+  10014e:      	movl	%eax, 0x1c(%esp)
+  100152:      	movl	0x54(%esp), %esi
+  100156:      	movl	0x44(%esp), %eax
+  10015a:      	movl	%eax, 0xc(%esp)
+  10015e:      	movl	0x74(%esp), %eax
+  100162:      	movl	%eax, 0x18(%esp)
+  100166:      	movl	0x64(%esp), %eax
+  10016a:      	movl	%eax, 0x34(%esp)
+  10016e:      	movl	0x58(%esp), %eax
+  100172:      	movl	0x48(%esp), %edx
+  100176:      	movl	%edx, 0x4(%esp)
+  10017a:      	movl	0x78(%esp), %ebx
+  10017e:      	movl	$0x16, 0x28(%esp)
+  100186:      	movl	0x68(%esp), %edx
+  10018a:      	movl	%edx, 0x30(%esp)
+  10018e:      	nop
+  10018f:      	nop
+  100190:      	addl	%ebp, 0x8(%esp)
+  100194:      	movl	(%esp), %edx
+  100197:      	xorl	0x8(%esp), %edx
+  10019b:      	roll	$0x10, %edx
+  10019e:      	movl	%edx, (%esp)
+  1001a1:      	movl	0x20(%esp), %edx
+  1001a5:      	addl	(%esp), %edx
+  1001a8:      	xorl	%edx, %ebp
+  1001aa:      	roll	$0xc, %ebp
+  1001ad:      	movl	%ebp, 0x2c(%esp)
+  1001b1:      	addl	%ebp, 0x8(%esp)
+  1001b5:      	movl	0x8(%esp), %ebp
+  1001b9:      	xorl	%ebp, (%esp)
+  1001bc:      	movl	0x2c(%esp), %ebp
+  1001c0:      	roll	$0x8, (%esp)
+  1001c4:      	addl	(%esp), %edx
+  1001c7:      	movl	%edx, 0x20(%esp)
+  1001cb:      	xorl	%edx, %ebp
+  1001cd:      	roll	$0x7, %ebp
+  1001d0:      	movl	0x10(%esp), %edx
+  1001d4:      	addl	%edi, %edx
+  1001d6:      	movl	%edx, 0x10(%esp)
+  1001da:      	xorl	%edx, %ecx
+  1001dc:      	roll	$0x10, %ecx
+  1001df:      	movl	0x1c(%esp), %edx
+  1001e3:      	addl	%ecx, %edx
+  1001e5:      	xorl	%edx, %edi
+  1001e7:      	roll	$0xc, %edi
+  1001ea:      	addl	%edi, 0x10(%esp)
+  1001ee:      	xorl	0x10(%esp), %ecx
+  1001f2:      	roll	$0x8, %ecx
+  1001f5:      	movl	%ecx, 0x2c(%esp)
+  1001f9:      	addl	%ecx, %edx
+  1001fb:      	movl	%edx, 0x1c(%esp)
+  1001ff:      	xorl	%edx, %edi
+  100201:      	roll	$0x7, %edi
+  100204:      	movl	0xc(%esp), %ecx
+  100208:      	addl	%esi, %ecx
+  10020a:      	movl	%ecx, 0xc(%esp)
+  10020e:      	movl	0x18(%esp), %edx
+  100212:      	xorl	%ecx, %edx
+  100214:      	roll	$0x10, %edx
+  100217:      	movl	0x34(%esp), %ecx
+  10021b:      	addl	%edx, %ecx
+  10021d:      	xorl	%ecx, %esi
+  10021f:      	roll	$0xc, %esi
+  100222:      	addl	%esi, 0xc(%esp)
+  100226:      	xorl	0xc(%esp), %edx
+  10022a:      	roll	$0x8, %edx
+  10022d:      	movl	%edx, 0x18(%esp)
+  100231:      	addl	%edx, %ecx
+  100233:      	xorl	%ecx, %esi
+  100235:      	roll	$0x7, %esi
+  100238:      	movl	0x4(%esp), %edx
+  10023c:      	addl	%eax, %edx
+  10023e:      	movl	%edx, 0x4(%esp)
+  100242:      	xorl	%edx, %ebx
+  100244:      	roll	$0x10, %ebx
+  100247:      	movl	0x30(%esp), %edx
+  10024b:      	addl	%ebx, %edx
+  10024d:      	xorl	%edx, %eax
+  10024f:      	roll	$0xc, %eax
+  100252:      	addl	%eax, 0x4(%esp)
+  100256:      	xorl	0x4(%esp), %ebx
+  10025a:      	roll	$0x8, %ebx
+  10025d:      	addl	%ebx, %edx
+  10025f:      	xorl	%edx, %eax
+  100261:      	roll	$0x7, %eax
+  100264:      	addl	%edi, 0x8(%esp)
+  100268:      	xorl	0x8(%esp), %ebx
+  10026c:      	roll	$0x10, %ebx
+  10026f:      	addl	%ebx, %ecx
+  100271:      	xorl	%ecx, %edi
+  100273:      	roll	$0xc, %edi
+  100276:      	addl	%edi, 0x8(%esp)
+  10027a:      	xorl	0x8(%esp), %ebx
+  10027e:      	roll	$0x8, %ebx
+  100281:      	movl	%ebx, 0x38(%esp)
+  100285:      	addl	%ebx, %ecx
+  100287:      	movl	%ecx, 0x34(%esp)
+  10028b:      	xorl	%ecx, %edi
+  10028d:      	movl	0x2c(%esp), %ecx
+  100291:      	roll	$0x7, %edi
+  100294:      	movl	0x10(%esp), %ebx
+  100298:      	addl	%esi, %ebx
+  10029a:      	xorl	%ebx, (%esp)
+  10029d:      	roll	$0x10, (%esp)
+  1002a1:      	addl	(%esp), %edx
+  1002a4:      	xorl	%edx, %esi
+  1002a6:      	roll	$0xc, %esi
+  1002a9:      	addl	%esi, %ebx
+  1002ab:      	movl	%ebx, 0x10(%esp)
+  1002af:      	xorl	%ebx, (%esp)
+  1002b2:      	roll	$0x8, (%esp)
+  1002b6:      	addl	(%esp), %edx
+  1002b9:      	movl	%edx, 0x30(%esp)
+  1002bd:      	xorl	%edx, %esi
+  1002bf:      	roll	$0x7, %esi
+  1002c2:      	movl	0xc(%esp), %ebx
+  1002c6:      	addl	%eax, %ebx
+  1002c8:      	xorl	%ebx, %ecx
+  1002ca:      	roll	$0x10, %ecx
+  1002cd:      	movl	0x20(%esp), %edx
+  1002d1:      	addl	%ecx, %edx
+  1002d3:      	xorl	%edx, %eax
+  1002d5:      	roll	$0xc, %eax
+  1002d8:      	addl	%eax, %ebx
+  1002da:      	movl	%ebx, 0xc(%esp)
+  1002de:      	xorl	%ebx, %ecx
+  1002e0:      	roll	$0x8, %ecx
+  1002e3:      	addl	%ecx, %edx
+  1002e5:      	movl	%edx, 0x20(%esp)
+  1002e9:      	xorl	%edx, %eax
+  1002eb:      	roll	$0x7, %eax
+  1002ee:      	movl	0x4(%esp), %ebx
+  1002f2:      	addl	%ebp, %ebx
+  1002f4:      	movl	%ebx, 0x4(%esp)
+  1002f8:      	movl	0x18(%esp), %edx
+  1002fc:      	xorl	%ebx, %edx
+  1002fe:      	roll	$0x10, %edx
+  100301:      	movl	0x1c(%esp), %ebx
+  100305:      	addl	%edx, %ebx
+  100307:      	xorl	%ebx, %ebp
+  100309:      	roll	$0xc, %ebp
+  10030c:      	addl	%ebp, 0x4(%esp)
+  100310:      	xorl	0x4(%esp), %edx
+  100314:      	roll	$0x8, %edx
+  100317:      	movl	%edx, 0x18(%esp)
+  10031b:      	addl	%edx, %ebx
+  10031d:      	movl	%ebx, 0x1c(%esp)
+  100321:      	xorl	%ebx, %ebp
+  100323:      	movl	0x38(%esp), %ebx
+  100327:      	roll	$0x7, %ebp
+  10032a:      	movl	0x28(%esp), %edx
+  10032e:      	addl	$-0x2, %edx
+  100331:      	movl	%edx, 0x28(%esp)
+  100335:      	cmpl	$0x2, %edx
+  100338:      	ja	0x100190 <chacha20_core+0x90>
+  10033e:      	movl	%esi, 0x28(%esp)
+  100342:      	movl	0x8(%esp), %esi
+  100346:      	movl	0x14(%esp), %edx
+  10034a:      	addl	(%edx), %esi
+  10034c:      	movl	0x24(%esp), %edx
+  100350:      	movl	%esi, (%edx)
+  100352:      	movl	0x10(%esp), %edx
+  100356:      	movl	0x14(%esp), %esi
+  10035a:      	addl	0x4(%esi), %edx
+  10035d:      	movl	0x24(%esp), %esi
+  100361:      	movl	%edx, 0x4(%esi)
+  100364:      	movl	0xc(%esp), %edx
+  100368:      	movl	0x14(%esp), %esi
+  10036c:      	addl	0x8(%esi), %edx
+  10036f:      	movl	0x24(%esp), %esi
+  100373:      	movl	%edx, 0x8(%esi)
+  100376:      	movl	0x4(%esp), %edx
+  10037a:      	movl	0x14(%esp), %esi
+  10037e:      	addl	0xc(%esi), %edx
+  100381:      	movl	0x24(%esp), %esi
+  100385:      	movl	%edx, 0xc(%esi)
+  100388:      	movl	0x14(%esp), %edx
+  10038c:      	addl	0x10(%edx), %ebp
+  10038f:      	movl	%esi, %edx
+  100391:      	movl	%ebp, 0x10(%esi)
+  100394:      	movl	0x14(%esp), %ebp
+  100398:      	addl	0x14(%ebp), %edi
+  10039b:      	movl	%edi, 0x14(%esi)
+  10039e:      	movl	0x28(%esp), %esi
+  1003a2:      	addl	0x18(%ebp), %esi
+  1003a5:      	movl	%esi, 0x18(%edx)
+  1003a8:      	addl	0x1c(%ebp), %eax
+  1003ab:      	movl	%eax, 0x1c(%edx)
+  1003ae:      	movl	0x20(%esp), %eax
+  1003b2:      	addl	0x20(%ebp), %eax
+  1003b5:      	movl	%eax, 0x20(%edx)
+  1003b8:      	movl	0x1c(%esp), %eax
+  1003bc:      	addl	0x24(%ebp), %eax
+  1003bf:      	movl	%eax, 0x24(%edx)
+  1003c2:      	movl	0x34(%esp), %eax
+  1003c6:      	addl	0x28(%ebp), %eax
+  1003c9:      	movl	%eax, 0x28(%edx)
+  1003cc:      	movl	0x30(%esp), %eax
+  1003d0:      	addl	0x2c(%ebp), %eax
+  1003d3:      	movl	%eax, 0x2c(%edx)
+  1003d6:      	movl	(%esp), %eax
+  1003d9:      	addl	0x30(%ebp), %eax
+  1003dc:      	movl	%eax, 0x30(%edx)
+  1003df:      	addl	0x34(%ebp), %ecx
+  1003e2:      	movl	%ecx, 0x34(%edx)
+  1003e5:      	movl	0x18(%esp), %eax
+  1003e9:      	addl	0x38(%ebp), %eax
+  1003ec:      	movl	%eax, 0x38(%edx)
+  1003ef:      	addl	0x3c(%ebp), %ebx
+  1003f2:      	movl	%ebx, 0x3c(%edx)
+  1003f5:      	addl	$0x7c, %esp
+  1003f8:      	popl	%esi
+  1003f9:      	popl	%edi
+  1003fa:      	popl	%ebx
+  1003fb:      	popl	%ebp
+  1003fc:      	retl
+  1003fd:      	int3
+  1003fe:      	int3
+  1003ff:      	int3
+
+00100400 <memcpy>:
+  100400:      	pushl	%ebx
+  100401:      	pushl	%esi
+  100402:      	movl	0x14(%esp), %ecx
+  100406:      	movl	0xc(%esp), %eax
+  10040a:      	testl	%ecx, %ecx
+  10040c:      	je	0x10042c <memcpy+0x2c>
+  10040e:      	movl	0x10(%esp), %edx
+  100412:      	xorl	%esi, %esi
+  100414:      	nop
+  100415:      	nop
+  100416:      	nop
+  100417:      	nop
+  100418:      	nop
+  100419:      	nop
+  10041a:      	nop
+  10041b:      	nop
+  10041c:      	nop
+  10041d:      	nop
+  10041e:      	nop
+  10041f:      	nop
+  100420:      	movzbl	(%edx,%esi), %ebx
+  100424:      	movb	%bl, (%eax,%esi)
+  100427:      	incl	%esi
+  100428:      	cmpl	%esi, %ecx
+  10042a:      	jne	0x100420 <memcpy+0x20>
+  10042c:      	popl	%esi
+  10042d:      	popl	%ebx
+  10042e:      	retl
+
+0010042f <halt>:
+  10042f:      	hlt

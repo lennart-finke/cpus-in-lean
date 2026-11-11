@@ -1,4 +1,5 @@
 import X86
+import X86.Tso
 /-!
 # x86test — differential testing of the model against QEMU
 
@@ -112,8 +113,8 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
     if q.hash == initHash then q := { q with hash := lo.hash, pte8 := lo.pte8, pte9 := lo.pte9 }
   return q
 
-def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
-    Except String (Outcome × Option Inst × UInt32) := do
+/-- The machine state of vector `o`, before its instruction. -/
+def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) : Except String Machine := do
   let len := u8At v o
   let rd32 (i : Nat) : UInt32 := (u32At v (o + i)).toUInt32
   let regs := (List.range 8).map fun r => rd32 (16 + 4 * r)
@@ -151,10 +152,15 @@ def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
     match (loadSeg si sel) m with
     | .ok _ m' => m := m'
     | .error _ _ => throw s!"bad initial selector {sel}"
+  return m
+
+def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
+    Except String (Outcome × Option Inst × UInt32) := do
+  let mut m ← vectorMachine v o nativeMemory
   let start := m.cpu.eip
   let inst := match decode m with | .ok i _ => some i | .error _ _ => none
   let initHash := fnv m.mem
-  let tf := eflags &&& Flag.TF != 0
+  let tf := m.cpu.eflags &&& Flag.TF != 0
   let mut res : Option Fault := none
   let mut trapped := false
   let mut steps := 0
@@ -188,7 +194,38 @@ def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) :
 def parseHex (s : String) : UInt32 :=
   s.foldl (fun a ch => a * 16 + (if ch.isDigit then ch.toNat - 48 else ch.toLower.toNat - 87).toUInt32) 0
 
+/-- The TSO access log (`Machine.tso`, used by `X86.Tso`) is complete and inert, for one vector
+with paging off: one `step` with the log on leaves memory equal to the logged stores replayed on the
+initial memory, and agrees with the plain `step` (CPU state and memory) unless the instruction is
+a REP string instruction (one iteration per step under the log). `none` if the vector is skipped. -/
+def tsoLogCheck (v : ByteArray) (o : Nat) : Except String (Option String) := do
+  let m ← vectorMachine v o
+  if m.cpu.cr0 &&& CR0.PG != 0 then return none
+  let m1 := step m
+  let m2 := step { m with tso := some {} }
+  let log := m2.tso.getD {}
+  if (Tso.overlay m.mem log.writes).data != m2.mem.data then
+    return some s!"memory differs from the replayed log ({log.writes.size} stores)"
+  let rep := match decode m with
+    | .ok i _ => i.rep != 0 && ((0xA4 ≤ i.op && i.op ≤ 0xAF) || (0x6C ≤ i.op && i.op ≤ 0x6F))
+    | .error _ _ => false
+  if !rep && (m1.mem.data != m2.mem.data || reprStr m1.cpu != reprStr m2.cpu || reprStr m1.fatal != reprStr m2.fatal) then
+    return some "logged step differs from the plain step"
+  return some ""
+
 def main (args : List String) : IO UInt32 := do
+  if let ["--tso-log", vf] := args then
+    let v ← IO.FS.readBinFile vf
+    let mut bad := 0
+    let mut checked := 0
+    for idx in [0:v.size / 88] do
+      match tsoLogCheck v (idx * 88) with
+      | .error e => IO.println s!"#{idx}: {e}"; bad := bad + 1
+      | .ok none => pure ()
+      | .ok (some "") => checked := checked + 1
+      | .ok (some e) => IO.println s!"#{idx}: {e}"; bad := bad + 1; checked := checked + 1
+    IO.println s!"{checked} vectors (paging off) checked, {bad} failures"
+    return (if bad == 0 then 0 else 1)
   let nativeMemory := args.head? == some "--native-memory"
   let dumpArgs := if nativeMemory then ["--dump"] ++ args.drop 1 else args
   if let ["--dump", vf] := dumpArgs then

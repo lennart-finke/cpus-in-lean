@@ -1,0 +1,17 @@
+X86 T008
+"Rfi PodRR Fri Coe PodWR Fre"
+Cycle=Rfi PodRR Fri Coe PodWR Fre
+Relax=
+Safe=Rfi Fri Fre Coe PodWR PodRR
+Generator=diy7 (version 7.58)
+Prefetch=0:x=F,0:y=W,1:y=F,1:x=T
+Com=Co Fr
+Orig=Rfi PodRR Fri Coe PodWR Fre
+{
+}
+ P0          | P1          ;
+ MOV [x],$1  | MOV [y],$2  ;
+ MOV EAX,[x] | MOV EAX,[x] ;
+ MOV EBX,[y] |             ;
+ MOV [y],$1  |             ;
+exists ([y]=2 /\ 0:EAX=1 /\ 0:EBX=0 /\ 1:EAX=0)

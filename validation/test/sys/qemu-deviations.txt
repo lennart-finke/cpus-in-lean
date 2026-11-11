@@ -1,0 +1,37 @@
+# Known QEMU (TCG) deviations from the Intel SDM in the system tests. run.sh applies each rule to the
+# QEMU transcript (Python re.sub on whole lines) before comparing with the model; every other line
+# must be identical. Format: REGEX <TAB> REPLACEMENT <TAB> # reason
+^(pae\.(rsvd40|xd\.nonxe|2m\.rsvd13): vec=0000000e err=0000000)8	\g<1>9	# reserved-bit #PF: P=1 (SDM 4.7: the fault is on a present entry; hardware reports 0x9). TCG reports P=0.
+^pae\.cr3\.rsvd: vec=0000ffff$	pae.cr3.rsvd: vec=0000000d	# MOV CR3 with a reserved bit in a present PDPTE raises #GP(0) (SDM 4.4.1). TCG does not check PDPTEs on MOV CR3.
+^pae\.cr3: 00000000$	pae.cr3: 00000001	# (same: CR3 is unchanged after the #GP)
+^pae\.pdpte\.cached: vec=0000000e .*$	pae.pdpte.cached: ok	# PDPTEs live in registers loaded by MOV CR3 (SDM 4.4.1); TCG re-reads them from memory on every walk.
+^pae\.efer\.rsvd: vec=0000ffff$	pae.efer.rsvd: vec=0000000d	# WRMSR setting a reserved EFER bit raises #GP(0) (SDM WRMSR); TCG ignores the bit.
+^db\.two: n=1 \[dr6=ffff0ff1 rf=0\]$	db.two: n=1 [dr6=ffff0ff3 rf=0]	# every breakpoint whose condition matches sets its Bn in DR6 (SDM 17.2.3); TCG reports only the first watchpoint.
+^db\.movss\.at_n2: 0$	db.movss.at_n2: 1	# MOV SS / POP SS hold debug exceptions until after the next instruction (SDM 6.8.3, the CVE-2018-8897 behaviour); TCG delivers the #DB right after MOV SS.
+^db\.movss\.int\.at_handler: 0 (.*)$	db.movss.int.at_handler: 1 \1	# (same: after MOV SS; INT n the #DB is taken at the first instruction of the INT handler)
+^db\.rep: n=1 \[dr6=ffff0ff8 rf=0\]$	db.rep: n=1 [dr6=ffff0ff8 rf=1]	# a data breakpoint in a REP string instruction traps after the matching iteration (SDM 17.3.1.2), mid-instruction with RF set; TCG traps after the whole instruction.
+^db\.rep\.ecx: 00000000 at_insn=0$	db.rep.ecx: 00000004 at_insn=1	# (same: ECX holds the remaining count, EIP the string instruction)
+^task\.commit: (vec=0000000a err=000000f0) at_g=0 (.*)$	task.commit: \1 at_g=1 \2	# a fault after the task-switch commit point is raised in the new task before its first instruction (SDM 7.3), so the pushed EIP is the new task's; TCG pushes the old task's JMP and then runs off the rails.
+^apic\.swdisable\.write: lvt_timer=00000066$	apic.swdisable.write: lvt_timer=00010066	# a software-disabled local APIC keeps every LVT mask bit set; "attempts to reset these bits will be ignored" (SDM 10.4.7.2). TCG lets them clear.
+^apic\.reenable: n=1 \[00000067 .*$	apic.reenable: n=0	# a software-disabled local APIC only responds to INIT/NMI/SMI/SIPI (SDM 10.4.7.2), so the fixed self-IPI is dropped; TCG queues it in IRR and delivers it after re-enabling.
+^(smm\.[a-z]+\.more: cs_sel=00000008 cs_attr=0000c09)a (.*)$	\1b \2	# loading CS by a far JMP sets the accessed bit of its descriptor (SDM 3.4.5.1), and the descriptor cache saved in SMRAM holds it; TCG never sets the accessed bit on protected-mode far jumps.
+^smm\.gdt\.cs\.accessed: 0$	smm.gdt.cs.accessed: 1	# (same: the GDT entry itself)
+^(x87 \d+ op=(?:7|11) cw=[0-9a-f]+ a 0000[08]000_(?!0{16})[0-9a-f]{16} .* de=)0$	\g<1>1	# FRNDINT, FSCALE and FXTRACT report a denormal operand (#D in their SDM exception lists); TCG never sets DE for them.
+^(x87 \d+ op=8 cw=[0-9a-f]+ a 0000[08]000_(?!0{16})[0-9a-f]{16} b (?!0000[7f]fff_(?!8000000000000000)[89a-f])(?:0000[08]000_[0-9a-f]{16}|0000[0-9a-f]{4}_[89a-f][0-9a-f]{15}) .* de=)0$	\g<1>1	# FSCALE reports a denormal operand (#D in its SDM exception list) when the result uses the operands; TCG misses it unless a NaN is involved.
+^(x87 \d+ op=8 cw=[0-9a-f]+ a (?!0000[7f]fff_(?!8000000000000000)[89a-f])(?:0000[08]000_[0-9a-f]{16}|0000[0-9a-f]{4}_[89a-f][0-9a-f]{15}) b 0000[08]000_(?!0{16})[0-9a-f]{16} .* de=)0$	\g<1>1	# (same, denormal ST(1))
+^(x87 \d+ op=8 cw=[0-9a-f]+ a (?:0000[08]000_(?!0{16})[0-9a-f]{16} b (?:0000[7f]fff_(?!8000000000000000)[89a-f][0-9a-f]{15}|0000(?![08]000_)[0-9a-f]{4}_[0-7][0-9a-f]{15})|(?:0000[7f]fff_(?!8000000000000000)[89a-f][0-9a-f]{15}|0000(?![08]000_)[0-9a-f]{4}_[0-7][0-9a-f]{15}) b 0000[08]000_(?!0{16})[0-9a-f]{16}) .* de=)1$	\g<1>0	# when a NaN or invalid operand decides the result, no denormal operand is reported (as TCG does for every other x87 arithmetic instruction); TCG's FSCALE reports it.
+^(simd\.noosfxsr: .* cvtpi2ps=)0000ffff	\g<1>00000006	# CVTPI2PS uses an XMM register: #UD with CR4.OSFXSR = 0 (SDM CVTPI2PS, vol. 3 table 23-5); TCG lets it run.
+^(simd\.em: .* emms=)0000ffff	\g<1>00000006	# EMMS raises #UD if CR0.EM = 1 (SDM EMMS); TCG ignores CR0.EM for it.
+^(simd\.ts: .* emms=)0000ffff	\g<1>00000007	# EMMS raises #NM if CR0.TS = 1 (SDM EMMS); TCG ignores CR0.TS for it.
+^(simd\.ldmxcsr: .* rsvd=)0000ffff err=00000000 after=00011f80$	\g<1>0000000d err=00000000 after=00009fff	# LDMXCSR setting a reserved MXCSR bit raises #GP(0) (SDM LDMXCSR); TCG loads it.
+^simd\.fxrstor\.rsvd: vec=0000ffff .*$	simd.fxrstor.rsvd: vec=0000000d err=00000000 x0=6a635c554e474039322b241d160f0801 noosfxsr=0000ffff mxcsr=00009fc0 x0=6a635c554e474039322b241d160f0801	# FXRSTOR with a reserved MXCSR bit set raises #GP(0) and loads nothing (SDM FXRSTOR); TCG loads the image.
+^(simd\.mmx\.enter: .* cvtpi2pd_mem: )top=0 tags=000000ff	\g<1>top=7 tags=00000080	# CVTPI2PD with a memory source does not switch to MMX operation (SDM CVTPI2PD); TCG always does.
+^(pgf \d+\.\d+: .* vec=0000000e err=000000[01])8	\g<1>9	# reserved-bit #PF in the paging fuzzer: P=1 (SDM 4.7), as for pae.rsvd40 above; TCG reports P=0.
+^(pgf \d+\.\d+: .* vec=0000000e err=000000[01])a	\g<1>b	# (same)
+^(pgf \d+\.\d+: .* vec=0000000e err=000000[01])c	\g<1>d	# (same)
+^(pgf \d+\.\d+: .* vec=0000000e err=000000[01])e	\g<1>f	# (same)
+^(dbf \d+: (?:in|out)\d .* n=2 \[dr6=ffff0ff[0-9a-f] eip=00000000 rf=0\] \[dr6=ffff0ff[0-9a-f] eip=0000000[1-3] rf=)1\]$	\g<1>0]	# RF is cleared when an instruction completes (SDM 17.3.1.1), so the EFLAGS image of the I/O-breakpoint trap after an instruction resumed with RF = 1 has RF = 0; TCG raises the I/O trap before clearing RF.
+^(tsf \d+ (?:jmp|call|jmpg|callg|int) .*-> )#0a\(002c\)@0028	\g<1>#0d(002c)@0028	# a TSS selector with TI = 1 (here 0x2C, a TSS descriptor in the LDT) as the target of JMP/CALL or in a task gate: #GP(selector) (SDM 7.2.2, JMP/CALL/INT TASK-GATE); TCG raises #TS.
+^((?:tsf|cgf) \d+ .*)#0b\((02c[08]|02d[08])\)	\g<1>#0c(\2)	# a not-present stack segment (I_SSNP, 0x2C0..0x2D8, used only as SS) is #SS(selector) on a task switch (SDM table 7-1) and on RET to an outer level (SDM RET); TCG raises #NP.
+^(cgf \d+ callg .*)#0a\((02c[08]|02d0)\)	\g<1>#0c(\2)	# a not-present inner stack segment from the TSS on a CALL through a call gate is #SS(selector) (SDM CALL); TCG raises #TS.
+^(cgf \d+ callg r(\d) .* tgt=d\dc1p1D\d .*-> in: cs=\w{4} rpl=)\d	\g<1>\2	# a CALL through a call gate to a conforming segment keeps CPL: CS.RPL = CPL (SDM CALL); TCG sets the RPL to the segment's DPL.

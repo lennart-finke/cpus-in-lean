@@ -1,0 +1,25 @@
+name = "openssl_tasks"
+version = "0.1.0"
+defaultTargets = ["Ssl", "Solutions", "Claims", "sslcheck"]
+
+[[require]]
+name = "x86"
+path = "../../x86_32"
+
+[[lean_lib]]
+name = "Ssl"
+
+# Proofs of the tasks, and the file that states which tasks are proved (see Audit.lean).
+[[lean_lib]]
+name = "Solutions"
+
+[[lean_lib]]
+name = "Claims"
+
+# Test support for `sslcheck`; not imported by any statement.
+[[lean_lib]]
+name = "Check"
+
+[[lean_exe]]
+name = "sslcheck"
+root = "CheckMain"

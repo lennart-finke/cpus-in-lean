@@ -1,0 +1,3 @@
+# hand: herd7's X86 has no CMPXCHG. LOCK CMPXCHG is atomic: exactly one CAS from 0 succeeds; the loser's EAX gets the winner's value.
+0:EAX=0; 1:EAX=1; x=1;
+0:EAX=2; 1:EAX=0; x=2;

@@ -19,7 +19,7 @@ def readLin (m : Machine) (lin n : Nat) : Option ByteArray := Id.run do
   let mut a := lin
   while out.size < n do
     let len := min (n - out.size) (0x1000 - a % 0x1000)
-    match walk a.toUInt32 false true m with
+    match walk a.toUInt32 false true false m with
     | .ok p _ => out := m.mem.copySlice p.toNat out out.size len
     | .error _ _ => return none
     a := a + len

@@ -1,0 +1,16 @@
+{
+  "OPENSSL_cleanse": 1049984,
+  "Poly1305_Final": 1049696,
+  "Poly1305_Init": 1048592,
+  "Poly1305_Update": 1048800,
+  "Poly1305_ctx_size": 1048576,
+  "U32TO8": 1049976,
+  "U8TOU32": 1048680,
+  "halt": 1050104,
+  "memcpy": 1050016,
+  "memset": 1050064,
+  "memset_func": 1050108,
+  "poly1305_blocks": 1049008,
+  "poly1305_emit": 1049808,
+  "poly1305_init": 1048688
+}

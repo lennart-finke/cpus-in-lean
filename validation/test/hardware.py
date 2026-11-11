@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]  # validation/: builds x86run and x86test
 REPO = ROOT.parent
-MODEL = {'i386': REPO / 'ia32', 'x86_64': REPO / 'x86_64'}
+MODEL = {'i386': REPO / 'x86_32', 'x86_64': REPO / 'x86_64'}
 
 
 def model_root(arch):
