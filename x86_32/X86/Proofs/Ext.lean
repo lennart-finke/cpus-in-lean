@@ -15,23 +15,22 @@ namespace X86
 
 /-- CPUID of the legacy identity for leaves 0, 1, 0x80000000 and 0x80000001: the former values
 (`Exec.cpuidVals` with `addSimd`) plus the bits of the implemented Gpr features (leaf 1: MONITOR,
-MOVBE, POPCNT, RDRAND, CLFSH with its line size in EBX; 8000_0001: ABM, PREFETCHW, MONITORX, RDTSCP)
+MOVBE, POPCNT, RDRAND, CLFSH with its line size in EBX; Crypto: AES, PCLMULQDQ; 8000_0001: ABM, PREFETCHW, MONITORX, RDTSCP)
 and the higher maximum leaves (7 and 8000_0008) they need, and of the Sse features (leaf 1: SSE3,
-SSSE3, SSE4.1, SSE4.2; 8000_0001: SSE4A, MisAlignSse). -/
+SSSE3, SSE4.1, SSE4.2; 8000_0001: SSE4A, MisAlignSse). Leaf 7: `cpuid_leaf7_gpr` (Proofs/ExtGpr.lean). -/
 def formerCpuid (leaf : UInt32) : Regs :=
   match leaf with
   | 0 => (7, 0x756E6547, 0x6C65746E, 0x49656E69)
   | 0x80000000 => (0x80000008, 0, 0, 0)
   | 0x80000001 => (0, 0, 0x200001E0, (1 <<< 20) ||| (1 <<< 27))
-  | _ => (0x00000619, 0x800, 0x40D80209, 0x07888365)
+  | _ => (0x00000619, 0x800, 0x42D8020B, 0x07888365)
 
-set_option maxRecDepth 10000 in
-theorem legacyMax_former : Cpuid.legacyMax = (7, 0x80000008) := by decide
+theorem legacyMax_former : Cpuid.legacyMax = (7, 0x80000008) := by decide +kernel
 
 theorem cpuid_former (c : Cpu) (leaf sub : UInt32)
     (h : leaf = 0 ∨ leaf = 1 ∨ leaf = 0x80000000 ∨ leaf = 0x80000001) :
     cpuid c leaf sub = formerCpuid leaf := by
-  have h12 : Cpuid.featBits 1 0 2 true = 0x40D80209 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x42D8020B := by decide
   have h13 : Cpuid.featBits 1 0 3 true = 0x07888365 := by decide
   have he2 : Cpuid.featBits 0x80000001 0 2 true = 0x200001E0 := by decide
   have he3 : Cpuid.featBits 0x80000001 0 3 true &&& ~~~Feature.mirrorMask = (1 <<< 20) ||| (1 <<< 27) := by

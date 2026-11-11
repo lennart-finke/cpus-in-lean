@@ -208,9 +208,10 @@ def implemented : Feature → Bool
   | .sse4a => true
   | .misalignSse => true
   -- X86/Ext/Crypto.lean
-  | .aes => false
-  | .pclmulqdq => false
-  | .sha => false
+  | .aes => true
+  | .pclmulqdq => true
+  -- SHA (Crypto.shaAvail); reported since SSSE3 exists: SHA-NI code (BusyBox sha256sum) needs PSHUFB
+  | .sha => true
   -- X86/Ext/Xsave.lean
   | .xsave => false
   | .xsaveopt => false

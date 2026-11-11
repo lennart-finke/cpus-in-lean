@@ -239,9 +239,14 @@ def simd_cases(rng, count):
 # Case families and the CPUID features they require (native_fp.FEATURES names). The
 # baseline (x87, MMX, SSE, SSE2 on an x86-64 machine) needs none. Later ISA extensions add
 # their own generator here, e.g. (sse3_cases, ('sse3',)).
+from native_crypto import aes_cases, pclmul_cases, sha_cases   # Crypto workstream
+
 FAMILIES = [
     (x87_cases, ()),
     (simd_cases, ()),
+    (aes_cases, ('aes',)),
+    (pclmul_cases, ('pclmulqdq',)),
+    (sha_cases, ('sha',)),
 ]
 # General-purpose extensions (x86_32/X86/Ext/Gpr.lean): gpr_cases.py
 from gpr_cases import FAMILIES as _GPR_FAMILIES  # noqa: E402
