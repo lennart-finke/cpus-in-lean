@@ -102,7 +102,7 @@ def run : M Bool := do
   sp ← LongMode.push64 sp rspImm user
   sp ← LongMode.push64 sp flImm user
   sp ← LongMode.push64 sp csSel user
-  sp ← LongMode.push64 sp ripImm user
+  let _ ← LongMode.push64 sp ripImm user
   -- IRETQ to compatibility (or legacy) mode at the same privilege level: CS and SS descriptors
   let (clo, chi, caddr) ← LongMode.readSel csSel.toUInt16 0
   let chi ← LongMode.setA chi caddr
