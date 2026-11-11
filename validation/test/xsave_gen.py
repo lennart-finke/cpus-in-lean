@@ -7,8 +7,9 @@ on a choice the manuals leave to the processor, or that TCG lacks, are not gener
 covered by test/sys/t_xsave.c):
   * XGETBV with ECX = 1 (XINUSE: the harness's x87 state is in its initial configuration, which the
     model tracks and TCG does not),
-  * XSAVE/XSAVEOPT with EDX:EAX bit 0 (the same XINUSE[0], and TCG does not write FOP) or with bit 2
-    but not bit 1 (TCG skips MXCSR),
+  * XSAVE/XSAVEOPT with EDX:EAX bit 0 (the same XINUSE[0], and TCG does not write FOP) or with bit 1
+    or 2 (they write MXCSR_MASK, 0x2FFFF on the model with MisalignSse, 0xFFFF on TCG; and TCG skips
+    MXCSR for bit 2 alone): with OSXSAVE these vectors only merge XSTATE_BV (or fault),
   * XSETBV without OSXSAVE (TCG checks the CPL before CR4.OSXSAVE, see sys/qemu-deviations.txt),
   * XSAVEC, XSAVES, XRSTORS with OSXSAVE (TCG has none of them; #UD is generated without OSXSAVE).
 """
@@ -57,9 +58,7 @@ def gen(g, vflags):
     # EDX:EAX
     mask = random.choice([2, 4, 6, 6, 7, 3, 0]) | (random.getrandbits(64) & ~7 if random.random() < 0.3 else 0)
     if kind == 'save' and on:
-        mask &= ~1
-        if mask & 6 == 4:
-            mask |= 2
+        mask &= ~7
     g.regs[0] = mask & 0xFFFFFFFF
     g.regs[2] = mask >> 32
     if kind in ('xgetbv', 'xsetbv'):

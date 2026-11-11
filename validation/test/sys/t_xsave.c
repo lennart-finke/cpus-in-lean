@@ -97,11 +97,12 @@ static void gen_memory(u32 seed) {
 	for (int k = 0; k < 256; k++) *(u32 *)(area + 4 * k) = xs(&s);
 }
 
-/* the area (1024 bytes) without bytes 10..15 of the x87 register slots (unspecified) */
+/* the area (1024 bytes); for QEMU without bytes 10..15 of the x87 register slots (unspecified) and
+   MXCSR_MASK (0x2FFFF with MisalignSse; TCG writes 0xFFFF) */
 static u32 area_hash(int pads) {
 	u32 h = 2166136261u;
 	for (int i = 0; i < 1024; i++)
-		if (pads || !(i >= 32 && i < 160 && (i - 32) % 16 >= 10)) h = (h ^ area[i]) * 16777619u;
+		if (pads || !((i >= 32 && i < 160 && (i - 32) % 16 >= 10) || (i >= 28 && i < 32))) h = (h ^ area[i]) * 16777619u;
 	return h;
 }
 
@@ -111,6 +112,7 @@ static u32 state_hash(void) {
 	xsetbv(0, 7);
 	memset(fx, 0, sizeof fx);
 	__asm__ volatile("fxsave (%0)" :: "r"(fx) : "memory");
+	memset(fx + 28, 0, 4);   /* MXCSR_MASK: an implementation value (TCG 0xFFFF) */
 	memset(scratch, 0, sizeof scratch);
 	xop(0, scratch, 4);
 	return fnv1(fnv1(2166136261u, fx, 512), scratch + 576, 128);

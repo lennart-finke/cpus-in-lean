@@ -28,7 +28,7 @@ M64 = (1 << 64) - 1
 # not 64-byte aligned when compacted); IA32_XSS supports nothing (EPYC 7742).
 XCR0_SUPPORTED = 0x7
 EXT = {2: (256, 576, False)}          # component: (size, standard offset, 64-byte aligned when compacted)
-MXCSR_MASK = 0xFFFF
+MXCSR_MASK = 0x2FFFF   # MXCSR.MM (bit 17) with MisalignSse (AMD APM vol. 1, 4.2.2)
 OPS = ['xsave', 'xsaveopt', 'xsavec', 'xsaves', 'xrstor', 'xrstors']
 NOVEC = 0xFFFF
 
@@ -269,7 +269,7 @@ def observe(s):
     """What t_xsave.c reads back: an FXSAVE image (into zeros) and YMM0-7[255:128]."""
     img = bytearray(512)
     struct.pack_into('<HHBBH', img, 0, s.fcw, s.fsw, s.ftw, 0, s.fop)
-    struct.pack_into('<IIIIII', img, 8, s.fip, s.fcs, s.fdp, s.fds, s.mxcsr, MXCSR_MASK)
+    struct.pack_into('<IIIIII', img, 8, s.fip, s.fcs, s.fdp, s.fds, s.mxcsr, 0)   # (mask not observed)
     for k, (sig, se) in enumerate(s.st):
         struct.pack_into('<QH', img, 32 + 16 * k, sig, se)
     save_xmm(s, img)
@@ -339,7 +339,7 @@ def gen_case(rng):
         if rng.random() < 0.05: bv |= 1 << rng.choice([3, 9, 63])
         ridx = 6 if rng.random() < 0.85 else rng.randrange(6)
         rval = rng.getrandbits(64) or 1
-        mx = rng.choice([0xFFFFFFFF, 0x1F80, rng.getrandbits(16), rng.getrandbits(16)])
+        mx = rng.choice([0xFFFFFFFF, 0x1F80, 0x21F80, rng.getrandbits(16), rng.getrandbits(16)])
         if rng.random() < 0.05: mx = rng.getrandbits(32) | 0x10000
         fcw = struct.unpack_from('<H', mem, 0)[0]
         fsw = rng.getrandbits(16) & 0x3F7F
