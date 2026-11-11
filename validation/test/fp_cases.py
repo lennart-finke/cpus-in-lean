@@ -253,6 +253,13 @@ from gpr_cases import FAMILIES as _GPR_FAMILIES  # noqa: E402
 FAMILIES += _GPR_FAMILIES
 
 
+# Sse workstream: SSE3 (with FISTTP), SSSE3, SSE4.1, SSE4.2, SSE4a, MisalignSse (fp_cases_sse.py)
+import fp_cases_sse  # noqa: E402
+FAMILIES += [(lambda rng, n, name=name: getattr(fp_cases_sse, name)(rng, n), (feature,)) for name, feature in
+             (('sse3_cases', 'sse3'), ('ssse3_cases', 'ssse3'), ('sse41_cases', 'sse41'),
+              ('sse42_cases', 'sse42'), ('sse4a_cases', 'sse4a'), ('misalign_cases', 'misalignSse'))]
+
+
 def cases(seed=20261111, count=10000):
     rng=random.Random(seed)
     for family, requires in FAMILIES:

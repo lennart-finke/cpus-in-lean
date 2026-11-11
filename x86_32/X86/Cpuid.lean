@@ -201,17 +201,17 @@ def implemented : Feature → Bool
   | .irPerf => false
   | .mcommit => true
   -- X86/Ext/Sse.lean
-  | .sse3 => false
-  | .ssse3 => false
-  | .sse41 => false
-  | .sse42 => false
-  | .sse4a => false
-  | .misalignSse => false
+  | .sse3 => true
+  | .ssse3 => true
+  | .sse41 => true
+  | .sse42 => true
+  | .sse4a => true
+  | .misalignSse => true
   -- X86/Ext/Crypto.lean
   | .aes => true
   | .pclmulqdq => true
-  -- SHA instructions are implemented (Crypto.shaAvail); the bit waits for SSSE3, see there
-  | .sha => false
+  -- SHA (Crypto.shaAvail); reported since SSSE3 exists: SHA-NI code (BusyBox sha256sum) needs PSHUFB
+  | .sha => true
   -- X86/Ext/Xsave.lean
   | .xsave => false
   | .xsaveopt => false

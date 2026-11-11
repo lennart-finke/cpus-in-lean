@@ -177,6 +177,7 @@ void sys_main(void) {
 	test_cgf();
 	test_simd();
 	test_simd_exc();
+	test_sse();
 	test_crypto();
 	test_gpr();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
@@ -189,6 +190,7 @@ void sys_main(void) {
 	test_crypto_model();
 	test_debug_fuzz_model();
 	test_paging_fuzz_model();
+	test_sse_model();
 	test_gpr_model();
 	sys_exit();
 }
