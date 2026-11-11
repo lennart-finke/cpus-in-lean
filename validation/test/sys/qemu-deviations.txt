@@ -69,6 +69,15 @@
 ^(dfc\.(?:ud|br|nm|db|intr)\.(?:np|gp|ts): vec=0000000[abd] err=[0-9a-f]{7})a$	\g<1>b	# EXT (error-code bit 0) is set for a fault raised while delivering an exception or an external interrupt (SDM vol. 3, 7.13: "during delivery of an event external to the program, such as an interrupt or an earlier exception"; AMD APM vol. 2, 8.4.1); TCG never sets EXT.
 ^(dfc\.(?:ud|br|nm|db|intr)\.(?:np|gp|ts): vec=0000000[abd] err=[0-9a-f]{7})c$	\g<1>d	# EXT (error-code bit 0) is set for a fault raised while delivering an exception or an external interrupt (SDM vol. 3, 7.13: "during delivery of an event external to the program, such as an interrupt or an earlier exception"; AMD APM vol. 2, 8.4.1); TCG never sets EXT.
 ^(dfc\.(?:ud|br|nm|db|intr)\.(?:np|gp|ts): vec=0000000[abd] err=[0-9a-f]{7})e$	\g<1>f	# EXT (error-code bit 0) is set for a fault raised while delivering an exception or an external interrupt (SDM vol. 3, 7.13: "during delivery of an event external to the program, such as an interrupt or an earlier exception"; AMD APM vol. 2, 8.4.1); TCG never sets EXT.
+^(apic\.version: |x2apic\.regs: id=\w+ ver=)00050014	\g<1>00050010	# SMP: the AMD local APIC reports version 10h (APM vol. 2, 16.3.4: version 1Xh; AMD processors report 10h); TCG emulates Intel's 14h.
+^(x2apic\.base\.xapic: \w+ version=)00050014$	\g<1>00050010	# (same: APIC version 10h)
+^apic\.esr\.lvterr: n=0$	apic.esr.lvterr: n=1 000000e5	# SMP: an APIC error (here an illegal register address) raises the error interrupt through the unmasked LVT error entry (APM vol. 2, 16.4.6; SDM vol. 3, 11.5.3); TCG records the ESR bit without the interrupt.
+^ioapic\.version: 00170020$	ioapic.version: 00170011	# SMP: the I/O APIC is an 82093AA, version 11h (82093AA datasheet, IOAPICVER); QEMU's default I/O APIC is version 20h.
+^(x2apic\.(ver|ppr|isr|ccr)\.write): ok$	\g<1>: gp	# SMP: WRMSR to a read-only x2APIC register raises #GP(0) (APM vol. 2, table 16-6 RO; SDM vol. 3, 11.12.1.2); TCG ignores the write.
+^(x2apic\.eoi\.read): ok$	\g<1>: gp	# SMP: RDMSR of the write-only EOI register raises #GP(0) (APM vol. 2, table 16-6 WO; SDM vol. 3, 11.12.1.2); TCG returns 0.
+^(x2apic\.(eoi|esr)\.nonzero): ok$	\g<1>: gp	# SMP: WRMSR of a non-zero value to the x2APIC EOI or ESR register raises #GP(0) (APM vol. 2, table 16-6); TCG accepts it.
+^(x2apic\.icrhi\.read): ok$	\g<1>: gp	# SMP: MSR 831h is not implemented in x2APIC mode, the ICR is the single 64-bit MSR 830h (APM vol. 2, 16.11.1); TCG maps it to ICR high.
+^(x2apic\.(tpr\.rsvd|tpr\.hi|selfipi\.rsvd)): ok$	\g<1>: gp	# SMP: WRMSR with a reserved bit set in an x2APIC register raises #GP(0) (APM vol. 2, 16.11.3, 16.15); TCG does not check reserved bits.
 ^(lm\.pg\.(?:rsvd49|2m\.rsvd13|1g\.rsvd13|pdpe\.rsvd48|nx\.nonxe): vec=0000000e err=0000000)8	\g<1>9	# long mode: a reserved-bit #PF has P = 1 (the entry is present; AMD APM vol. 2, 8.4.2), as for pae.rsvd50; TCG reports P = 0.
 ^(lmf \d+\.\d+: .* vec=0000000e err=000000[01])8	\g<1>9	# (same, in the 4-level paging fuzzer)
 ^(lmf \d+\.\d+: .* vec=0000000e err=000000[01])a	\g<1>b	# (same)

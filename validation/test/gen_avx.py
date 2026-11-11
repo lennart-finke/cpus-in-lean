@@ -26,6 +26,9 @@ model-only part):
 * two NaN operands of one floating-point operation: hardware returns the first source (SDM vol. 1,
   table 4-7), TCG the one with the larger significand; for the forms in NAN2 the seed is chosen so
   that the two sources have at most one NaN (none for VDPPS/VDPPD) (as gen_sse.py);
+* VMINPx/VMAXPx/VMINSx/VMAXSx with MXCSR.DAZ: the result is the DAZ-flushed source (the
+  comparison's operand), TCG returns the unflushed denormal (as t_simd.c's NODAZ rows for the legacy
+  forms); generated with DAZ clear;
 * VMASKMOVPS/PD loads with paging: TCG loads the whole operand, so masked-out elements on a
   non-present page fault; the model (SDM: "Faults occur only due to mask-bit required memory
   accesses") does not. These vectors run without paging (g.no_paging).
@@ -38,7 +41,8 @@ import isa_forms
 DATA, DATA_SIZE = 0x8000, 8192
 
 # (map, pp, op) -> flags (see `gen`):
-#   V   VEX.vvvv is a source (otherwise it must be 1111b); Vr: only in the register form (VMOVSS/SD)
+#   V   VEX.vvvv is a source (otherwise it must be 1111b); Vr: only in the register form (VMOVSS/SD;
+#       their loads ignore it, their stores need 1111b)
 #   L0, L1 the required VEX.L (else any; G = VEX.L ignored, G0: ignored but generated as 0); W0 VEX.W
 #   must be 0
 #   M / R  memory / register operand only; A aligned (class 1); I imm8; S store to memory
@@ -284,7 +288,8 @@ def gen(g):
         mem = random.random() < 0.45
     regs = REGS.get(key)
     reg = random.choice(regs) if regs else random.randint(0, 7)
-    uses_v = 'V' in fl or ('Vr' in fl and not mem)
+    # (VMOVSS/SD: VEX.vvvv is a source of the register form and ignored by the load, Avx.lean)
+    uses_v = 'V' in fl or ('Vr' in fl and not mem) or (key in ((1, 2, 0x10), (1, 3, 0x10)) and mem)
     vvvv = random.randint(0, 7) if uses_v else (0 if random.random() < 0.9 else 8)
     if uses_v and random.random() < 0.1:
         vvvv += 8                         # inverted VEX.vvvv[3] = 0: ignored outside 64-bit mode
@@ -357,6 +362,8 @@ def gen(g):
         # a valid MXCSR image (TCG loads reserved bits instead of raising #GP(0); the system tests
         # check that rule, simd.ldmxcsr)
         g.patches.append((addr - DATA, 0x1F80 | random.getrandbits(16) & 0xE07F))   # VLDMXCSR
+    if map_ == 1 and op in (0x5D, 0x5F):
+        g.mxcsr_and = ~0x40              # VMIN/VMAX: no DAZ (see the module documentation)
     if map_ == 2 and op in (0x2C, 0x2D):
         g.no_paging = True               # VMASKMOVPS/PD load: see the module documentation
     nan = 'nf' in fl or 'nd' in fl or 'n0' in fl

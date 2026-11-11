@@ -789,10 +789,10 @@ def rsm : M Unit := do
   if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
   -- the 32-bit save map has no EFER: returning to paging with EFER.LME = 1 would need EFER.LMA from it
   if cr0 &&& CR0.PG != 0 && c.efer &&& EFER.LME != 0 then unsupported "RSM to paging with EFER.LME = 1"
-  -- the CR4 bits MOV CR4 accepts besides VME/PVI and OSXMMEXCPT/OSFXSR (as before), plus system A's UMIP,
-  -- SMEP and SMAP: an SMI taken while they are set must be able to return
-  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP ||| CR4.FSGSBASE ||| CR4.VME ||| CR4.PVI : UInt32) != 0 then
-    throw (.shutdown "RSM: invalid saved CR4")
+  -- a reserved CR4 bit in the saved state shuts the processor down (SDM vol. 3, RSM: "any reserved bit of
+  -- CR4 is set to 1"; AMD APM vol. 3 RSM: an invalid saved state causes shutdown);
+  -- every bit MOV CR4 accepts is valid: an SMI taken while it is set must be able to return
+  if cr4 &&& ~~~Cpuid.cr4Writable != 0 then throw (.shutdown "RSM: invalid saved CR4")
   let cr3 ← r 0x7FF8
   let efl ← r 0x7FF4
   let eip ← r 0x7FF0

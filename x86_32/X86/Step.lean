@@ -154,6 +154,75 @@ instruction of the handler. -/
 @[inline] def pendHits (m : Machine) : Machine :=
   if m.dbHit == 0 then m else { m with dbPend := m.dbPend ||| m.dbHit, dbHit := 0 }
 
+/-! ## INIT, STARTUP and NMI messages (SMP workstream; NMI: system workstream B)
+
+What the local APIC passes to the core (`Apic.init`, `sipi`, `nmi`; cached in `Machine.xev`) is
+taken at an instruction boundary by `smpEvent?`, before everything else in `step`:
+* INIT (held pending in SMM): the INIT state of AMD APM vol. 2, table 14-1 (`Cpu.afterInit`) and the
+  APIC's reset values except base, mode and ID (`Apic.reset`); an application processor then waits for
+  a STARTUP IPI, the boot processor (BSC) starts at the reset vector FFFF:FFF0 as after RESET (there is
+  no firmware in the model: open bus);
+* in the INIT state the CPU executes nothing and holds every other event pending (APM 16.5: "the
+  target APIC is responsive only to the STARTUP IPI. All other interrupts (including SMI and NMI) are
+  held pending until the STARTUP IPI has been accepted"); a STARTUP IPI with vector VV starts it in real
+  mode at VV00:0000 (CS base VV000h);
+* a STARTUP IPI outside the INIT state is ignored;
+* NMI: the APIC's `nmi` message (an NMI IPI, an LVT or I/O APIC entry in NMI mode: `Machine.latchNmi`)
+  enters the CPU's NMI latch (`Cpu.latchNmi`, `SysBState.nmiPending`) at the CPU's next instruction
+  boundary outside the INIT state (`takeNmi`), from where `nextEvent` delivers it with the NMI
+  blocking rules of system B. A CPU in the INIT state holds it pending in the APIC. -/
+
+/-- The CPU state after INIT (AMD APM vol. 2, table 14-1 "Value after INIT", table 14-2 attributes):
+real mode at F000:FFF0 with CS base FFFF_0000h, CR0 = 10h with CD and NW kept, CR2–CR4, EFER, the
+general registers (EDX = processor signature `sig`), DR0–DR3, DR6, DR7 at their reset values; x87,
+MMX and SSE state, MSRs, TSC, SMBASE and XCR0 are not modified. -/
+def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
+  let seg : SegReg := { sel := 0, base := 0, limit := 0xFFFF, attr := 0x92 }
+  { c with
+    eax := 0, ebx := 0, ecx := 0, edx := sig, esp := 0, ebp := 0, esi := 0, edi := 0,
+    eip := 0xFFF0, eflags := 2,
+    cs := { sel := 0xF000, base := 0xFFFF0000, limit := 0xFFFF, attr := 0x9A },
+    ds := seg, es := seg, fs := seg, gs := seg, ss := seg,
+    ldtr := { attr := 0x82 }, tr := { attr := 0x83 },
+    gdtBase := 0, gdtLimit := 0xFFFF, idtBase := 0, idtLimit := 0xFFFF,
+    cr0 := 0x10 ||| (c.cr0 &&& (CR0.CD ||| CR0.NW)), cr2 := 0, cr3 := 0, cr4 := 0,
+    dr0 := 0, dr1 := 0, dr2 := 0, dr3 := 0, dr6 := 0xFFFF0FF0, dr7 := 0x400, bpOn := false,
+    efer := 0, halted := !bsp, shadow := false,
+    -- long mode: EFER = 0 (LME, LMA); RIP/RSP bits 63:32 = 0, FS/GS base 0 (the segment loads clear
+    -- the 64-bit bases); R11 and KernelGSbase (an MSR) are not modified
+    lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none, entry := "" },
+    smpx := { c.smpx with waitSipi := !bsp, mwait := none } }
+
+/-- INIT of the running CPU. -/
+def Machine.initCpu (m : Machine) : Machine :=
+  let sig := (cpuid m.cpu 1 0).1
+  { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := { m.apic with init := false }.reset,
+           dbPend := 0 }.syncTimer.syncApic
+
+/-- A STARTUP IPI with vector `v` ends the INIT state: real mode at `v`00:0000. -/
+def Machine.startCpu (m : Machine) (v : UInt32) : Machine :=
+  { m with cpu := { m.cpu with cs := { sel := (v <<< 8).toUInt16, base := v <<< 12, limit := 0xFFFF, attr := 0x9A },
+                               eip := 0, halted := false, smpx := { m.cpu.smpx with waitSipi := false } },
+           apic := { m.apic with sipi := none } }.syncXev
+
+/-- The APIC's NMI message enters the CPU's NMI latch (a second NMI while one is latched is lost). -/
+@[inline] def Machine.takeNmi (m : Machine) : Machine :=
+  if m.apic.nmi then { m with apic := { m.apic with nmi := false }, cpu := m.cpu.latchNmi }.syncXev else m
+
+/-- The slow path of `smpEvent?`. -/
+def smpEventSlow (m : Machine) : Option Machine :=
+  let a := m.apic
+  if a.init && !m.cpu.smm then some m.initCpu
+  else if m.cpu.smpx.waitSipi then
+    match a.sipi with
+    | some v => some (m.startCpu v)
+    | none => some m
+  else if a.sipi.isSome then some { m with apic := { a with sipi := none } }.syncXev
+  else none
+
+/-- INIT, STARTUP and the INIT state at an instruction boundary; `none`: nothing to do here. -/
+@[inline] def smpEvent? (m : Machine) : Option Machine := if m.xev then smpEventSlow m else none
+
 /-- Add `n` instruction slots of `icount` in which no instruction retired (IRPerf, `SysB`). -/
 @[inline] def addNotRetired (m : Machine) (n : UInt64) : Machine :=
   { m with cpu := { m.cpu with sysbx := { m.cpu.sysbx with notRetired := m.cpu.sysbx.notRetired + n } } }
@@ -211,11 +280,12 @@ inductive Event where
   deriving DecidableEq, Repr
 
 /-- The event to take at this instruction boundary, in the priority order of AMD APM vol. 2, 8.5
-(table 8-9, "Simultaneous Interrupt Priorities"), for the events the model has (no reset, INIT or
-machine checks; the table's priority numbers in brackets):
+(table 8-9, "Simultaneous Interrupt Priorities"), for the events the model has (no reset or machine
+checks; the table's priority numbers in brackets). INIT and STARTUP [1] come first, in `smpEvent?`
+(`step`); then:
 
-1. [1] SMI (external processor-initiated, with INIT and STPCLK which the model lacks; held while in
-   SMM, and not taken in an interrupt shadow);
+1. [1] SMI (external processor-initiated, like INIT; held while in SMM, and not taken in an
+   interrupt shadow);
 2. [2] debug traps of the previous instruction (DR6 bits held in `dbPend`: single-step, data and
    I/O breakpoints, the TSS T flag, and those held across MOV SS/POP SS);
 3. [3] NMI (`SysBState.nmiPending`, unless NMIs are blocked or in an interrupt shadow);
@@ -258,15 +328,21 @@ def stepAt (m : Machine) : Machine :=
     stepInstr { m with cpu := { c with sysbx := { c.sysbx with nmiDelay := c.sysbx.nmiDelay - 1 } } }
   | .instr => stepInstr m
 
-/-- One architectural step: timer events due, then `stepAt`. -/
+/-- One architectural step: timer events due; INIT, STARTUP and the INIT state (`smpEvent?`: INIT is
+above SMI in AMD's table 8-9, and a CPU waiting for STARTUP holds every other event pending); then the
+APIC's NMI message enters the NMI latch (`Machine.takeNmi`) and `stepAt` takes the event `nextEvent`
+selects. -/
 def step (m : Machine) : Machine :=
-  stepAt (if m.icount ≥ m.timerAt then m.timerFire else m)
+  let m := if m.icount ≥ m.timerAt then m.timerFire else m
+  match smpEvent? m with
+  | some m => m
+  | none => stepAt (if m.xev then m.takeNmi else m)
 
 /-- `true` if the machine can make no progress without external input. -/
 def Machine.idle (m : Machine) : Bool :=
   m.cpu.halted && m.dbPend == 0 && !m.smiPending && m.timerAt == maxU64 &&
     !(m.intr && m.cpu.eflags &&& Flag.IF != 0) &&
-    !(m.cpu.sysbx.nmiPending && (!m.cpu.sysbx.nmiBlocked || m.cpu.sysbx.nmiDelay != 0))
+    !((m.cpu.sysbx.nmiPending || m.apic.nmi) && (!m.cpu.sysbx.nmiBlocked || m.cpu.sysbx.nmiDelay != 0))
 
 /-- Run until the instruction count reaches `limit`, the machine is idle, or a fatal stop. -/
 partial def Machine.runUntil (m : Machine) (limit : UInt64) : Machine :=

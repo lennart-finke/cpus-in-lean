@@ -114,3 +114,132 @@ void test_apic(void) {
 	show("apic.reenable");
 	trap_hook = 0;
 }
+
+/* ---- SMP workstream: APIC errors and the AMD local APIC (AMD APM vol. 2, chapter 16) ---- */
+#include "smp.h"
+
+static volatile u32 a2_log[16], a2_n, a2_noeoi;
+static int a2_hook(struct frame *f) {
+	if (f->vec < 0x20 || f->vec == 0xFF) return 0;
+	if (a2_n < 16) a2_log[a2_n] = f->vec;
+	a2_n++;
+	if (!a2_noeoi) LR(0xB0) = 0;
+	return 1;
+}
+static void a2_show(const char *what) {
+	kprintf("%s: n=%d", what, a2_n);
+	for (u32 i = 0; i < a2_n && i < 8; i++) kprintf(" %x", a2_log[i]);
+	kputc('\n');
+	a2_n = 0;
+}
+static u32 esr(void) { LR(0x280) = 0; return LR(0x280); }
+
+/* QEMU-compared: illegal register address, illegal vectors, the error interrupt */
+void test_apic_errors(void) {
+	trap_hook = a2_hook;
+	LR(0xF0) = 0x1FF; LR(0x80) = 0; LR(0x370) = 0x10000;
+	esr(); esr();
+	kprintf("apic.esr.clean: %x\n", esr());
+	u32 v = LR(0x40);   /* unimplemented register */
+	kprintf("apic.esr.ira: read=%x esr=%x\n", v, esr());
+	/* (an IPI with an illegal vector is model-only: TCG delivers it, as vector 5 here) */
+	LR(0x370) = 0xE5;   /* error interrupt unmasked */
+	v = LR(0x50);
+	sti_nops();
+	a2_show("apic.esr.lvterr");
+	kprintf("apic.esr.lvterr.esr: %x\n", esr());
+	LR(0x370) = 0x10000;
+	esr();
+	trap_hook = 0;
+}
+
+/* Model-only: the AMD-specific parts that TCG lacks (APR, remote read, extended APIC space, SEOI, IER,
+   SAE, LVT timer with an illegal vector, LINT0 in fixed mode). */
+void test_apic_model(void) {
+	trap_hook = a2_hook;
+	outb(0x21, 0xFF); outb(0xA1, 0xFF);
+	LR(0xF0) = 0x1FF; LR(0x80) = 0; LR(0x370) = 0x10000;
+	esr(); esr();
+	kprintf("apicm.version: %x extfeat=%x extctl=%x ier7=%x xlvt=%x %x %x %x\n", LR(0x30), LR(0x400),
+	        LR(0x410), LR(0x4F0), LR(0x500), LR(0x510), LR(0x520), LR(0x530));
+	/* APR: highest of TPR and the classes of ISR/IRR (APM 16.6.2) */
+	LR(0x80) = 0x35;
+	kprintf("apicm.apr.tpr: apr=%x ppr=%x\n", LR(0x90), LR(0xA0));
+	LR(0x310) = 0; LR(0x300) = 0x40000 | 0x71;   /* pending, IF = 0 */
+	kprintf("apicm.apr.irr: apr=%x ppr=%x\n", LR(0x90), LR(0xA0));
+	LR(0x80) = 0;
+	sti_nops();
+	a2_show("apicm.apr.int");
+	/* remote read of this APIC's own TPR (APM 16.5: message type 011b, vector = offset / 16) */
+	LR(0x80) = 0x42;
+	LR(0x310) = 0; LR(0x300) = 0x300 | 0x08;
+	kprintf("apicm.rr.self: icr=%x rrr=%x\n", LR(0x300) & 0x30F00, LR(0xC0));
+	LR(0x310) = 0x05000000; LR(0x300) = 0x300 | 0x08;   /* no APIC with ID 5 */
+	kprintf("apicm.rr.absent: icr=%x\n", LR(0x300) & 0x30F00);
+	LR(0x310) = 0; LR(0x300) = 0x300 | 0x04;   /* unimplemented register 40h */
+	kprintf("apicm.rr.invalid: icr=%x\n", LR(0x300) & 0x30F00);
+	LR(0x80) = 0;
+	/* SAE: an IPI no APIC accepts; SIV + RIV: illegal vector */
+	esr();
+	LR(0x310) = 0x05000000; LR(0x300) = 0x61;
+	kprintf("apicm.esr.sae: %x\n", esr());
+	LR(0x310) = 0; LR(0x300) = 0x40000 | 0x0F;
+	kprintf("apicm.esr.ivec: %x\n", esr());
+	/* LVT timer with an illegal vector: RIV when it fires */
+	LR(0x3E0) = 0xB; LR(0x320) = 0x08; LR(0x380) = 50;
+	for (volatile int i = 0; i < 200; i++) {}
+	kprintf("apicm.esr.timerivec: %x irr0=%x\n", esr(), LR(0x200));
+	LR(0x320) = 0x10000; LR(0x380) = 0;
+	/* writes to read-only registers are ignored; to an unimplemented one: IRA */
+	LR(0x30) = 0; LR(0xA0) = 0xFF; LR(0x390) = 5;
+	kprintf("apicm.esr.rowrite: %x version=%x\n", esr(), LR(0x30));
+	LR(0x60) = 1;
+	kprintf("apicm.esr.badwrite: %x\n", esr());
+	/* SEOI (APM 16.7.1): ignored without SN; with SN retires the named vector, not the highest */
+	a2_noeoi = 1;
+	LR(0x310) = 0; LR(0x300) = 0x40000 | 0x81;
+	sti_nops();
+	LR(0x300) = 0x40000 | 0x91;
+	sti_nops();
+	a2_noeoi = 0;
+	a2_show("apicm.seoi.taken");
+	LR(0x420) = 0x81;
+	kprintf("apicm.seoi.off: isr=%x %x\n", LR(0x140), LR(0x150));
+	LR(0x410) = 2;
+	LR(0x420) = 0x81;
+	kprintf("apicm.seoi.on: extctl=%x isr=%x %x ppr=%x\n", LR(0x410), LR(0x140), LR(0x150), LR(0xA0));
+	LR(0x420) = 0x91;
+	kprintf("apicm.seoi.on2: isr=%x %x ppr=%x\n", LR(0x140), LR(0x150), LR(0xA0));
+	LR(0x410) = 0;
+	/* IER (APM 16.7.2): writes need IERN; with IERN a disabled vector stays pending */
+	LR(0x4A0) = 0;
+	kprintf("apicm.ier.noiern: ier2=%x\n", LR(0x4A0));
+	LR(0x410) = 1;
+	LR(0x4A0) = ~(1u << (0x45 & 31));
+	LR(0x310) = 0; LR(0x300) = 0x40000 | 0x45; LR(0x300) = 0x40000 | 0x46;
+	sti_nops();
+	a2_show("apicm.ier.masked");
+	kprintf("apicm.ier.pending: irr2=%x ppr=%x\n", LR(0x220), LR(0xA0));
+	LR(0x4A0) = 0xFFFFFFFF;
+	sti_nops();
+	a2_show("apicm.ier.released");
+	LR(0x410) = 0;
+	/* extended LVT entries: storage, masked by a software disable */
+	LR(0x500) = 0x12345; LR(0x530) = 0x1FFFFFFF;
+	kprintf("apicm.xlvt: %x %x\n", LR(0x500), LR(0x530));
+	LR(0xF0) = 0xFF;
+	kprintf("apicm.xlvt.swdisable: %x %x\n", LR(0x500), LR(0x530));
+	LR(0xF0) = 0x1FF;
+	LR(0x500) = 0x10000; LR(0x530) = 0x10000;
+	/* LINT0 in fixed mode, edge-triggered: the PIC's INTR is the input pin (PIT IRQ 0 via the PIC) */
+	outb(0x20, 0x11); outb(0x21, 0x20); outb(0x21, 0x04); outb(0x21, 0x01); outb(0x21, 0xFE);
+	outb(0xA0, 0x11); outb(0xA1, 0x28); outb(0xA1, 0x02); outb(0xA1, 0x01); outb(0xA1, 0xFF);
+	LR(0x350) = 0x00066;
+	pit_oneshot(100);
+	for (int k = 0; k < 2000 && !a2_n; k++) sti_nops();
+	a2_show("apicm.lint0.fixed");
+	kprintf("apicm.lint0.state: lvt0=%x pic_irr=%x\n", LR(0x350), inb(0x20));
+	outb(0x21, 0xFF);
+	LR(0x350) = 0x700;
+	trap_hook = 0;
+}
