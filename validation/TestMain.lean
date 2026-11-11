@@ -165,6 +165,16 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
   -- `tcgVexUd`)
   if lo.vec == 6 && tcgVexUd i then return lo
+  -- (Avx) Masked stores (VMASKMOVPS/PD, VEX.66.0F38 2E/2F; VMASKMOVDQU, VEX.66.0F F7): a faulting
+  -- instruction leaves memory unchanged (faults are restartable: "the state ... prior to the
+  -- execution of the faulting instruction", SDM vol. 3, 6.5; the model checks every selected element
+  -- before writing any); TCG stores the selected elements one by one and faults in the middle. With
+  -- the same #PF on both sides, only QEMU's data-area hash and the accessed/dirty bits its stores set
+  -- are replaced.
+  if i.vex && qo.vec == 14 && lo.vec == 14 && qo.cr2 == lo.cr2 && qo.err == lo.err &&
+     ((i.map == 2 && i.pp == 1 && (i.byte == 0x2E || i.byte == 0x2F)) || (i.map == 1 && i.pp == 1 && i.byte == 0xF7)) then
+    let ad (q l : UInt32) : UInt32 := if (q ^^^ l) &&& ~~~0x60 == 0 then l else q
+    return { qo with hash := lo.hash, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
   -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
   -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
   -- not-present page faults at that page's first byte. Only that #PF is replaced.
