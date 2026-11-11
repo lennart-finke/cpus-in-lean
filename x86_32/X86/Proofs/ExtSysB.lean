@@ -1,6 +1,7 @@
 import X86.Step
 import X86.Proofs.Basic
 import X86.Proofs.State
+import X86.Proofs.ExtSmp
 import Std.Tactic.BVDecide
 /-!
 # System workstream B: exception classes, NMI, VME/PVI, IRPerf, PATCH_LEVEL
@@ -12,7 +13,8 @@ import Std.Tactic.BVDecide
 * `nextEvent_nmi_blocked`, `nextEvent_nmi_shadow`: an NMI is not taken while NMIs are blocked or in an
   interrupt shadow; `nextEvent_smi_first`, `nextEvent_nmi_before_intr`: the priorities SMI > NMI > INTR;
   `stepAt_nmi`: a deliverable NMI is delivered; `execInstr_iret_unblocks`: an IRET that completes
-  ends the blocking of NMIs.
+  ends the blocking of NMIs; `takeNmi_latches`: an NMI from the local APIC enters the CPU's latch;
+  `step_waitSipi_nmi`: a CPU waiting for STARTUP holds it pending.
 * `cli_if_cpl3`, `sti_if_cpl3`, `popfMask_if_cpl3`, `vmePopFlags_if`, `vmeIntFlags_if`: with VME or
   PVI (or without), virtual-8086 / CPL-3 code with IOPL < 3 cannot change EFLAGS.IF through CLI, STI,
   POPF, IRET or a redirected INT n; `vmeActive_cpl3`: VME applies only at CPL 3.
@@ -122,6 +124,18 @@ theorem deliverNmi_blocks (m : Machine) :
     let s := { m.cpu.sysbx with nmiPending := false, nmiBlocked := true }
     deliverNmi m = pendHits (raiseExc { m with cpu := { m.cpu with halted := false, sysbx := s } }
       Vec.NMI none true true) := rfl
+
+/-- An NMI from the local APIC (NMI IPI, LVT or I/O APIC entry in NMI mode) enters the CPU's NMI latch
+when the CPU reaches an instruction boundary. -/
+theorem takeNmi_latches {m : Machine} (h : m.apic.nmi = true) :
+    (m.takeNmi).cpu.sysbx.nmiPending = true ∧ (m.takeNmi).apic.nmi = false := by
+  simp [Machine.takeNmi, h, Cpu.latchNmi, Machine.syncXev]
+
+/-- A CPU waiting for STARTUP holds an NMI from its APIC pending (`step_waitSipi`): nothing changes. -/
+theorem step_waitSipi_nmi (m : Machine) (ht : m.icount < m.timerAt) (hx : m.xev = true)
+    (hw : m.cpu.smpx.waitSipi = true) (hi : m.apic.init = false) (hs : m.apic.sipi = none) :
+    (step m).apic.nmi = m.apic.nmi ∧ (step m).cpu.sysbx = m.cpu.sysbx := by
+  rw [step_waitSipi m ht hx hw hi hs]; exact ⟨rfl, rfl⟩
 
 /-- An IRET that completes ends the blocking of NMIs. -/
 theorem execInstr_iret_unblocks {m m' : Machine} {i : Inst} (h : execInstr m = .ok i m')

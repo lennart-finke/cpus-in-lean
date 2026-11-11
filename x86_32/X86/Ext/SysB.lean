@@ -126,8 +126,8 @@ def hwcrWrite (v : UInt64) : M Unit := modM fun m =>
 /-! ## MSRs -/
 
 /-- MSR of the model-only NMI test hook (ASCII "NMI1"); present only with `SysBState.testHooks`,
-which `x86sys` sets for the system tests (QEMU has no software NMI source besides the local APIC,
-whose NMI delivery modes the SMP workstream owns). WRMSR with EAX = n latches an NMI that becomes
+which `x86sys` sets for the system tests, for what the local APIC's NMI sources cannot express (an
+NMI that arrives at a chosen instruction boundary) and to read the latch state. WRMSR with EAX = n latches an NMI that becomes
 deliverable after n further instruction boundaries (0: the next boundary; see `Step.step`).
 RDMSR returns bit 0 = NMI latched, bit 1 = NMIs blocked, bits 63:32 = the remaining delay. -/
 def nmiHookMsr : UInt32 := 0x4E4D4931

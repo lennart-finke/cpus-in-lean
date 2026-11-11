@@ -91,25 +91,13 @@ gpr.monitorx: cpl3=00000040 ecx=0000000d mwaitx.timer=0000ffff waited=1 ecx4=000
 gpr.clflush.paging: ro=0000ffff a=1 d=0 np.clwb=0000000e err=00000000 cr2_ok=1 np.prefetchw=0000ffff np.nta=0000ffff np.monitor=0000000e ro.clzero=0000000e err=00000003
 gpr.clflush.seg: last=0000ffff beyond=0000000d monitor.beyond=0000000d clzero.line=0000ffff null=0000000d null.clzero=0000000d
 nmi.basic: n=1 [after_wrmsr if=00000000 st=00000002 hif=00000000 smm=0] after=00000000
-nmi.if1: n=1 [after_wrmsr if=00000200 st=00000002 hif=00000000 smm=0] after=00000000
 nmi.blocked: n=2 [after_wrmsr if=00000000 st=00000002 hif=00000000 smm=0] [after_wrmsr if=00000000 st=00000002 hif=00000000 smm=0] after=00000000
 nmi.blocked.inside: n=1 st=00000003
-nmi.latch_one: n=2 [after_wrmsr if=00000000 st=00000002 hif=00000000 smm=0] [after_wrmsr if=00000000 st=00000002 hif=00000000 smm=0] after=00000000
-nmi.latch_one.inside: n=1
-nmi.iret.other: n=2 nested=2 seq=00000002,00000041,00000002,00000000
 nmi.iret.fault: n=2 nested=1 gp=0000000d second=after_wrmsr
-nmi.hlt: n=1 [after_hlt if=00000000 st=00000002 hif=00000000 smm=0] after=00000000
 nmi.movss: n=1 [after_movss_next if=00000000 st=00000002 hif=00000000 smm=0] after=00000000
 nmi.sti: n=1 [after_sti_next if=00000200 st=00000002 hif=00000000 smm=0] after=00000000
-nmi.prio.intr: seq=00000002,00000062 n=1 at=after_popf
-nmi.trapgate: n=1 [after_wrmsr if=00000200 st=00000002 hif=00000200 smm=0] after=00000000
-nmi.taskgate: tasks=2 st=00000002 hook=0 after=00000000
 nmi.smi.both: n=1 [after_out if=00000000 st=00000002 hif=00000000 smm=1] after=00000000
 nmi.smi.both.smm: count=1 in_smm=0
-nmi.smi.latched: n=1 [after_out if=00000000 st=00000002 hif=00000000 smm=1] after=00000000
-nmi.smi.latched.smm: count=1 in_smm=0
-nmi.smi.iret: n=0 after=00000000
-nmi.smi.iret.smm: count=1 in_smm=1
 irperf.cpuid: 1 hwcr30=0
 irperf.on: hwcr=40000000 straight=7 rep64=8 rep5000=8 rep0=8
 irperf.write: 1001

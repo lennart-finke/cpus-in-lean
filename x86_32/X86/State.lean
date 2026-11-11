@@ -106,8 +106,9 @@ structure SysState where
 * NMI (AMD APM vol. 2, 8.1.4, 8.2.3 and 10.3.3): `nmiPending` is the NMI latch (at most one NMI is held
   while NMIs are blocked; further NMIs are lost), `nmiBlocked` is set when an NMI is delivered and
   cleared by the next IRET that completes (`Step.iretUnblock`). `smmNmiBlocked` holds the blocking state of the
-  interrupted context during SMM (SMM entry blocks NMIs; RSM restores it). Sources of NMIs (APIC
-  LINT0/LINT1 in NMI mode, NMI IPIs) call `Cpu.latchNmi`.
+  interrupted context during SMM (SMM entry blocks NMIs; RSM restores it). The NMI sources of the
+  local APIC (NMI IPIs, LVT and I/O APIC entries in NMI mode: `Machine.latchNmi`) reach it through
+  the APIC's NMI message at the CPU's next instruction boundary (`Machine.takeNmi`).
 * IRPerf (MSR C000_00E9h): the retired-instruction count of the core is `Machine.icount` minus
   `notRetired`, the instruction slots of `icount` in which no instruction retired (see
   `SysB.retired`). `irBase` is the counter value at `irAt` retired instructions.

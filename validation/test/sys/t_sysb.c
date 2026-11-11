@@ -12,7 +12,7 @@
    exception or an external interrupt, clear for INT n / INT3 (SDM vol. 3, 6.13).
    #DF, and #TS, #SS and #PF when they cannot use the ring-0 stack, are taken through task gates to
    recording tasks that resume the kernel. */
-#include "sys.h"
+#include "smp.h"
 
 #define TSS_DFR 0xC8      /* recording tasks: #DF, #TS, #SS, #PF */
 #define TSS_TSR 0xD0
@@ -224,24 +224,35 @@ void test_sysb(void) {
 }
 
 /* ---------------------------------------------------------------------------------------------
-   Model-only: NMI (latch, blocking until IRET, shadows, HLT, SMM, gates, priority) and IRPerf.
+   NMI: latch, blocking until IRET, HLT, SMM, gates, priority.
 
-   QEMU's only software NMI source is the local APIC (NMI delivery mode), which the model's APIC does
-   not implement yet (SMP workstream). The model has a test hook instead: MSR 0x4E4D4931 ("NMI1"),
-   present only when the runner enables it (x86sys does): WRMSR with EAX = n latches an NMI that
-   becomes deliverable after n more instruction boundaries; RDMSR returns bit 0 latched, bit 1
-   blocked. Without the hook (QEMU) the tests print "nmi: no hook" (not compared). */
+   QEMU-compared (`nmiq.*`): the NMIs come from the local APIC, as on hardware: a self-IPI with
+   delivery mode NMI (ICR 400h to the own APIC ID) and an I/O APIC entry in NMI mode on the PIT's pin.
+   TCG may take an interrupt request a few instructions after the APIC write, so these lines print
+   counts, flags and orders, not the exact interrupted EIP (except where the CPU waits in HLT).
+
+   Model-only (`nmi.*`): what the APIC cannot express. The model has a test hook, MSR 0x4E4D4931
+   ("NMI1"), present only when the runner enables it (x86sys does): WRMSR with EAX = n latches an NMI
+   that becomes deliverable after n more instruction boundaries, so that it can arrive at a chosen
+   boundary (the MOV SS and STI shadows, an SMI at the same boundary); RDMSR returns bit 0 latched,
+   bit 1 blocked. Without the hook the model-only tests print "nmi: no hook". */
 #define NMI_MSR 0x4E4D4931
 #define SMMS ((volatile u32 *)0x6000)   /* SMM handler results: 0 count, 1 NMIs taken in SMM, 2 mode */
 
 static volatile u32 nmi_n, nmi_eip[8], nmi_efl[8], nmi_st[8], nmi_if[8], nmi_smm[8];
 static volatile u32 seq[8], nseq, act, inner_n, inner_st, nested_n, gp_seen;
+static volatile int use_hook;
 static struct tss32 nmi_tss __attribute__((aligned(128)));
 static u8 nmi_tstk[1024] __attribute__((aligned(16)));
 volatile u32 nmi_task_n, nmi_task_st;
 
-static void latch(u32 delay) { wrmsr(NMI_MSR, delay); }
-static u32 nst(void) { return (u32)rdmsr(NMI_MSR); }
+static u32 nst(void) { return use_hook ? (u32)rdmsr(NMI_MSR) : 0; }
+/* an NMI now: the hook (model-only tests) or a self-IPI with delivery mode NMI */
+static void nmi_send(void) {
+	if (use_hook) wrmsr(NMI_MSR, 0);
+	else { AR(0x310) = 0; AR(0x300) = 0x400; }
+}
+static void settle(void) { for (volatile int i = 0; i < 64; i++) {} }
 
 static int nmi_hook(struct frame *f) {
 	if (nseq < 8) seq[nseq++] = f->vec;
@@ -252,22 +263,37 @@ static int nmi_hook(struct frame *f) {
 	if (k < 8) { nmi_eip[k] = f->eip; nmi_efl[k] = f->eflags; nmi_st[k] = nst(); nmi_if[k] = rdflags() & 0x200; nmi_smm[k] = SMMS[0]; }
 	u32 a = act; act = 0;
 	if (a == 1) {            /* another NMI while blocked: held until the IRET */
-		latch(0);
-		__asm__ volatile("nop\n nop\n nop");
+		nmi_send();
+		settle();
 		inner_n = nmi_n; inner_st = nst();
 	} else if (a == 2) {     /* two more: the latch holds one */
-		latch(0); latch(0);
-		__asm__ volatile("nop\n nop");
+		nmi_send(); settle(); nmi_send();
+		settle();
 		inner_n = nmi_n;
 	} else if (a == 3) {     /* an IRET of another handler unblocks: the NMI nests here */
-		latch(0);
+		nmi_send();
+		settle();
 		__asm__ volatile("int $0x41" ::: "memory");
+		settle();
 		nested_n = nmi_n;
-	} else if (a == 4) {     /* a faulting IRET unblocks: the NMI arrives at the #GP handler's first instruction */
-		latch(0);
+	} else if (a == 4) {     /* a faulting IRET does not unblock (AMD APM vol. 2, 8.1.4) */
+		nmi_send();
+		settle();
 		int v = TRY(__asm__ volatile("pushl $0\n pushl $0\n pushl $0\n iret" ::: "memory"));
+		settle();
 		gp_seen = v;
 		nested_n = nmi_n;
+	} else if (a == 5) {     /* an INTR and an NMI pending when the IRET sets IF again: NMI first */
+		ipi_self(0x62);
+		nmi_send();
+		settle();
+		inner_n = nmi_n;
+	} else if (a == 6) {     /* an SMI while NMIs are blocked: RSM keeps them blocked */
+		nmi_send();
+		settle();
+		__asm__ volatile("outb %%al, $0xb2" :: "a"(0) : "memory");
+		settle();
+		inner_n = nmi_n;
 	}
 	return 1;
 }
@@ -276,32 +302,31 @@ static void reset_nmi(void) { nmi_n = 0; nseq = 0; act = 0; inner_n = inner_st =
 
 __asm__(
 	".globl nmi_basic_go\nnmi_basic_go: movl $0x4E4D4931, %ecx\n xorl %eax, %eax\n xorl %edx, %edx\n wrmsr\n.globl nmi_l_basic\nnmi_l_basic: ret\n"
-	".globl nmi_hlt_go\nnmi_hlt_go: movl $0x4E4D4931, %ecx\n movl $1, %eax\n xorl %edx, %edx\n wrmsr\n hlt\n.globl nmi_l_hlt\nnmi_l_hlt: ret\n"
+	".globl nmi_hlt_go\nnmi_hlt_go: cli\n hlt\n.globl nmi_l_hlt\nnmi_l_hlt: ret\n"
 	".globl nmi_movss_go\nnmi_movss_go: pushl %ebx\n movl %ss, %ebx\n movl $0x4E4D4931, %ecx\n movl $1, %eax\n xorl %edx, %edx\n wrmsr\n movl %ebx, %ss\n"
 	".globl nmi_l_movss1\nnmi_l_movss1: nop\n.globl nmi_l_movss2\nnmi_l_movss2: popl %ebx\n ret\n"
 	".globl nmi_sti_go\nnmi_sti_go: movl $0x4E4D4931, %ecx\n movl $1, %eax\n xorl %edx, %edx\n wrmsr\n sti\n"
 	".globl nmi_l_sti1\nnmi_l_sti1: nop\n.globl nmi_l_sti2\nnmi_l_sti2: cli\n ret\n"
-	".globl nmi_prio_go\nnmi_prio_go: movl $0x4E4D4931, %ecx\n movl $2, %eax\n xorl %edx, %edx\n wrmsr\n pushl $0x202\n popfl\n"
-	".globl nmi_l_prio\nnmi_l_prio: nop\n cli\n ret\n"
 	".globl nmi_smi_go\nnmi_smi_go: movl $0x4E4D4931, %ecx\n movl $1, %eax\n xorl %edx, %edx\n wrmsr\n outb %al, $0xb2\n.globl nmi_l_smi\nnmi_l_smi: ret\n"
 	".globl smi_only_go\nsmi_only_go: outb %al, $0xb2\n.globl nmi_l_smi2\nnmi_l_smi2: ret\n"
-	".globl nmi_task\nnmi_task: movl $0x4E4D4931, %ecx\n rdmsr\n movl %eax, nmi_task_st\n incl nmi_task_n\n iret\n jmp nmi_task\n"
-	/* SMM handler (16-bit, at SMBASE + 0x8000): count; mode 1: latch an NMI; mode 2: latch one, load a
-	   real-mode IVT at 0x6100 (IDTR image at 0x6080) and IRET to itself, which unblocks NMIs in SMM:
-	   the NMI is taken in SMM through IVT[2] (smmb_nmi counts it) */
+	".globl nmi_task\nnmi_task: incl nmi_task_n\n iret\n jmp nmi_task\n"
+	/* SMM handler (16-bit, at SMBASE + 8000h): count; mode 1: an NMI self-IPI (local APIC ICR, 32-bit
+	   addresses); mode 2: the same, then load a real-mode IVT at 6100h (IDTR image at 6080h) and IRET to
+	   itself, which unblocks NMIs in SMM: the NMI is taken in SMM through IVT[2] (smmb_nmi counts it) */
 	".code16\n.globl smmb_h\nsmmb_h:\n"
 	" movl $0x6000, %ebx\n incl (%ebx)\n movl $0x7000, %esp\n"
 	" movl 8(%ebx), %eax\n testl %eax, %eax\n jz 2f\n"
-	" movl $0x4E4D4931, %ecx\n xorl %eax, %eax\n xorl %edx, %edx\n wrmsr\n"
+	" movl $0xFEE00310, %ecx\n movl $0, (%ecx)\n movl $0xFEE00300, %ecx\n movl $0x400, (%ecx)\n"
+	" movl $64, %ecx\n 3: loop 3b\n"
 	" movl 8(%ebx), %eax\n cmpl $2, %eax\n jne 2f\n"
 	" lidtl 0x6080\n pushfw\n pushw %cs\n pushw $(1f - smmb_h + 0x8000)\n iretw\n"
-	"1: nop\n"
+	"1: movl $64, %ecx\n 4: loop 4b\n"
 	"2: rsm\n"
 	".globl smmb_nmi\nsmmb_nmi: incl 4(%ebx)\n iretw\n"
 	".globl smmb_end\nsmmb_end:\n.code32\n");
 extern char nmi_l_basic[], nmi_l_hlt[], nmi_l_movss1[], nmi_l_movss2[], nmi_l_sti1[], nmi_l_sti2[],
-	nmi_l_prio[], nmi_l_smi[], nmi_l_smi2[], nmi_task[], smmb_h[], smmb_nmi[], smmb_end[];
-extern void nmi_basic_go(void), nmi_hlt_go(void), nmi_movss_go(void), nmi_sti_go(void), nmi_prio_go(void),
+	nmi_l_smi[], nmi_l_smi2[], nmi_task[], smmb_h[], smmb_nmi[], smmb_end[];
+extern void nmi_basic_go(void), nmi_hlt_go(void), nmi_movss_go(void), nmi_sti_go(void),
 	nmi_smi_go(void), smi_only_go(void);
 
 static const char *where(u32 eip) {
@@ -311,44 +336,64 @@ static const char *where(u32 eip) {
 	if (eip == (u32)nmi_l_movss2) return "after_movss_next";
 	if (eip == (u32)nmi_l_sti1) return "after_sti";
 	if (eip == (u32)nmi_l_sti2) return "after_sti_next";
-	if (eip == (u32)nmi_l_prio) return "after_popf";
 	if (eip == (u32)nmi_l_smi || eip == (u32)nmi_l_smi2) return "after_out";
 	if (eip == (u32)isr_base + 16 * 13) return "gp_handler_entry";
 	return "elsewhere";
 }
+/* model-only lines: where each NMI was taken and the hook's latch/blocked state in its handler */
 static void showw(const char *what) {
 	kprintf("%s: n=%d", what, nmi_n);
 	for (u32 i = 0; i < nmi_n && i < 4; i++)
 		kprintf(" [%s if=%x st=%x hif=%x smm=%d]", where(nmi_eip[i]), nmi_efl[i] & 0x200, nmi_st[i], nmi_if[i], nmi_smm[i]);
 	kprintf(" after=%x\n", nst());
 }
+/* QEMU-compared lines: counts, the IF image and the handler's IF */
+static void showq(const char *what) {
+	kprintf("%s: n=%d", what, nmi_n);
+	for (u32 i = 0; i < nmi_n && i < 4; i++) kprintf(" [if=%x hif=%x smm=%d]", nmi_efl[i] & 0x200, nmi_if[i], nmi_smm[i]);
+	kputc('\n');
+}
 
-static void test_nmi(void) {
-	if (TRY(nst()) != 0xFFFF) { kputs("nmi: no hook\n"); return; }
+static void smm_setup(void) {
+	/* QEMU: open SMRAM (i440FX D_OPEN) to install the handler, then close it (as t_smm.c); the model
+	   has no chipset and ignores the configuration cycles */
+	outl(0xCF8, 0x80000000 | 0x72); outb(0xCFE, 0x4A);
+	memcpy((void *)0xA8000, smmb_h, smmb_end - smmb_h);
+	outl(0xCF8, 0x80000000 | 0x72); outb(0xCFE, 0x0A);
+	*(volatile u16 *)0x6080 = 0x3FF; *(volatile u32 *)0x6082 = 0x6100;
+	*(volatile u16 *)0x6108 = (u16)(0x8000 + (smmb_nmi - smmb_h)); *(volatile u16 *)0x610A = 0xA000;
+	SMMS[0] = 0; SMMS[1] = 0; SMMS[2] = 0;
+}
+
+/* QEMU-compared NMI tests (local APIC sources) */
+void test_sysb_nmi(void) {
+	use_hook = 0;
 	trap_hook = nmi_hook;
 	u64 idt2 = idt[2];
+	AR(0xF0) = 0x1FF; AR(0x80) = 0;
 	SMMS[0] = 0;
 
-	reset_nmi(); nmi_basic_go(); showw("nmi.basic");
-	reset_nmi(); __asm__ volatile("sti"); nmi_basic_go(); __asm__ volatile("cli"); showw("nmi.if1");
-	reset_nmi(); act = 1; nmi_basic_go();
-	showw("nmi.blocked"); kprintf("nmi.blocked.inside: n=%d st=%x\n", inner_n, inner_st);
-	reset_nmi(); act = 2; nmi_basic_go();
-	showw("nmi.latch_one"); kprintf("nmi.latch_one.inside: n=%d\n", inner_n);
-	reset_nmi(); act = 3; nmi_basic_go();
-	kprintf("nmi.iret.other: n=%d nested=%d seq=%x,%x,%x,%x\n", nmi_n, nested_n, seq[0], seq[1], seq[2], seq[3]);
-	reset_nmi(); act = 4; nmi_basic_go();
-	kprintf("nmi.iret.fault: n=%d nested=%d gp=%x second=%s\n", nmi_n, nested_n, gp_seen, where(nmi_eip[1]));
-	reset_nmi(); nmi_hlt_go(); showw("nmi.hlt");
-	reset_nmi(); nmi_movss_go(); showw("nmi.movss");
-	reset_nmi(); nmi_sti_go(); showw("nmi.sti");
-	/* NMI and INTR at the same boundary: NMI first; the interrupt after the NMI handler's IRET */
-	AR(0xF0) = 0x1FF; AR(0x80) = 0;
-	reset_nmi(); ipi_self(0x62); nmi_prio_go();
-	kprintf("nmi.prio.intr: seq=%x,%x n=%d at=%s\n", seq[0], seq[1], nmi_n, where(nmi_eip[0]));
+	reset_nmi(); nmi_send(); settle(); showq("nmiq.basic");
+	reset_nmi(); __asm__ volatile("sti"); nmi_send(); settle(); __asm__ volatile("cli"); showq("nmiq.if1");
+	reset_nmi(); act = 1; nmi_send(); settle();
+	showq("nmiq.blocked"); kprintf("nmiq.blocked.inside: n=%d\n", inner_n);
+	reset_nmi(); act = 2; nmi_send(); settle();
+	showq("nmiq.latch_one"); kprintf("nmiq.latch_one.inside: n=%d\n", inner_n);
+	reset_nmi(); act = 3; nmi_send(); settle();
+	kprintf("nmiq.iret.other: n=%d nested=%d seq=%x,%x,%x,%x\n", nmi_n, nested_n, seq[0], seq[1], seq[2], seq[3]);
+	reset_nmi(); act = 4; nmi_send(); settle();
+	kprintf("nmiq.iret.fault: n=%d nested=%d gp=%x\n", nmi_n, nested_n, gp_seen);
+	/* NMI and INTR both pending when the NMI handler's IRET sets IF again: the NMI first */
+	reset_nmi(); act = 5; __asm__ volatile("sti"); nmi_send(); settle(); __asm__ volatile("cli");
+	kprintf("nmiq.prio.intr: seq=%x,%x,%x n=%d inside=%d\n", seq[0], seq[1], seq[2], nmi_n, inner_n);
+	/* HLT with IF = 0 is woken by an NMI from an I/O APIC entry in NMI mode (pin 2, the PIT) */
+	ioapic_entry(2, 0x400, 0);
+	reset_nmi(); pit_oneshot(500); nmi_hlt_go();
+	ioapic_entry(2, 0x10000, 0);
+	kprintf("nmiq.hlt: n=%d at=%s\n", nmi_n, where(nmi_eip[0]));
 	/* trap gate: IF stays set in the handler */
 	idt[2] = gate_desc(KCODE, (u32)isr_base + 16 * 2, 0x8F);
-	reset_nmi(); __asm__ volatile("sti"); nmi_basic_go(); __asm__ volatile("cli"); showw("nmi.trapgate");
+	reset_nmi(); __asm__ volatile("sti"); nmi_send(); settle(); __asm__ volatile("cli"); showq("nmiq.trapgate");
 	idt[2] = idt2;
 	/* task gate: the NMI handler is a task; its IRET (NT) unblocks */
 	memset(&nmi_tss, 0, sizeof nmi_tss);
@@ -358,28 +403,53 @@ static void test_nmi(void) {
 	gdt[TSS_DFR >> 3] = seg_desc((u32)&nmi_tss, 0x67, 0x89, 0);
 	idt[2] = gate_desc(TSS_DFR, 0, 0x85);
 	reset_nmi(); nmi_task_n = 0;
-	nmi_basic_go(); nmi_basic_go();
+	nmi_send(); settle(); nmi_send(); settle();
 	__asm__ volatile("clts");
-	kprintf("nmi.taskgate: tasks=%d st=%x hook=%d after=%x\n", nmi_task_n, nmi_task_st, nmi_n, nst());
+	kprintf("nmiq.taskgate: tasks=%d hook=%d\n", nmi_task_n, nmi_n);
 	idt[2] = idt2; gdt[TSS_DFR >> 3] = 0;
 
-	/* SMM: an SMI and an NMI at the same boundary: the SMI first, the NMI after RSM; an NMI latched
-	   in SMM waits for RSM; an IRET in SMM unblocks NMIs (taken in SMM through its IVT) */
-	memcpy((void *)0xA8000, smmb_h, smmb_end - smmb_h);
-	*(volatile u16 *)0x6080 = 0x3FF; *(volatile u32 *)0x6082 = 0x6100;
-	*(volatile u16 *)0x6108 = (u16)(0x8000 + (smmb_nmi - smmb_h)); *(volatile u16 *)0x610A = 0xA000;
+	/* SMM (with CR4.OSFXSR, OSXMMEXCPT and OSXSAVE set: RSM must accept every CR4 bit MOV CR4 does) */
+	smm_setup();
 	u32 cr4 = RDCR(4);
-	WRCR(4, cr4 & 0x1FF);   /* the model's RSM accepts only these saved CR4 bits (and UMIP, SMEP, SMAP, VME, PVI) */
+	WRCR(4, cr4 | 0x40600);
+	SMMS[0] = 0; SMMS[2] = 0;
+	smi_only_go();
+	kprintf("nmiq.smm.cr4: count=%d cr4=%x\n", SMMS[0], RDCR(4) & 0x40600);
+	/* an NMI raised in SMM waits for RSM */
+	SMMS[0] = 0; SMMS[1] = 0; SMMS[2] = 1;
+	reset_nmi(); smi_only_go(); settle(); showq("nmiq.smi.latched"); kprintf("nmiq.smi.latched.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
+	/* an IRET in SMM unblocks NMIs: the NMI is taken in SMM */
+	SMMS[0] = 0; SMMS[1] = 0; SMMS[2] = 2;
+	reset_nmi(); smi_only_go(); settle(); showq("nmiq.smi.iret"); kprintf("nmiq.smi.iret.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
+	/* an SMI in an NMI handler: RSM restores the blocking, the second NMI waits for the handler's IRET */
 	SMMS[0] = 0; SMMS[1] = 0; SMMS[2] = 0;
-	reset_nmi(); nmi_smi_go(); showw("nmi.smi.both"); kprintf("nmi.smi.both.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
-	SMMS[0] = 0; SMMS[2] = 1;
-	reset_nmi(); smi_only_go(); showw("nmi.smi.latched"); kprintf("nmi.smi.latched.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
-	SMMS[0] = 0; SMMS[2] = 2;
-	reset_nmi(); smi_only_go(); showw("nmi.smi.iret"); kprintf("nmi.smi.iret.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
+	reset_nmi(); act = 6; nmi_send(); settle();
+	kprintf("nmiq.smi.restore: n=%d inside=%d smm=%d\n", nmi_n, inner_n, SMMS[0]);
 	SMMS[2] = 0;
 	WRCR(4, cr4);
 
 	idt[2] = idt2;
+	trap_hook = 0;
+}
+
+/* Model-only NMI tests (the test hook) */
+static void test_nmi(void) {
+	if (TRY(rdmsr(NMI_MSR)) != 0xFFFF) { kputs("nmi: no hook\n"); return; }
+	use_hook = 1;
+	trap_hook = nmi_hook;
+	SMMS[0] = 0;
+
+	reset_nmi(); nmi_basic_go(); showw("nmi.basic");
+	reset_nmi(); act = 1; nmi_basic_go();
+	showw("nmi.blocked"); kprintf("nmi.blocked.inside: n=%d st=%x\n", inner_n, inner_st);
+	reset_nmi(); act = 4; nmi_basic_go();
+	kprintf("nmi.iret.fault: n=%d nested=%d gp=%x second=%s\n", nmi_n, nested_n, gp_seen, where(nmi_eip[1]));
+	reset_nmi(); nmi_movss_go(); showw("nmi.movss");
+	reset_nmi(); nmi_sti_go(); showw("nmi.sti");
+	/* an SMI and an NMI at the same boundary: the SMI first, the NMI after RSM */
+	smm_setup();
+	reset_nmi(); nmi_smi_go(); showw("nmi.smi.both"); kprintf("nmi.smi.both.smm: count=%d in_smm=%d\n", SMMS[0], SMMS[1]);
+	use_hook = 0;
 	trap_hook = 0;
 }
 

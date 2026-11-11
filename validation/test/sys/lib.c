@@ -196,6 +196,7 @@ void sys_main(void) {
 	test_crypto();
 	test_gpr();
 	test_sysb();
+	test_sysb_nmi();
 	test_avx();
 	test_apic_errors();
 	test_ioapic();
