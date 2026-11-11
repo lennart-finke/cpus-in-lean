@@ -16,3 +16,4 @@ import X86.Proofs.ExtLongMode
 import X86.Proofs.ExtSmp
 import X86.Proofs.ExtAvx
 import X86.Proofs.ExtAvx2
+import X86.Proofs.ExtPlatform

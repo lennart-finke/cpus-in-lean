@@ -301,11 +301,11 @@ def sendIcr (m : Machine) : Machine :=
 
 /-! ### I/O APIC -/
 
-/-- Redirection entry `p` sends its message; a level-triggered entry sets remote IRR. -/
+/-- Redirection entry `p` sends its message; a level-triggered entry (`levelEntry`) sets remote IRR. -/
 def ioapicSend (m : Machine) (p : Nat) : Machine :=
   let s := m.ioapic
   let e := s.entry p
-  let m := if e &&& 0x8000 != 0 then { m with ioapic := { s with redir := s.redir.set! p (e ||| 0x4000) } } else m
+  let m := if IoApic.levelEntry e then { m with ioapic := { s with redir := s.redir.set! p (e ||| 0x4000) } } else m
   (m.deliver (s.msg p)).1.syncApic
 
 /-- A level-triggered entry sends its message while its pin is asserted, it is unmasked and its
@@ -313,7 +313,7 @@ remote IRR is clear. -/
 def ioapicService (m : Machine) (p : Nat) : Machine :=
   let s := m.ioapic
   let e := s.entry p
-  if e &&& 0x10000 == 0 && e &&& 0x8000 != 0 && e &&& 0x4000 == 0 && s.asserted p then m.ioapicSend p else m
+  if e &&& 0x10000 == 0 && IoApic.levelEntry e && e &&& 0x4000 == 0 && s.asserted p then m.ioapicSend p else m
 
 /-- Input pin `p` of the I/O APIC goes to `level`. -/
 def ioapicPin (m : Machine) (p : Nat) (level : Bool) : Machine :=
@@ -325,7 +325,7 @@ def ioapicPin (m : Machine) (p : Nat) (level : Bool) : Machine :=
   let m := { m with ioapic := s }
   let e := s.entry p
   if e &&& 0x10000 != 0 then m
-  else if e &&& 0x8000 == 0 then (if !was && s.asserted p then m.ioapicSend p else m)
+  else if !IoApic.levelEntry e then (if !was && s.asserted p then m.ioapicSend p else m)
   else m.ioapicService p
 
 /-- EOI message for vector `v` from a local APIC: every level-triggered entry with that vector and

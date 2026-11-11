@@ -821,8 +821,9 @@ CR4.PAE ("The EFER.LMA register bit is set to the value obtained by logically AN
 of EFER.LME, CR0.PG, and CR4.PAE"), and SVME stays as it is (`cur`; vol. 3 RSM: "RSM cannot modify
 EFER.SVME"). -/
 def rsmEfer (e cur cr0 cr4 : UInt32) : UInt32 :=
-  let e := (e &&& ~~~(EFER.LMA ||| EFER.SVME)) ||| (cur &&& EFER.SVME)
-  if e &&& EFER.LME != 0 && cr0 &&& CR0.PG != 0 && cr4 &&& CR4.PAE != 0 then e ||| EFER.LMA else e
+  -- LMA (bit 10) = LME (bit 8) ∧ PG (CR0 bit 31) ∧ PAE (CR4 bit 5)
+  let lma := ((e >>> 8) &&& (cr0 >>> 31) &&& (cr4 >>> 5) &&& 1) <<< 10
+  (e &&& ~~~(EFER.LMA ||| EFER.SVME)) ||| (cur &&& EFER.SVME) ||| lma
 
 /-- The saved state is invalid and RSM shuts the processor down (APM vol. 2, 10.4): CR0.PE = 0 with
 PG = 1, CR0.NW = 1 with CD = 0, CR0 bits 63:32, a reserved CR4 bit (every bit MOV CR4 accepts is valid:

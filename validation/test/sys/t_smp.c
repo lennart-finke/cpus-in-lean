@@ -86,7 +86,7 @@ static void logs(const char *what) {
 	bsp_n = 0; ap_n = 0;
 }
 
-enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC, C_MWAIT1 };
+enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC, C_MWAIT1, C_CR0 };
 
 static void ap_apic_init(void) {
 	LR(0xF0) = 0x1FF; LR(0x80) = 0; LR(0xE0) = 0xFFFFFFFF; LR(0xD0) = 0x02000000;
@@ -103,7 +103,15 @@ void ap_main(void) {
 	ap_res[1] = r[1] >> 24;
 	ap_res[2] = *(volatile u16 *)(AP_TRAMP + (ap_tr_cs - ap_tramp));
 	ap_res[3] = *(volatile u32 *)(AP_TRAMP + (ap_tr_edx - ap_tramp)) == r[0];
-	ap_res[4] = RDCR(0) & 0x8005003F;
+	/* the whole CR0 (CD and NW come from RESET and are kept by INIT) and the x87 control and tag
+	   words, which RESET sets to 0040h and 5555h and INIT does not change (AMD APM vol. 2, table 14-1) */
+	ap_res[4] = RDCR(0);
+	{
+		u8 env[28];
+		__asm__ volatile("fnstenv %0" : "=m"(env));
+		ap_res[5] = *(u16 *)env;
+		ap_res[6] = *(u16 *)(env + 8);
+	}
 	ap_gen++;
 	ap_ready = 1;
 	for (;;) {
@@ -146,6 +154,7 @@ void ap_main(void) {
 			__asm__ volatile("mwait" :: "a"(0), "c"(0));
 			ap_res[0] = 1;
 			break;
+		case C_CR0: WRCR(0, RDCR(0) & ~0x60000000); break;   /* clear CD and NW */
 		case C_COUNT:
 			for (u32 i = 0; i < ap_arg[0]; i++) __asm__ volatile("lock incl %0" : "+m"(counter));
 			break;
@@ -216,8 +225,8 @@ void test_smp(void) {
 	LR(0x280) = 0;
 	start_ap(1);
 	LR(0x280) = 0;
-	kprintf("smp.start: gen=%d ready=%d apicid=%x cpuid_id=%x cs=%x edx_sig=%d cr0=%x esr=%x\n", ap_gen, ap_ready,
-	        ap_res[0], ap_res[1], ap_res[2], ap_res[3], ap_res[4], LR(0x280));
+	kprintf("smp.start: gen=%d ready=%d apicid=%x cpuid_id=%x cs=%x edx_sig=%d cr0=%x esr=%x fcw=%x ftw=%x\n", ap_gen,
+	        ap_ready, ap_res[0], ap_res[1], ap_res[2], ap_res[3], ap_res[4], LR(0x280), ap_res[5], ap_res[6]);
 
 	/* MWAIT ends with any store to the monitored line, also when a second store restores its contents
 	   before the waiting CPU runs again (APM vol. 3 MWAIT); a store between MONITOR and MWAIT
@@ -481,5 +490,11 @@ void test_smp_model(void) {
 	kprintf("smpm.cpuid81: cmplegacy=%d\n", (r[2] >> 1) & 1);
 	cpuid(0x80000008, 0, r);
 	kprintf("smpm.cpuid88: ecx=%x\n", r[2]);
+	/* INIT keeps CR0.CD and CR0.NW (AMD APM vol. 2, table 14-1): the AP clears them, then INIT and
+	   STARTUP; its CR0 still has them clear. (TCG's INIT resets CR0 to 6000_0010h.) */
+	ap_do(C_CR0, 0, 0, 0);
+	ap_ready = 0;
+	start_ap(ap_gen + 1);
+	kprintf("smpm.init.cr0: %x ready=%d\n", ap_res[4], ap_ready);
 	trap_hook = 0;
 }

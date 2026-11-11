@@ -211,15 +211,21 @@ def retiredNow (s : MpMachine) : Array UInt64 :=
   if s.cores.isEmpty then #[s.m.icount] else s.retired.modify s.m.cur (· + (s.m.icount - s.since))
 
 /-- The machine `m` (its CPU is CPU 0, the boot processor) with `n` logical CPUs: CPUs 1..n−1 are
-application processors in the INIT state, waiting for a STARTUP IPI, with their local APIC at its
-power-up values (AE = 1, software-disabled, LVT masked) and initial APIC ID = CPU number; their
-SMBASE is the boot processor's. CPUID reports the topology of `n` CPUs (`Cpuid.topo`). -/
+application processors in the state RESET leaves them in (`Cpu.atReset`: CR0 = 6000_0010h, x87 control
+word 0040h and tag word 5555h, AMD APM vol. 2, table 14-1), waiting for a STARTUP IPI, with their
+local APIC at its power-up values (AE = 1, software-disabled, LVT masked) and initial APIC ID = CPU
+number; their SMBASE is the boot processor's (as firmware relocates it). The boot processor is in the
+state the loader gives it (`x86run`: the Linux 32-bit boot protocol; `x86sys`: the multiboot handoff,
+CR0 = PE|ET = 11h as QEMU's multiboot option ROM leaves it; the x87 state of FNINIT, 037Fh, as QEMU's
+reset), not RESET: the firmware has run. CPUID reports the topology of `n` CPUs (`Cpuid.topo`). -/
 def ofMachine (m : Machine) (n : Nat) (quantum : Nat := 1000) : MpMachine :=
   let m := { m with cpu := { m.cpu with smpx := { m.cpu.smpx with ncpu := n.toUInt32, apicId := 0 } } }
   if n ≤ 1 then { m, quantum } else
   let sig := (cpuid m.cpu 1 0).1
   let ap := fun (k : Nat) =>
-    let c : Cpu := ({} : Cpu).afterInit sig false
+    -- power-up: RESET (CR0 = 6000_0010h, the RESET x87 state), then the INIT state of an AP waiting
+    -- for STARTUP, which keeps CR0.CD/NW and the x87 state (APM vol. 2, table 14-1)
+    let c : Cpu := Cpu.atReset.afterInit sig false
     ({ cpu := { c with smbase := m.cpu.smbase, smpx := { c.smpx with apicId := k.toUInt32, ncpu := n.toUInt32 } },
        tlbTag := Array.replicate tlbSize 0, tlbVal := Array.replicate tlbSize 0 } : MpCore)
   let cores := (Array.range n).map fun k => if k == 0 then {} else ap k

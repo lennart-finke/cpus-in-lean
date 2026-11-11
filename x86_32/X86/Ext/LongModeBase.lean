@@ -50,7 +50,14 @@ precedes the first 64-bit instruction:
 * every interrupt and exception while EFER.LMA = 1 (IDT and gate checks, target code segment
   checks, IST/RSPn, the 16-byte-aligned 8-byte frame pushes, RFLAGS update).
 
-Faults raised by these checks are delivered (again through the 64-bit IDT) as on hardware. The
+Faults raised by these checks are delivered (again through the 64-bit IDT) as on hardware. Debug
+breakpoints: DR0–DR3 hold 32-bit linear addresses in this model (MOV DRn outside 64-bit mode writes
+bits 31:0, and the bridge passes them zero-extended), so an access at or above 4 GiB (a stack slot
+of a transfer, `wr64`) matches no breakpoint, and one that starts below 4 GiB is compared with its
+full range. The instruction-breakpoint check of the first 64-bit instruction (against the 64-bit RIP)
+belongs to that instruction, i.e. to the 64-bit executor: `stepInstr` makes none in 64-bit mode.
+Debug traps raised by the transfer itself (data breakpoints on its stack writes below 4 GiB, a
+single-step trap of the transferring instruction) are pending at the boundary and delivered there. The
 transfer leaves the machine at the instruction boundary before the first 64-bit instruction:
 CS holds the 64-bit code segment, RIP = `LongModeState.ripHi`:EIP, RSP = `rspHi`:ESP, R11 = `r11`
 after SYSCALL, and `entry` names the transfer; the other general registers have their 32-bit values
@@ -138,7 +145,9 @@ if the address is not canonical, then paging (both pages are checked before anyt
 def wr64 (lin v : UInt64) (user : Bool) : M Unit := do
   if !canonical lin || !canonical (lin + 7) then exc Vec.SS (some 0)
   if user && lin &&& 7 != 0 then acCheck
-  dbData lin.toUInt32 8 true
+  -- DR0–DR3 hold 32-bit addresses in this model (they are written outside 64-bit mode), so a slot at or
+  -- above 4 GiB matches no breakpoint; the comparison uses the whole linear address
+  if lin >>> 32 == 0 then dbData lin.toUInt32 8 true
   let p0 ← xlate64 lin user
   let p1 ← xlate64 ((lin + 7) &&& ~~~0xFFF) user
   for k in [0:8] do

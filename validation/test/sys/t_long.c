@@ -40,6 +40,7 @@
 #define KC64D2 0x1A0    /* 64-bit code, DPL 2 */
 #define DS16D2 0x1A8    /* 16-bit data (B = 0), DPL 2 */
 #define SSB 0x1B0       /* 32-bit data, DPL 0, base 0x1000 */
+#define CG4G 0x1C0       /* 64-bit call gate, DPL 0, to KC64:1_0000_0000h + stub(0xE2) */
 #define TSSEND 0x1F8    /* TSS descriptor in the last GDT entry: only 8 bytes within the limit */
 
 static u64 lgdt_[NG] __attribute__((aligned(16)));
@@ -125,6 +126,11 @@ extern char smi_h[], smi_h_end[];
 static void lm_pci_w8(u32 dev, u32 reg, u8 v) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); outb(0xCFC + (reg & 3), v); }
 static u8 lm_pci_r8(u32 dev, u32 reg) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); return inb(0xCFC + (reg & 3)); }
 
+/* model-only: an SMM handler that sets LME and LMA in the saved EFER of a state without paging */
+__asm__(".code16\n.globl lm_smi_efer\nlm_smi_efer:\n movw %cs, %si\n movzwl %si, %esi\n shll $4, %esi\n"
+        " movl $0x500, 0xfed0(%esi)\n rsm\n.globl lm_smi_efer_end\nlm_smi_efer_end:\n.code32\n");
+extern char lm_smi_efer[], lm_smi_efer_end[];
+
 /* ---- descriptors ---- */
 static u64 gate64lo(u16 sel, u64 off, u32 access, u32 ist) {
 	u32 lo = ((u32)off & 0xFFFF) | ((u32)sel << 16);
@@ -160,6 +166,7 @@ static void build_tables(void) {
 	lgdt_[KC64D2 >> 3] = seg_desc(0, 0xFFFFF, 0xDA, 0xA);
 	lgdt_[DS16D2 >> 3] = seg_desc(0, 0xFFFF, 0xD2, 0x0);
 	lgdt_[SSB >> 3] = seg_desc(0x1000, 0xFFFFF, 0x92, 0xC);
+	gdt_gate(CG4G, KC64, 0x100000000ULL | stub_at[0xE2], 0x8C, 0);
 	ldt_[1] = seg_desc(0, 0xFFFFF, 0x92, 0xC);
 	/* 64-bit TSS: RSP0 at +4, IST1 at +0x24, I/O map base beyond the limit */
 	*(u64 *)((u8 *)tss64 + 4) = (u32)kstack64 + sizeof kstack64;
@@ -639,6 +646,28 @@ void test_long(void) {
 		        :: "r"((u32)SSB), "r"(esp_b), "i"(CG0) : "memory")));
 	}
 	{
+		/* breakpoints and 64-bit linear addresses. Outside 64-bit mode MOV DRn writes 32 bits, so DR0-DR3
+		   hold addresses below 4 GiB, and a breakpoint compares the whole linear address: the first
+		   instruction at RIP = 1_0000_0000h + X does not match DR0 = X, nor does a frame pushed at
+		   4 GiB + Y (an IST stack above 4 GiB) match a write breakpoint at Y. The 1 GiB page at 4 GiB
+		   maps physical 0 (the stub and the IST stack are reached through it). */
+		pdpt[4] = 0x83;
+		WRCR(3, (u32)pml4);
+		WRDR(0, stub_at[0xE2]);
+		WRDR(7, 0x101);                                   /* L0, LE: execution breakpoint at X */
+		showrec("lm.db.rip4g", TRY(lcall(CG4G, 0)));
+		u32 ist = (u32)iststack + sizeof iststack - 8;
+		*(u64 *)((u8 *)tss64 + 0x24) = 0x100000000ULL | ist;
+		WRDR(1, (ist & ~0xF) - 8);                        /* the SS slot of the frame, below 4 GiB */
+		WRDR(7, 0x00900104);                              /* L1, LE: 8-byte write breakpoint */
+		showrec("lm.db.push4g", TRY(__asm__ volatile("int $0x50")));
+		WRDR(7, 0);
+		kprintf("lm.db.dr6: %x\n", RDDR(6) & 0xF);
+		*(u64 *)((u8 *)tss64 + 0x24) = ist;
+		pdpt[4] = 0;
+		WRCR(3, (u32)pml4);
+	}
+	{
 		/* ring 3 -> 64-bit call gate DPL 3 (inner stack RSP0, null SS) */
 		static u8 snip[8] = { 0x9A, 0, 0, 0, 0, (u8)CG3, (u8)(CG3 >> 8), 0xCC };   /* call far CG3:0 */
 		showrec("lm.user.call.cg3", run_user((char *)snip, 0, 0));
@@ -708,6 +737,15 @@ void test_long_model(void) {
 	WRCR(4, RDCR(4) & ~0x20);
 	/* MOV CR4 cannot clear PAE while long mode is active (table 14-5). TCG accepts it (and then walks
 	   the 4-level tables as 32-bit ones), so this comes last. */
+	/* RSM computes EFER.LMA = LME & CR0.PG & CR4.PAE from the saved image (AMD APM vol. 2, 10.4): a
+	   saved EFER with LME and LMA but CR0.PG = 0 returns with LMA = 0. TCG loads LMA from the image. */
+	lm_pci_w8(0x0B00, 0x5B, lm_pci_r8(0x0B00, 0x5B) | 0x02);
+	lm_pci_w8(0x0000, 0x72, 0x4A);
+	memcpy((void *)0xA8000, lm_smi_efer, lm_smi_efer_end - lm_smi_efer);
+	__asm__ volatile("outb %%al, $0xb2" :: "a"(0) : "memory");
+	kprintf("lmm.rsm.lma: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));
+	wrmsr(EFER, 0);
+	lm_pci_w8(0x0000, 0x72, 0x0A);
 	lm_on();
 	vec = TRY(WRCR(4, RDCR(4) & ~0x20));
 	kprintf("lmm.cr4.pae.clear: vec=%x cr4=%x\n", vec, RDCR(4));
