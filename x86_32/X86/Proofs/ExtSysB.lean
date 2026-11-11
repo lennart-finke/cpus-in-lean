@@ -95,13 +95,15 @@ theorem raiseExcF_double {n : Nat} {m m' : Machine} {ext : Bool} {vec v : UInt8}
 theorem nextEvent_nmi_blocked {m : Machine} (h : m.cpu.sysbx.nmiBlocked = true) : nextEvent m ≠ .nmi := by
   unfold nextEvent
   simp only [h]
-  split <;> (try split) <;> (try split) <;> (try split) <;> (try split) <;> simp_all
+  repeat' split
+  all_goals simp_all
 
 /-- No NMI is taken in an interrupt shadow (after MOV SS / POP SS / STI). -/
 theorem nextEvent_nmi_shadow {m : Machine} (h : m.cpu.shadow = true) : nextEvent m ≠ .nmi := by
   unfold nextEvent
   simp only [h]
-  split <;> (try split) <;> (try split) <;> (try split) <;> (try split) <;> simp_all
+  repeat' split
+  all_goals simp_all
 
 /-- An SMI outside SMM and outside a shadow is taken before anything else. -/
 theorem nextEvent_smi_first {m : Machine} (h : m.smiPending = true) (hs : m.cpu.smm = false)
@@ -205,7 +207,7 @@ theorem vmePopFlags_if (old v : UInt32) : vmePopFlags old v &&& Flag.IF = old &&
 /-- A redirected INT n with IOPL < 3 keeps IF (it clears VIF). -/
 theorem vmeIntFlags_if (fl : UInt32) (hio : (fl >>> 12) &&& 3 ≠ 3) :
     vmeIntFlags fl &&& Flag.IF = fl &&& Flag.IF := by
-  simp only [vmeIntFlags, hio, ite_false, Flag.IF, Flag.TF, Flag.RF, Flag.VIF]
+  simp only [vmeIntFlags, ite_false, Flag.IF, Flag.TF, Flag.RF, Flag.VIF]
   bv_decide
 
 /-! ## IRPerf -/

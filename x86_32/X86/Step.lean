@@ -249,7 +249,7 @@ def deliverNmi (m : Machine) : Machine :=
 /-- The instruction part of a step: idle while halted, an instruction-breakpoint fault, or the
 instruction followed by its debug traps (data/I/O breakpoints, single-step). Traps raised by MOV SS /
 POP SS are held past the next instruction (it executes in the interrupt shadow). -/
-def stepInstr (m : Machine) : Machine :=
+@[inline] def stepInstr (m : Machine) : Machine :=
   if m.cpu.halted then
     let t := if m.timerAt == maxU64 then m.icount else max (m.icount + 1) m.timerAt
     addNotRetired { m with icount := t } (t - m.icount)
@@ -303,9 +303,13 @@ blocks them. A halted processor is woken by any of 1-4 (INTR only with IF = 1). 
   let c := m.cpu
   if m.smiPending && !c.smm && !c.shadow then .smi
   else if m.dbPend != 0 && !c.shadow then .dbTrap
-  else if c.sysbx.nmiPending && c.sysbx.nmiDelay == 0 && !c.sysbx.nmiBlocked && !c.shadow then .nmi
+  else
+  let s := c.sysbx
+  if !s.nmiPending then
+    if m.intr && c.eflags &&& Flag.IF != 0 && !c.shadow then .intr else .instr
+  else if s.nmiDelay == 0 && !s.nmiBlocked && !c.shadow then .nmi
   else if m.intr && c.eflags &&& Flag.IF != 0 && !c.shadow then .intr
-  else if c.sysbx.nmiPending && c.sysbx.nmiDelay != 0 then .nmiDelay
+  else if s.nmiDelay != 0 then .nmiDelay
   else .instr
 
 /-- One step at an instruction boundary after the timers have been updated: the event `nextEvent`
