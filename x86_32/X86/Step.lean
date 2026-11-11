@@ -170,7 +170,9 @@ taken at an instruction boundary by `smpEvent?`, before everything else in `step
   target APIC is responsive only to the STARTUP IPI. All other interrupts (including SMI and NMI) are
   held pending until the STARTUP IPI has been accepted"); a STARTUP IPI with vector VV starts it in real
   mode at VV00:0000 (CS base VV000h);
-* a STARTUP IPI outside the INIT state is ignored;
+* a STARTUP IPI outside the INIT state is ignored; one that arrives while an INIT is still pending
+  (the target has not reached an instruction boundary since) is accepted and taken right after the
+  INIT (`Machine.initCpu`), so INIT and STARTUP sent back to back start the CPU whatever the schedule;
 * NMI: the APIC's `nmi` message (an NMI IPI, an LVT or I/O APIC entry in NMI mode: `Machine.latchNmi`)
   enters the CPU's NMI latch (`Cpu.latchNmi`, `SysBState.nmiPending`) at the CPU's next instruction
   boundary outside the INIT state (`takeNmi`), from where `nextEvent` delivers it with the NMI
@@ -197,10 +199,15 @@ def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
     lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none, entry := "" },
     smpx := { c.smpx with waitSipi := !bsp, mwait := none } }
 
-/-- INIT of the running CPU. -/
+/-- INIT of the running CPU. A STARTUP IPI the APIC accepted while the INIT was pending (`Machine.recv`:
+the APIC accepts STARTUP in, or while entering, the INIT state, APM vol. 2, 16.5) survives the APIC
+reset and is taken at the next boundary: a CPU that does not run while INIT and STARTUP arrive (it is
+not scheduled, or still finishing an instruction) ends up started, as one that took the INIT at once.
+QEMU likewise keeps a pending SIPI across INIT (`do_cpu_init` preserves `CPU_INTERRUPT_SIPI`). -/
 def Machine.initCpu (m : Machine) : Machine :=
   let sig := (cpuid m.cpu 1 0).1
-  { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := { m.apic with init := false }.reset,
+  let a := m.apic
+  { m with cpu := m.cpu.afterInit sig a.bsp, apic := { ({ a with init := false } : Apic).reset with sipi := a.sipi },
            dbPend := 0 }.syncTimer.syncApic
 
 /-- A STARTUP IPI with vector `v` ends the INIT state: real mode at `v`00:0000. -/

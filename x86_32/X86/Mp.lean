@@ -40,9 +40,12 @@ The machine is a function of its state; nothing depends on the host:
   steps with logged stores) describes; the two models are kept apart: `MpMachine` gives one
   deterministic, sequentially consistent execution of a whole platform (devices, paging, APICs),
   `TMachine` all TSO executions of programs within its supported subset.
-* **MONITOR/MWAIT**: an MWAIT in progress (`SmpState.mwait`, set by `Gpr.mwait`) ends when its
-  monitored 64-byte line holds other contents than at MONITOR, checked at quantum boundaries; like the
-  single-CPU model this misses stores that write the same value.
+* **MONITOR/MWAIT**: an MWAIT in progress (`SmpState.mwait`, set by `Gpr.mwait`) ends when a store
+  writes its monitored 64-byte line (any store, also one that writes the same value or is undone
+  later: `physWr` records it in `Machine.watchHit` while the waiting CPU does not run) or the line
+  holds other contents than at MONITOR; the waiting CPU resumes at the next quantum boundary. Not
+  counted: A/D-bit updates of the page walker. (Between MONITOR and MWAIT the single-CPU rule of
+  `Gpr.mwait` applies: the line's contents are compared.)
 -/
 namespace X86
 
@@ -96,15 +99,33 @@ def lineData (mem : ByteArray) (p : UInt64) : Array UInt32 :=
   (List.range 16).toArray.map fun k =>
     if p >>> 32 != 0 then 0xFFFFFFFF else rdBytes mem (p.toUInt32 + 4 * k.toUInt32) 4
 
-/-- An MWAIT whose monitored line changed ends (APM MWAIT: a store to the monitored range is a
-wake-up event; the instruction after MWAIT runs next). -/
-def mwaitWake (mem : ByteArray) (c : Cpu) : Cpu :=
+/-- An MWAIT ends when a store wrote its monitored line (`hits`: `Machine.watchHit`, recorded by
+`physWr` while the CPU did not run) or the line's contents changed (APM MWAIT: a store to the
+monitored range is a wake-up event; the instruction after MWAIT runs next). A monitor armed by
+MONITOR whose line was written is triggered: the next MWAIT does not wait (`Gpr.mwait` finds no armed
+line), as when the store comes between MONITOR and MWAIT on hardware. -/
+def mwaitWake (mem : ByteArray) (hits : Array UInt64) (c : Cpu) : Cpu :=
+  let c := match c.gprx.monLine with
+    | some l => if hits.contains l then { c with gprx := { c.gprx with monLine := none, monData := #[] } } else c
+    | none => c
   match c.smpx.mwait with
   | some (line, d) =>
-    if c.halted && lineData mem line != d then
+    if c.halted && (hits.contains line || lineData mem line != d) then
       { c with halted := false, smpx := { c.smpx with mwait := none } }
     else c
   | none => c
+
+/-- The lines that stores must be watched for (`Machine.watch`): the monitored lines of the CPUs other
+than `cur`, of an MWAIT in progress or armed by MONITOR. -/
+def watchLines (cores : Array MpCore) (cur : Nat) : Array UInt64 :=
+  cores.zipIdx.foldl (fun acc (c, k) =>
+    if k == cur then acc else
+    let acc := match c.cpu.smpx.mwait with
+      | some (l, _) => if c.cpu.halted then acc.push l else acc
+      | none => acc
+    match c.cpu.gprx.monLine with
+    | some l => acc.push l
+    | none => acc) #[]
 
 /-- Make CPU `k` the running one (no-op if it is). -/
 def switchTo (s : MpMachine) (k : Nat) : MpMachine :=
@@ -118,7 +139,7 @@ def switchTo (s : MpMachine) (k : Nat) : MpMachine :=
   let outPeer : Peer := { apic := { m.apic with smi := m.apic.smi || m.smiPending }, waitSipi := m.cpu.smpx.waitSipi }
   let cores := (s.cores.set! k {}).set! j out
   let peers := (m.peers.set! k {}).set! j outPeer
-  let m := { m with peers, cur := k, cpu := c.cpu, apic := { p.apic with smi := false },
+  let m := { m with peers, cur := k, cpu := c.cpu, apic := { p.apic with smi := false }, watch := watchLines cores k,
                     smiPending := p.apic.smi, tlbTag := c.tlbTag, tlbVal := c.tlbVal, tlbLarge := c.tlbLarge,
                     tlbLargeRegions := c.tlbLargeRegions, tlbGlobal := c.tlbGlobal, dbPend := c.dbPend,
                     dbHit := 0, keepCpu := false }
@@ -141,9 +162,10 @@ def resched (s : MpMachine) : MpMachine :=
   let m := if m.icount ≥ m.timerAt then m.timerFire else m
   let now := m.icount
   let peers := m.peers.mapIdx fun k p =>
-    if k != m.cur && p.apic.timerNext ≤ now then { p with apic := p.apic.timerFired } else p
-  let m := { m with peers, cpu := mwaitWake m.mem m.cpu }
-  let cores := s.cores.mapIdx fun k c => if k == m.cur then c else { c with cpu := mwaitWake m.mem c.cpu }
+    if k != m.cur && p.apic.timerNext ≤ now then { p with apic := p.apic.timerDue now } else p
+  let m := { m with peers, cpu := mwaitWake m.mem m.watchHit m.cpu }
+  let cores := s.cores.mapIdx fun k c => if k == m.cur then c else { c with cpu := mwaitWake m.mem m.watchHit c.cpu }
+  let m := { m with watch := watchLines cores m.cur, watchHit := #[] }
   let s := { s with m, cores }
   match s.nextRunnable with
   | some k => { s.switchTo k with qleft := s.quantum }
@@ -173,8 +195,8 @@ def step (s : MpMachine) : MpMachine :=
 def idle (s : MpMachine) : Bool :=
   if s.cores.isEmpty then s.m.idle else
   s.nextTimer == maxU64 && !(List.range s.ncpu).any s.runnableAt &&
-  (s.m.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem s.m.cpu).halted) &&
-  s.cores.all fun c => c.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem c.cpu).halted
+  (s.m.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem s.m.watchHit s.m.cpu).halted) &&
+  s.cores.all fun c => c.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem s.m.watchHit c.cpu).halted
 
 /-- Run until the instruction count reaches `limit`, the machine is idle, or a fatal stop. -/
 partial def runUntil (s : MpMachine) (limit : UInt64) : MpMachine :=

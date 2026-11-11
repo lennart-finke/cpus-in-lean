@@ -79,6 +79,12 @@ structure MachineExt where
   /-- The running CPU has an NMI, INIT or STARTUP message pending or waits for STARTUP (cached from
   `apic` and `cpu`, see `Machine.syncXev`): `step` then takes the slow path `smpEvent?`. -/
   xev : Bool := false
+  /-- Multiprocessor: the physical 64-byte lines monitored by MWAITs in progress on the CPUs that are
+  not running (`MpMachine.switchTo`), and the lines of those a store has written since (`physWr`):
+  any store to the monitored line ends the wait (APM vol. 3 MWAIT), also one that leaves its
+  contents unchanged or is undone before the waiting CPU runs again. -/
+  watch : Array UInt64 := #[]
+  watchHit : Array UInt64 := #[]
   deriving Inhabited
 
 structure Machine extends MachineExt where
@@ -191,6 +197,18 @@ def modApicAt (m : Machine) (k : Nat) (f : Apic → Apic) : Machine :=
   else if k < m.peers.size then { m with peers := m.peers.modify k fun p => { p with apic := f p.apic } }
   else m
 
+/-- The local APIC timers of the CPUs that are not running fire if they are due by now. A local APIC
+keeps time while its CPU does not run; its CPU takes the interrupt when it next runs (the scheduler
+fires due timers at every quantum boundary, `MpMachine.resched`), but other CPUs see that APIC's
+IRR and arbitration priority at once: this is called before every lowest-priority arbitration and
+remote read, so that their outcome does not depend on the scheduling quantum. -/
+def peersTimers (m : Machine) : Machine :=
+  if m.peers.isEmpty then m else
+  let now := m.icount
+  if m.peers.all (fun p => p.apic.timerNext > now) then m else
+  { m with peers := m.peers.mapIdx fun k p =>
+      if k != m.cur && p.apic.timerNext ≤ now then { p with apic := p.apic.timerDue now } else p }
+
 /-- CPU `k` waits for a STARTUP IPI. -/
 def waitSipiAt (m : Machine) (k : Nat) : Bool :=
   if k == m.cur then m.cpu.smpx.waitSipi else (m.peers[k]?.map (·.waitSipi)).getD false
@@ -244,6 +262,7 @@ def deliver (m : Machine) (msg : Msg) : Machine × Bool :=
   let ts := (List.range m.ncpu).filter fun k => msg.targets k (m.apicAt k)
   if ts.isEmpty then (m, false) else
   if msg.mode == 1 then
+    let m := m.peersTimers
     match m.lowestPri msg.vec (ts.filter fun k => (m.apicAt k).swEnabled) with
     | some k => (m.modApicAt k (·.acceptFixed msg.vec msg.level), true)
     | none => (m, true)
@@ -260,6 +279,7 @@ def icrMsg (a : Apic) (src : Nat) : Msg :=
 physical destination is copied to the remote read register; ICR.RRS = 10b (valid) or 00b (no such
 APIC, a broadcast, shorthand or logical destination, or an unimplemented register). -/
 def remoteRead (m : Machine) (msg : Msg) : Machine :=
+  let m := m.peersTimers
   let tgt := if msg.sh != 0 || msg.logical || msg.dest &&& 0xFF == 0xFF then none
     else (List.range m.ncpu).find? fun k => msg.targets k (m.apicAt k)
   let v := tgt.bind fun k => (m.apicAt k).read (msg.vec <<< 4) m.icount
@@ -468,12 +488,22 @@ def mmioWr (a n v : UInt32) : M Unit := fun m =>
   else match m.tso with
     | none => .ok (rdBytes m.mem a n) m
     | some l => .ok (rdBytes m.mem a n) { m with tso := some { l with reads := l.reads.push (a, n) } }
+/-- A store of `n` bytes at physical address `a` to a line in `Machine.watch` (an MWAIT of a CPU that
+is not running) records the line in `watchHit`. -/
+def Machine.watchStore (m : Machine) (a n : UInt32) : Machine :=
+  let l0 := (a &&& ~~~63).toUInt64
+  let l1 := ((a + n - 1) &&& ~~~63).toUInt64
+  let hit := m.watch.filter fun l => l == l0 || l == l1
+  if hit.isEmpty then m else { m with watchHit := m.watchHit ++ hit }
+
 /-- Physical write (device pages: `mmioWr`). -/
 @[inline] def physWr (p : UInt64) (n v : UInt32) : M Unit := fun m =>
   if p >>> 32 != 0 then .ok () m else
   let a := p.toUInt32
   if isMmio m a then mmioWr a n v m
-  else match m.tso with
+  else
+  let m := if m.watch.isEmpty then m else m.watchStore a n
+  match m.tso with
     | none => .ok () { m with mem := wrBytes m.mem a n v }
     | some l => .ok () { m with mem := wrBytes m.mem a n v,
                                 tso := some { l with writes := l.writes.push ⟨a, n, v⟩ } }

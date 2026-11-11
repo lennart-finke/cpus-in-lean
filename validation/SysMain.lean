@@ -3,14 +3,15 @@ import LongStub
 /-!
 # x86sys — runner for the system-level test kernel
 
-    x86sys [--max N] [--mem MB] [--smp N] [--cmdline STR] systest.elf
+    x86sys [--max N] [--mem MB] [--smp N] [--quantum Q] [--cmdline STR] systest.elf
 
 Loads the multiboot ELF built by `test/sys/build.sh` (one PT_LOAD segment) and starts it in the
 state a multiboot loader leaves: flat 32-bit protected mode, paging off, interrupts disabled,
 `EAX = 0x2BADB002`, `EBX` pointing at a (zeroed) multiboot information block. COM1 output goes to
 stdout; the run ends when the kernel prints `END`, on a fatal stop, or at the instruction limit.
 `test/sys/run.sh` runs the same kernel under QEMU and compares the two transcripts. With `--smp N`
-the machine has N CPUs (`X86.MpMachine`); the application processors wait for a STARTUP IPI.
+the machine has N CPUs (`X86.MpMachine`); the application processors wait for a STARTUP IPI; `--quantum Q`
+sets the scheduling quantum (default 1000; the transcript must not depend on it).
 -/
 open X86
 
@@ -51,12 +52,14 @@ structure SysOpts where
   mem : Nat := 64
   cmdline : String := ""
   smp : Nat := 1
+  quantum : Nat := 1000
   files : List String := []
 
 partial def parse (o : SysOpts) : List String → SysOpts
   | "--max" :: n :: r => parse { o with maxI := n.toNat!.toUInt64 } r
   | "--mem" :: n :: r => parse { o with mem := n.toNat! } r
   | "--smp" :: n :: r => parse { o with smp := n.toNat! } r
+  | "--quantum" :: n :: r => parse { o with quantum := n.toNat! } r
   | "--cmdline" :: c :: r => parse { o with cmdline := c } r
   | f :: r => parse { o with files := o.files ++ [f] } r
   | [] => o
@@ -64,12 +67,12 @@ partial def parse (o : SysOpts) : List String → SysOpts
 def main (args : List String) : IO UInt32 := do
   let o := parse {} args
   let maxI := o.maxI
-  let [path] := o.files | do IO.eprintln "usage: x86sys [--max N] [--mem MB] [--smp N] [--cmdline STR] systest.elf"; return 2
+  let [path] := o.files | do IO.eprintln "usage: x86sys [--max N] [--mem MB] [--smp N] [--quantum Q] [--cmdline STR] systest.elf"; return 2
   let img ← IO.FS.readBinFile path
   let m0 ← match loadElf img (o.mem * 1024 * 1024) o.cmdline with
     | .ok m => pure m
     | .error e => do IO.eprintln e; return 2
-  let mut s := MpMachine.ofMachine m0 o.smp
+  let mut s := MpMachine.ofMachine m0 o.smp o.quantum
   let stdout ← IO.getStdout
   let mut out : String := ""
   let mut done := false

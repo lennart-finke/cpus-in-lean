@@ -536,6 +536,18 @@ def timerFired (a : Apic) : Apic :=
     { a with timerNext := a.timerNext + a.timerDiv * a.initCount.toUInt64 }
   else { a with timerNext := never }
 
+/-- A timer that expired by instruction count `now` (possibly more than one period ago: the timer of
+a CPU that is not running, `Machine.peersTimers`) fires once; a periodic timer is re-armed for its
+first expiry after `now`. Expirations while the vector is still requested coalesce into the one IRR
+bit, as on hardware, so the missed ones are not raised later. -/
+def timerDue (a : Apic) (now : UInt64) : Apic :=
+  let a := a.timerFired
+  if a.timerNext ≤ now && a.timerNext != never then
+    let per := a.timerDiv * a.initCount.toUInt64
+    if per == 0 then a else
+    { a with timerNext := a.timerNext + ((now - a.timerNext) / per + 1) * per }
+  else a
+
 /-- Register read at offset `off` (16-byte aligned) in xAPIC layout; `none` for an unimplemented
 offset (illegal register address). EOI and SEOI are write-only and read 0. -/
 def read (a : Apic) (off : UInt32) (now : UInt64) : Option UInt32 :=

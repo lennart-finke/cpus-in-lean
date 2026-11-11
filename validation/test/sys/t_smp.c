@@ -86,7 +86,7 @@ static void logs(const char *what) {
 	bsp_n = 0; ap_n = 0;
 }
 
-enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC };
+enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC, C_MWAIT1 };
 
 static void ap_apic_init(void) {
 	LR(0xF0) = 0x1FF; LR(0x80) = 0; LR(0xE0) = 0xFFFFFFFF; LR(0xD0) = 0x02000000;
@@ -139,6 +139,13 @@ void ap_main(void) {
 			}
 			ap_res[0] = mw_flag[0];
 			break;
+		case C_MWAIT1:   /* one MONITOR/MWAIT (IF = 0, ECX = 0: only a store to the line ends it) */
+			__asm__ volatile("monitor" :: "a"(&mw_flag[0]), "c"(0), "d"(0));
+			mw_armed = 1;
+			if (ap_arg[0]) while (mw_armed != 2) cpu_relax();   /* the BSP stores between MONITOR and MWAIT */
+			__asm__ volatile("mwait" :: "a"(0), "c"(0));
+			ap_res[0] = 1;
+			break;
 		case C_COUNT:
 			for (u32 i = 0; i < ap_arg[0]; i++) __asm__ volatile("lock incl %0" : "+m"(counter));
 			break;
@@ -179,6 +186,25 @@ static void start_ap(u32 gen) {
 	wait_until(&ap_ready, 1);
 }
 
+/* INIT and STARTUP back to back, without the delays of start_ap (Linux sends INIT, STARTUP, STARTUP
+   with init_udelay = 0 on current CPUs): the AP is started whatever the scheduling of the two CPUs. The
+   APIC accepts a STARTUP in the INIT state (AMD APM vol. 2, 16.5), also while the INIT is still being
+   processed; a second STARTUP to a started CPU is ignored. */
+static void start_b2b(const char *name, int kind) {
+	u32 gen = ap_gen + 1;
+	ap_ready = 0;
+	LR(0x280) = 0;
+	ipi(1, 0xC500);   /* INIT, level assert */
+	if (kind == 1) ipi(1, 0x8500);   /* INIT de-assert */
+	ipi(1, 0x600 | AP_VEC);
+	if (kind == 3) spin(300);
+	if (kind >= 2) ipi(1, 0x600 | AP_VEC);
+	wait_until(&ap_gen, gen);
+	wait_until(&ap_ready, 1);
+	LR(0x280) = 0;
+	kprintf("smp.b2b.%s: started=%d ready=%d esr=%x\n", name, ap_gen == gen, ap_ready, LR(0x280));
+}
+
 void test_smp(void) {
 	trap_hook = smp_hook;
 	outb(0x21, 0xFF); outb(0xA1, 0xFF);
@@ -192,6 +218,23 @@ void test_smp(void) {
 	LR(0x280) = 0;
 	kprintf("smp.start: gen=%d ready=%d apicid=%x cpuid_id=%x cs=%x edx_sig=%d cr0=%x esr=%x\n", ap_gen, ap_ready,
 	        ap_res[0], ap_res[1], ap_res[2], ap_res[3], ap_res[4], LR(0x280));
+
+	/* MWAIT ends with any store to the monitored line, also when a second store restores its contents
+	   before the waiting CPU runs again (APM vol. 3 MWAIT); a store between MONITOR and MWAIT
+	   triggers the monitor, so MWAIT does not wait. (QEMU's MWAIT with several CPUs does not wait.) */
+	for (u32 k = 0; k < 2; k++) {
+		u32 t = ap_ack;
+		mw_flag[0] = 0; mw_flag[1] = 0; mw_armed = 0; ap_res[0] = 0;
+		ap_arg[0] = k;
+		__sync_synchronize();
+		ap_cmd = C_MWAIT1;
+		wait_until(&mw_armed, 1);
+		if (!k) spin(5000);
+		mw_flag[1] = 1; mw_flag[1] = 0;
+		if (k) mw_armed = 2;
+		wait_until(&ap_ack, t + 1);
+		kprintf("smp.mwait.%s: woke=%d\n", k ? "armed_restore" : "restore", ap_res[0]);
+	}
 
 	/* fixed IPIs, physical destination, both directions */
 	ipi(1, 0x4051);
@@ -260,6 +303,10 @@ void test_smp(void) {
 	ap_ready = 0;
 	start_ap(2);
 	kprintf("smp.restart: gen=%d ready=%d cs=%x\n", ap_gen, ap_ready, ap_res[2]);
+	start_b2b("init_sipi", 0);
+	start_b2b("init_deassert_sipi", 1);
+	start_b2b("init_sipi_sipi", 2);
+	start_b2b("init_sipi_spin_sipi", 3);
 
 	/* TLB shootdown: the BSP remaps a page, invalidates its own TLB entry and asks the AP by IPI */
 	u32 *pd = page_alloc(1), *pt = page_alloc(1);
@@ -401,6 +448,14 @@ void test_smp_model(void) {
 	logs("smpm.ipi.extint");
 	/* SMI IPI: the AP enters SMM at its SMBASE (the t_smm handler counts at 0x6000) and resumes */
 	memcpy((void *)0xA8000, smi_h, smi_h_end - smi_h);
+	/* the t_smm handler replaces the saved EAX by 5A5A5A5Ah, which the AP's code may hold a live value
+	   in when the SMI arrives: this copy leaves it alone (the 12 bytes 67 66 C7 86 D0 7F 00 00 imm32 of
+	   that store become NOPs), so the outcome does not depend on where the AP is interrupted */
+	{
+		u8 *h = (u8 *)0xA8000;
+		for (u32 i = 8; i + 4 <= (u32)(smi_h_end - smi_h); i++)
+			if (*(volatile u32 *)(h + i) == 0x5A5A5A5A) { for (u32 j = i - 8; j < i + 4; j++) h[j] = 0x90; break; }
+	}
 	for (int i = 0; i < 20; i++) ((volatile u32 *)0x6000)[i] = 0;
 	ipi(1, 0x200);
 	spin(20000);
