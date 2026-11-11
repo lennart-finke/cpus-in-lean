@@ -399,7 +399,10 @@ def map1 (i : Inst) : Option (M Unit) :=
         start i (noV i && !i.isMem)
         setReg i.reg (Avx.signMask 8 32 (← getY i.rm))
       | _ => none
-  else if b0 == 0x70 then some (op2 i true (Avx.pshufK i.pp.toNat i.imm))   -- VPSHUFHW/LW ymm
+  -- VPSHUFHW (F3) / VPSHUFLW (F2) ymm; VEX.256.NP.0F 70 is no instruction (#UD: SDM vol. 2 and AMD
+  -- APM vol. 4 list only the 66, F3 and F2 forms of 0F 70 with VEX), so pp = 0 must not reach
+  -- `pshufK`, whose default arm is PSHUFLW
+  else if b0 == 0x70 && i.pp ≥ 2 then some (op2 i true (Avx.pshufK i.pp.toNat i.imm))
   else none
 
 /-- VEX.66.0F38 forms that are AVX2 only in their VEX.256 form (per 128-bit lane). -/
