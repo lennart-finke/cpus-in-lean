@@ -378,8 +378,7 @@ def parse(line):
 
 def check_line(line):
     head = line.split()
-    tag, n, = head[0], int(head[1])
-    kv = parse(line)
+    tag, n = head[0], int(head[1])
     pre, post = line.split(' -> ')
     pk, qk = parse(pre), parse(post)
     if qk['vec'] != '0000ffff':
@@ -411,7 +410,9 @@ def check_line(line):
 def check(paths):
     bad = n = skipped = 0
     for path in paths:
-        for line in open(path):
+        with open(path, errors='replace') as fh:
+            lines = fh.read().splitlines()
+        for line in lines:
             line = line.strip()
             if not re.match(r'^avx2[kmg] \d+ ', line):
                 continue

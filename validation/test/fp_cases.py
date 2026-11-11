@@ -310,3 +310,11 @@ FAMILIES.append((xsaves_family, ('xsave', 'osxsave', 'avx', 'xsaves')))
 import native_avx  # noqa: E402
 FAMILIES += [(native_avx.avx_ops, ('avx', 'osxsave')), (native_avx.avx_encoding, ('avx', 'osxsave')),
              (native_avx.avx_maskmov, ('avx', 'osxsave')), (native_avx.avx_alignment, ('avx', 'osxsave'))]
+
+# AVX2 workstream (test/native_avx2.py): AVX2/FMA/F16C forms, FMA special cases, F16C, gathers,
+# masked moves, encodings, alignment.
+import native_avx2  # noqa: E402
+FAMILIES += [(native_avx2.avx2_ops, ('avx2', 'fma', 'f16c', 'osxsave')), (native_avx2.fma_special, ('fma', 'osxsave')),
+             (native_avx2.f16c, ('f16c', 'osxsave')), (native_avx2.avx2_gather, ('avx2', 'osxsave')),
+             (native_avx2.avx2_maskmov, ('avx2', 'osxsave')), (native_avx2.avx2_encoding, ('avx2', 'fma', 'f16c', 'osxsave')),
+             (native_avx2.avx2_alignment, ('avx2', 'osxsave'))]
