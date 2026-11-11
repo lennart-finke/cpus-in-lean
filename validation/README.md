@@ -88,6 +88,8 @@ output for every case (including the 3,034 page faults), and the legacy output i
 stored `.model` files: no user-mode floating-point or SIMD instruction behaves differently in
 compatibility mode, and the 4-level walk gives the same #PF error codes for these accesses.
 
+Open questions for real hardware (the manuals do not settle them; the model's choice is documented where it is made): SMAP on implicit supervisor accesses (descriptor tables, IDT, TSS) made at CPL 0 with EFLAGS.AC = 1 — the model checks them regardless of AC, following the Intel SDM 4.6.1 classification ("implicit supervisor-mode accesses"), which AMD APM vol. 2, 5.6.6 words differently (`Machine.smPass`); whether an IRET that faults before completing ends the blocking of NMIs — the model keeps them blocked (AMD APM vol. 2, 8.1.4; the SDM 7.7.2 unblocks them; `Step.iretUnblock`); whether call-gate parameters are read from the caller's stack at the caller's or the new CPL (visible only with SMAP) — the model reads them at the caller's CPL, as QEMU does; the CALL pseudocode of neither manual says (`Sys.callGate`); and #AC for misaligned MOVUPS/MOVDQU operands with EFLAGS.AC = 1 (the `alignment_check` family records them as 'observe'). The first three are system-level: `test/hardware.py` can run the system test kernel under KVM on the EPYC (`-accel kvm -cpu host`) to observe them.
+
 These run on an x86-64 Linux server without root or KVM. Each instruction executes in user mode, and Linux signal handlers capture the result, for both models:
 
 ```

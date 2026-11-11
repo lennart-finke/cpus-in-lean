@@ -259,13 +259,23 @@ ALIGN_OPS = [
 ]
 
 
+# Open question (review): whether the unaligned 128-bit moves MOVUPS/MOVDQU raise #AC for a misaligned
+# operand with EFLAGS.AC = 1. The model follows AMD APM vol. 2, table 8-7 (128-bit media: 16 bytes), but
+# the table does not single out the explicitly unaligned moves, and the reviewers could not settle what
+# Zen 2 does. Their misaligned AC = 1 rows only observe.
+ALIGN_OBSERVE = {'movups', 'movdqu'}
+
+
 def alignment_cases(rng, count):
     mem = struct.pack('<16I', *([0x1f80] * 16))   # valid MXCSR images for LDMXCSR
     for name, code in ALIGN_OPS:
         for off in (0, 1, 2, 3, 4, 6, 8, 12):
             for flags in (0x40202, 0x202):
+                kw = {}
+                if name in ALIGN_OBSERVE and off & 15 and flags & 0x40000:
+                    kw = dict(policy='observe', reason='#AC for a misaligned MOVUPS/MOVDQU operand is not settled by the manuals')
                 yield (record(code, flags=flags, address=0x10000 + off, mem=mem),
-                       meta('alignment_check', name, code, offset=off, ac=flags >> 18 & 1))
+                       meta('alignment_check', name, code, offset=off, ac=flags >> 18 & 1, **kw))
     # misaligned and aligned reads of an unmapped page: #AC or #PF first
     for off in (0, 1, 2):
         yield (record('8b03', flags=0x40202, address=0x11000 + off, permissions=(0x67, 0)),
