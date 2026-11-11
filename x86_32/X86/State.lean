@@ -101,6 +101,32 @@ structure SysState where
   pat : UInt64 := 0x0007040600070406
   deriving Repr, Inhabited
 
+/-- State of system workstream B (`X86/Ext/SysB.lean`; NMI architecture, IRPerf, HWCR bits).
+
+* NMI (AMD APM vol. 2, 8.1.4, 8.2.3 and 10.3.3): `nmiPending` is the NMI latch (at most one NMI is held
+  while NMIs are blocked; further NMIs are lost), `nmiBlocked` is set when an NMI is delivered and
+  cleared by the next IRET that completes (`Step.iretUnblock`). `smmNmiBlocked` holds the blocking state of the
+  interrupted context during SMM (SMM entry blocks NMIs; RSM restores it). Sources of NMIs (APIC
+  LINT0/LINT1 in NMI mode, NMI IPIs) call `Cpu.latchNmi`.
+* IRPerf (MSR C000_00E9h): the retired-instruction count of the core is `Machine.icount` minus
+  `notRetired`, the instruction slots of `icount` in which no instruction retired (see
+  `SysB.retired`). `irBase` is the counter value at `irAt` retired instructions.
+* `hwcr`: the HWCR (MSR C001_0015h) bits owned here: McStatusWrEn (18) and IRPerfEn (30).
+* `testHooks`: model-only test hooks (`SysB.msr?`), off unless a test runner enables them;
+  `nmiDelay`: instruction boundaries before a latched NMI becomes deliverable (set only by the NMI
+  test hook; 0 otherwise). -/
+structure SysBState where
+  nmiPending : Bool := false
+  nmiDelay : UInt32 := 0
+  nmiBlocked : Bool := false
+  smmNmiBlocked : Bool := false
+  notRetired : UInt64 := 0
+  irBase : UInt64 := 0
+  irAt : UInt64 := 0
+  hwcr : UInt64 := 0
+  testHooks : Bool := false
+  deriving Repr, Inhabited
+
 /-- State of `X86/Ext/Svm.lean` (VM_HSAVE_PA, GIF, ...). -/
 structure SvmState where
   deriving Repr, Inhabited
@@ -163,6 +189,7 @@ structure CpuExt where
   svmx : SvmState := {}
   lmx : LongModeState := {}
   xsx : XsaveState := {}
+  sysbx : SysBState := {}
   deriving Repr, Inhabited
 
 structure Cpu extends CpuExt where
@@ -268,12 +295,20 @@ namespace Cpu
 @[inline] def setFlags (c : Cpu) (mask v : UInt32) : Cpu :=
   { c with eflags := (c.eflags &&& ~~~mask) ||| (v &&& mask) }
 
+/-- An NMI arrives at this processor (the API for NMI sources: local APIC LINT0/LINT1 in NMI
+delivery mode, NMI IPIs). It is latched; `step` delivers it through vector 2 at the next
+instruction boundary where NMIs are not blocked. While one NMI is already latched, another one is
+lost (the latch holds one). -/
+@[inline] def latchNmi (c : Cpu) : Cpu := { c with sysbx := { c.sysbx with nmiPending := true } }
+
 end Cpu
 
 -- Exception vectors.
 namespace Vec
 def DE : UInt8 := 0
 def DB : UInt8 := 1
+/-- Non-maskable interrupt (system workstream B). -/
+def NMI : UInt8 := 2
 def BP : UInt8 := 3
 def OF : UInt8 := 4
 def BR : UInt8 := 5

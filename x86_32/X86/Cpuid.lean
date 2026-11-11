@@ -198,7 +198,7 @@ def implemented : Feature → Bool
   | .mwaitx => true
   | .prefetchw => true
   | .rdpru => true
-  | .irPerf => false
+  | .irPerf => true   -- system B (IRPerf needs the step hook, X86/Ext/SysB.lean)
   | .mcommit => true
   -- X86/Ext/Sse.lean
   | .sse3 => true
@@ -258,7 +258,7 @@ def implemented : Feature → Bool
   | .ssbd => true
   | .ext8Misc => false
   -- system B (VME/PVI, NMI)
-  | .vme => false
+  | .vme => true
   -- X86/Ext/LongMode.lean
   | .lm => false
   | .page1gb => false

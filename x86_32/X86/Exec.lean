@@ -222,15 +222,45 @@ def bitOp (i : Inst) (kind : UInt8) (bitoff : UInt32) (immForm : Bool) : M Unit 
 
 /-! ## Flags instructions -/
 
+/-- The EFLAGS bits POPF loads (VIF, VIP, VM and RF never: AMD APM vol. 3 POPF; IF only with
+CPL ≤ IOPL, IOPL only at CPL 0). -/
+def popfMask (c : Cpu) (opsz : Sz) : UInt32 :=
+  let mask : UInt32 := CF ||| PF ||| AF ||| ZF ||| SF ||| TF ||| DF ||| OF ||| NT
+  let mask := if opsz == 4 then mask ||| AC ||| ID else mask
+  if c.cpl == 0 then mask ||| IOPL ||| IF
+  else if c.cpl ≤ c.iopl then mask ||| IF else mask
+
 def popf (opsz : Sz) : M Unit := do
   let c ← cpu
-  if c.vm86 && c.iopl < 3 then gp 0
+  if c.vm86 && c.iopl < 3 then
+    -- CR4.VME: the 16-bit POPF works on VIF (`Sys.vmePopFlags`); POPFD stays #GP(0)
+    if c.cr4 &&& CR4.VME == 0 || opsz == 4 then gp 0
+    let v ← pop 2
+    if vmePopFault c.eflags v then gp 0
+    modCpu fun c' => { c' with eflags := vmePopFlags c.eflags v }
+    return
   let v ← pop opsz
-  let mut mask : UInt32 := CF ||| PF ||| AF ||| ZF ||| SF ||| TF ||| DF ||| OF ||| NT
-  if opsz == 4 then mask := mask ||| AC ||| ID
-  if c.cpl == 0 then mask := mask ||| IOPL ||| IF
-  else if c.cpl ≤ c.iopl then mask := mask ||| IF
+  let mask := popfMask c opsz
   modCpu fun c => { c with eflags := ((c.eflags &&& ~~~mask) ||| (v &&& mask)) ||| 2 }
+
+/-- CLI: #GP(0) if CPL > IOPL, unless VME/PVI (`Cpu.virtualIf`) make it clear VIF. -/
+def cli : M Unit := do
+  let c ← cpu
+  if c.pe && c.cpl > c.iopl then
+    if c.virtualIf then setFlags VIF 0 else gp 0
+  else setFlags IF 0
+
+/-- STI: #GP(0) if CPL > IOPL, unless VME/PVI (`Cpu.virtualIf`) make it set VIF (#GP(0) with
+VIP = 1). Setting IF opens a one-instruction interrupt shadow; setting VIF does not (IF does not
+change). -/
+def sti : M Unit := do
+  let c ← cpu
+  if c.pe && c.cpl > c.iopl then
+    if !c.virtualIf || c.eflags &&& VIP != 0 then gp 0
+    setFlags VIF VIF
+  else
+    if c.eflags &&& IF == 0 then modCpu fun c => { c with shadow := true }
+    setFlags IF IF
 
 /-! ## String instructions -/
 
@@ -388,8 +418,8 @@ def MsrImpl.stored (n : UInt32) (mask : UInt64) : MsrImpl where
   wr v := modCpu fun c => { c with msrs := (n, v &&& mask) :: c.msrs.filter (·.1 != n) }
 
 /-- MSRs of the core model kept in `Cpu.msrs`, with their write masks: 0x17 platform id
-(read-only), 0x8B microcode revision, 0xC1/0xC2 performance counters (40 bits), 0x186/0x187 event
-selects, 0x1D9 debug control. -/
+(read-only), 0x8B microcode revision (Intel identity; see `patchLevelMsr`), 0xC1/0xC2 performance
+counters (40 bits), 0x186/0x187 event selects, 0x1D9 debug control. -/
 def msrInfo (n : UInt32) : Option UInt64 :=
   match n with
   | 0x17 => some 0
@@ -420,10 +450,21 @@ def apicBaseMsr : MsrImpl where
       let a := if en then m.apic else {}
       { m with apic := { a with base := v.toUInt32 &&& 0xFFFFF000, enabled := en } }.syncTimer.syncIntr
 
+/-- MSR 0x8B with identity `id`. AMD (PATCH_LEVEL): "Read,Error-on-write", bits 31:0 the loaded
+microcode patch level, 0 if none (AMD Open-Source Register Reference for family 17h, pub. 56255,
+MSR0000_008B; microcode is loaded through PATCH_LOADER, C001_0020h): reads 0, WRMSR #GP(0). The
+legacy Intel identity keeps IA32_BIOS_SIGN_ID, which software writes (0) before reading it (Linux
+does so while booting on an Intel CPU): stored. -/
+def patchLevelMsr (id : Identity) : MsrImpl :=
+  match id with
+  | .epyc7742 => { rd := pure 0, wr := fun _ => gp 0 }
+  | .legacy => MsrImpl.stored 0x8B 0xFFFFFFFFFFFFFFFF
+
 /-- The MSRs of the core model. -/
 def coreMsr? (n : UInt32) : Option MsrImpl :=
   if n == EFER.msr then some eferMsr
   else if n == 0x1B then some apicBaseMsr
+  else if n == 0x8B then some (patchLevelMsr identity)
   else (msrInfo n).map (MsrImpl.stored n)
 
 /-- RDMSR of MSR `n`, looked up with `look`. -/
@@ -780,8 +821,11 @@ def execOp60 (op : Nat) : Inst → M Unit :=
   | 0x9B => fun _ => fwait
   | 0x9C => fun i => do
     let c ← cpu
-    if c.vm86 && c.iopl < 3 then gp 0
-    push i.opsz ((c.eflags &&& ~~~(VM ||| RF)) &&& i.opsz.mask)
+    if c.vm86 && c.iopl < 3 then
+      -- CR4.VME: the 16-bit PUSHF pushes VIF as IF and IOPL = 3; PUSHFD stays #GP(0)
+      if c.cr4 &&& CR4.VME == 0 || i.opsz == 4 then gp 0
+      push 2 (vmeFlagsImage c.eflags)
+    else push i.opsz ((c.eflags &&& ~~~(VM ||| RF)) &&& i.opsz.mask)
   | 0x9D => fun i => popf i.opsz
   | 0x9E => fun _ => do
     let ah := ((← getReg 0) >>> 8) &&& 0xFF
@@ -851,10 +895,14 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xCB => fun i => farRet i.opsz 0
   | 0xCC => fun _ => deliver Vec.BP none true false
   | 0xCD => fun i => do
-    -- INT n is IOPL-sensitive in virtual-8086 mode (INT3 and INTO are not)
+    -- INT n is IOPL-sensitive in virtual-8086 mode (INT3 and INTO are not); with CR4.VME it may be
+    -- redirected to the 8086 handler (`Sys.vmeInt`)
     let c ← cpu
-    if c.vm86 && c.iopl < 3 then gp 0
-    deliver i.imm.toUInt8 none true false
+    let n := i.imm.toUInt8
+    if c.vm86 && c.cr4 &&& CR4.VME != 0 && (← vmeRedirected n) then vmeInt n
+    else
+      if c.vm86 && c.iopl < 3 then gp 0
+      deliver n none true false
   | 0xCE => fun _ => do if (← flag OF) then deliver Vec.OF none true false
   | 0xCF => fun i => iret i.opsz
   | 0xD0 | 0xD1 => fun i => shiftGrp i 1
@@ -920,7 +968,9 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xE9 => fun i => jumpRel i i.imm
   | 0xEA => fun i => farJump i.imm2.toUInt16 i.imm false i.opsz
   | 0xEB => fun i => jumpRel i (sext 1 i.imm)
-  | 0xF1 => fun _ => deliver Vec.DB none false false
+  -- INT1 (ICEBP): no gate DPL check, and the EXT bit is set in the error code of a fault during its
+  -- delivery (SDM vol. 3, 7.13: "also set if the exception occurred during delivery of INT1")
+  | 0xF1 => fun _ => deliver Vec.DB none false true
   | 0xF4 => fun _ => do
     cplIs0
     modCpu fun c => { c with halted := true }
@@ -928,15 +978,8 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xF6 | 0xF7 => grp3
   | 0xF8 => fun _ => setFlags CF 0
   | 0xF9 => fun _ => setFlags CF CF
-  | 0xFA => fun _ => do
-    let c ← cpu
-    if c.pe && c.cpl > c.iopl then gp 0
-    setFlags IF 0
-  | 0xFB => fun _ => do
-    let c ← cpu
-    if c.pe && c.cpl > c.iopl then gp 0
-    if c.eflags &&& IF == 0 then modCpu fun c => { c with shadow := true }
-    setFlags IF IF
+  | 0xFA => fun _ => cli
+  | 0xFB => fun _ => sti
   | 0xFC => fun _ => setFlags DF 0
   | 0xFD => fun _ => setFlags DF DF
   | 0xFE => fun i => do

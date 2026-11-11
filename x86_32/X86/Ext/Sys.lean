@@ -213,14 +213,13 @@ def mtrr (n : UInt32) (mask : UInt64) (typed : Bool) : MsrImpl where
 def physMask : UInt64 := 0xFFFFFFFFF000
 
 /-- Machine-check bank register `n` (0x400 + 4·bank + k; AMD APM vol. 2, 9.3.2): CTL, ADDR, MISC
-are stored; MCi_STATUS accepts only zero (#GP(0) otherwise), as on AMD processors while
-HWCR[McStatusWrEn] (bit 18, the bit Linux's mce-inject sets) is clear. HWCR belongs to the Gpr module,
-which does not keep bit 18, so writing a non-zero status is never possible in the model
-(approximation; PPR UNCONFIRMED). -/
+are stored; MCi_STATUS accepts only zero (#GP(0) otherwise) while HWCR[McStatusWrEn] (bit 18, the
+bit Linux's mce-inject sets; kept by system workstream B, `SysBState.hwcr`) is clear, and any value
+while it is set. -/
 def mcBank (n : UInt32) : MsrImpl where
   rd := rdStore n
   wr v := do
-    if (n - 0x400) &&& 3 == 1 && v != 0 then gp 0
+    if (n - 0x400) &&& 3 == 1 && v != 0 && (← cpu).sysbx.hwcr &&& 0x40000 == 0 then gp 0
     wrStore n v
 
 /-- Canonical 48-bit linear address (bits 63:47 equal), for LSTAR/CSTAR (AMD APM vol. 2, 6.1.1:

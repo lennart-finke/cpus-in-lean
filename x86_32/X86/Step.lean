@@ -22,37 +22,47 @@ def faultState (m : Machine) (vec : UInt8) (addr : UInt32) : Machine :=
   let c := if vec == Vec.DB then { c with dr6 := c.dr6 ||| addr } else c
   { m with cpu := { c with eflags := c.eflags ||| Flag.RF } }
 
-/-- Deliver an exception from a consistent state; a fault during delivery escalates to
-#DF, and a fault while delivering #DF shuts the machine down. A fault after a task switch through a
-task gate has committed is an exception in the new task (`fuel` bounds such chains). -/
-def raiseExcF : Nat → Machine → UInt8 → Option UInt32 → Bool → Machine
-  | 0, m, vec, _, _ => { m with fatal := some (.shutdown s!"exception loop delivering vector {vec}") }
-  | fuel + 1, m, vec, err, ext =>
+/-- Deliver event `vec` from a consistent state: an exception (`intr = false`; its class for
+double faults is `SysB.excClass vec`) or an external interrupt or NMI (`intr = true`, benign). `ext`
+sets the EXT bit of the error codes of faults raised while delivering it: every event other than a
+software interrupt (whose delivery is part of the INT n/INT3/INTO instruction, `Exec`) is external
+to the program (SDM vol. 3, 6.13; AMD APM vol. 2, 8.4.1). A fault during the delivery is handled by
+the double-fault table `SysB.onSecond` (AMD APM vol. 2, 8.2.9): serially (the second exception is
+delivered instead, from the state before the delivery), as #DF (error code 0), or by shutting down
+(triple fault). A fault after a task switch through a task gate has committed is an exception in the
+new task, classified the same way (`fuel` bounds such chains). -/
+def raiseExcF : Nat → Machine → UInt8 → Option UInt32 → Bool → Bool → Machine
+  | 0, m, vec, _, _, _ => { m with fatal := some (.shutdown s!"exception loop delivering vector {vec}") }
+  | fuel + 1, m, vec, err, ext, intr =>
     -- entering the #DB handler clears DR7.GD, so the handler can access the debug registers
-    let m := if vec == Vec.DB then { m with cpu := { m.cpu with dr7 := m.cpu.dr7 &&& ~~~0x2000 } } else m
+    let m := if vec == Vec.DB && !intr then { m with cpu := { m.cpu with dr7 := m.cpu.dr7 &&& ~~~0x2000 } } else m
     let saved := m.cpu
     match deliver vec err false ext { m with keepCpu := false } with
     | .ok _ m => { m with keepCpu := false }
     | .error f m =>
-      if m.keepCpu then
-        let m := { m with keepCpu := false }
-        match f with
-        | .exc v e a => raiseExcF fuel (faultState m v a) v e false
-        | f => { m with fatal := some f }
-      else
-      let m := { m with cpu := saved }
-      if vec == Vec.DF then { m with fatal := some (.shutdown s!"triple fault ({repr f})") }
-      else match f with
-        | .exc _ _ _ => raiseExcF fuel m Vec.DF (some 0) false
-        | f => { m with fatal := some f }
+      let keep := m.keepCpu
+      -- after a committed task switch the fault belongs to the new task: keep its state
+      let m := if keep then { m with keepCpu := false } else { m with keepCpu := false, cpu := saved }
+      match f with
+      | .exc v e a =>
+        match SysB.onSecond (if intr then .benign else SysB.excClass vec) v with
+        | .serial => raiseExcF fuel (faultState m v a) v e true false
+        | .doubleFault =>
+          -- a page fault converted to #DF has still loaded CR2 (SDM vol. 3, 4.7)
+          let m := if v == Vec.PF then { m with cpu := { m.cpu with cr2 := a } } else m
+          raiseExcF fuel m Vec.DF (some 0) true false
+        | .shutdown => { m with fatal := some (.shutdown s!"triple fault ({repr f})") }
+      | f => { m with fatal := some f }
 
-@[inline] def raiseExc (m : Machine) (vec : UInt8) (err : Option UInt32) (ext : Bool) : Machine :=
-  raiseExcF 4 m vec err ext
+/-- Deliver an exception (`intr = false`) or an external interrupt or NMI (`intr = true`). -/
+@[inline] def raiseExc (m : Machine) (vec : UInt8) (err : Option UInt32) (ext : Bool) (intr : Bool := false) : Machine :=
+  raiseExcF 4 m vec err ext intr
 
-/-- Deliver the fault of an instruction (see `faultState`). -/
+/-- Deliver the fault of an instruction (see `faultState`); faults are external to the program for
+the EXT bit of nested faults. -/
 def handleFault (m : Machine) (f : Fault) : Machine :=
   match f with
-  | .exc vec err addr => raiseExc (faultState m vec addr) vec err false
+  | .exc vec err addr => raiseExc (faultState m vec addr) vec err true
   | f => { m with fatal := some f }
 
 /-- LOCK is only permitted on read-modify-write instructions with a memory destination (and, with
@@ -88,6 +98,17 @@ def faultCpu (saved current : Cpu) (i : Inst) : Cpu :=
   else if saved.mxcsr == current.mxcsr then saved
   else { saved with sse := { saved.sse with mxcsr := current.mxcsr } }
 
+/-- IRET ends the blocking of NMIs when it completes, or, for a return to another task, once the
+outgoing task's state is saved (the task switch has committed). A fault before that leaves NMIs
+blocked: "the occurrence of an NMI masks further NMIs until an IRET instruction is executed to
+completion or, in the event of a task switch, to the completion of the outgoing TSS update. An
+exception raised during execution of the IRET prior to these points will result in NMI continuing to
+be masked for the duration of the exception handler" (AMD APM vol. 2, 8.1.4). The Intel SDM differs
+(vol. 3, 7.7.2: unblocked "even if the execution subsequently encounters a fault"); AMD is followed. -/
+@[inline] def iretUnblock (i : Inst) (m : Machine) : Machine :=
+  if i.op == 0xCF && !i.vex then { m with cpu := { m.cpu with sysbx := { m.cpu.sysbx with nmiBlocked := false } } }
+  else m
+
 /-- Fetch/decode/execute one instruction, including fault-state restoration.
 Callers must retain the returned fault state: POPA can commit register loads,
 and multi-store instructions can commit memory before a later page fault.
@@ -109,10 +130,10 @@ def execInstr : M Inst := fun m =>
       exec i
       return i
     match action m' with
-    | .ok i m'' => .ok i { m'' with keepCpu := false }
+    | .ok i m'' => .ok i (iretUnblock i { m'' with keepCpu := false })
     | .error f m'' =>
       -- after a committed task switch the fault belongs to the new task: keep its state
-      if m''.keepCpu then .error f { m'' with keepCpu := false }
+      if m''.keepCpu then .error f (iretUnblock i { m'' with keepCpu := false })
       else .error f { m'' with cpu := faultCpu saved m''.cpu i }
 
 /-- Instructions after which no single-step trap is taken: software interrupts (their handler
@@ -125,7 +146,7 @@ def noStepTrap (i : Inst) : Bool :=
 def dbTrap (m : Machine) (bits : UInt32) : Machine :=
   let c := m.cpu
   let dr6 := if bits &&& 0xF != 0 then (c.dr6 &&& ~~~0xF) ||| bits else c.dr6 ||| bits
-  let m := raiseExc { m with dbPend := 0, cpu := { c with dr6 } } Vec.DB none false
+  let m := raiseExc { m with dbPend := 0, cpu := { c with dr6 } } Vec.DB none true
   { m with dbHit := 0 }
 
 /-- Breakpoints hit while delivering an event become pending: their #DB is taken at the first
@@ -133,46 +154,119 @@ instruction of the handler. -/
 @[inline] def pendHits (m : Machine) : Machine :=
   if m.dbHit == 0 then m else { m with dbPend := m.dbPend ||| m.dbHit, dbHit := 0 }
 
-/-- One step at an instruction boundary, in priority order: debug traps held from the previous
-boundary, external interrupts, HLT, instruction-breakpoint faults, then the instruction itself
-followed by its debug traps (data/I/O breakpoints, single-step). Traps raised by MOV SS / POP SS are
-held past the next instruction (it executes in the interrupt shadow). -/
-def step (m : Machine) : Machine :=
-  let m := if m.icount ≥ m.timerAt then m.timerFire else m
-  if m.smiPending && !m.cpu.smm && !m.cpu.shadow then
-    -- SMI: above debug traps and interrupts; another SMI stays latched until RSM
-    match smmEnter { m with smiPending := false } with
-    | .ok _ m => m
-    | .error f m => { m with fatal := some f }
-  else if m.dbPend != 0 && !m.cpu.shadow then
-    dbTrap { m with cpu := { m.cpu with halted := false } } m.dbPend
-  else if m.intr && m.cpu.eflags &&& Flag.IF != 0 && !m.cpu.shadow then
-    let m := { m with cpu := { m.cpu with halted := false } }
-    let (vec, m) := m.intAck
-    pendHits (raiseExc m vec none true)
-  else if m.cpu.halted then
-    { m with icount := if m.timerAt == maxU64 then m.icount else max (m.icount + 1) m.timerAt }
+/-- Add `n` instruction slots of `icount` in which no instruction retired (IRPerf, `SysB`). -/
+@[inline] def addNotRetired (m : Machine) (n : UInt64) : Machine :=
+  { m with cpu := { m.cpu with sysbx := { m.cpu.sysbx with notRetired := m.cpu.sysbx.notRetired + n } } }
+
+/-- MOVS, CMPS, STOS, LODS, SCAS, INS, OUTS. -/
+@[inline] def isStringOp (i : Inst) : Bool :=
+  !i.vex && ((0xA4 ≤ i.op && i.op ≤ 0xA7) || (0xAA ≤ i.op && i.op ≤ 0xAF) || (0x6C ≤ i.op && i.op ≤ 0x6F))
+
+/-- An instruction completed that advanced `icount` itself (from `ic`; REP iterations, MWAIT waits):
+those slots retired nothing, and a REP string instruction that stopped with EIP still on it
+(`eip0`: interrupted or restarted after a fault) has not retired either. -/
+def retireLong (ic : UInt64) (eip0 : UInt32) (i : Inst) (m : Machine) : Machine :=
+  let unfinished := i.rep != 0 && isStringOp i && m.cpu.eip == eip0
+  addNotRetired { m with icount := m.icount + 1 } (m.icount - ic + (if unfinished then 1 else 0))
+
+/-- Deliver a latched NMI through vector 2 (an external, benign event; AMD APM vol. 2, 8.2.3): it
+wakes a halted processor and blocks further NMIs until the next IRET. -/
+def deliverNmi (m : Machine) : Machine :=
+  let c := m.cpu
+  let m := { m with cpu := { c with halted := false,
+                                    sysbx := { c.sysbx with nmiPending := false, nmiBlocked := true } } }
+  pendHits (raiseExc m Vec.NMI none true true)
+
+/-- The instruction part of a step: idle while halted, an instruction-breakpoint fault, or the
+instruction followed by its debug traps (data/I/O breakpoints, single-step). Traps raised by MOV SS /
+POP SS are held past the next instruction (it executes in the interrupt shadow). -/
+def stepInstr (m : Machine) : Machine :=
+  if m.cpu.halted then
+    let t := if m.timerAt == maxU64 then m.icount else max (m.icount + 1) m.timerAt
+    addNotRetired { m with icount := t } (t - m.icount)
   else
     let c := m.cpu
     let ibp := if c.bpOn && c.eflags &&& Flag.RF == 0 then
       bpHits c (c.cs.base + c.eip) 1 (· == 0) else 0
     if ibp != 0 then
-      dbTrap { m with icount := m.icount + 1, cpu := { c with shadow := false } } ibp
+      dbTrap (addNotRetired { m with icount := m.icount + 1, cpu := { c with shadow := false } } 1) ibp
     else
     let tf := c.eflags &&& Flag.TF != 0
+    let ic := m.icount
     let m := { m with cpu := { c with shadow := false }, dbHit := 0 }
     match execInstr m with
     | .ok i m =>
-      let m := { m with icount := m.icount + 1 }
+      let m := if m.icount == ic then { m with icount := m.icount + 1 } else retireLong ic c.eip i m
       let bits := m.dbHit ||| (if tf && !noStepTrap i then DR6.BS else 0)
       if bits == 0 && m.dbPend == 0 then m
       else if m.cpu.shadow && i.op != 0xFB then { m with dbPend := m.dbPend ||| bits, dbHit := 0 }
       else dbTrap m (bits ||| m.dbPend)
-    | .error f m => pendHits (handleFault { m with icount := m.icount + 1, dbHit := 0 } f)
+    | .error f m =>
+      let m := addNotRetired { m with icount := m.icount + 1, dbHit := 0 } (m.icount + 1 - ic)
+      pendHits (handleFault m f)
+
+/-- The event a step takes at an instruction boundary (`nextEvent`). -/
+inductive Event where
+  | smi | dbTrap | nmi | intr | nmiDelay | instr
+  deriving DecidableEq, Repr
+
+/-- The event to take at this instruction boundary, in the priority order of AMD APM vol. 2, 8.5
+(table 8-9, "Simultaneous Interrupt Priorities"), for the events the model has (no reset, INIT or
+machine checks; the table's priority numbers in brackets):
+
+1. [1] SMI (external processor-initiated, with INIT and STPCLK which the model lacks; held while in
+   SMM, and not taken in an interrupt shadow);
+2. [2] debug traps of the previous instruction (DR6 bits held in `dbPend`: single-step, data and
+   I/O breakpoints, the TSS T flag, and those held across MOV SS/POP SS);
+3. [3] NMI (`SysBState.nmiPending`, unless NMIs are blocked or in an interrupt shadow);
+4. [4] INTR (maskable interrupts with EFLAGS.IF = 1, not in an interrupt shadow);
+5. [5-7] the instruction (`stepInstr`): an instruction-breakpoint fault [5], or its fetch [5],
+   decode [6] and execution [7] faults, or a halted processor's wait. `nmiDelay` is the same, while
+   the model-only NMI test hook still delays a latched NMI.
+
+The interrupt shadow (`Cpu.shadow`, after MOV SS/POP SS and after an STI that sets IF) holds NMIs
+too: after MOV SS the processor "does not allow external interrupts" until the next instruction
+completes (AMD APM vol. 2, 8.1.4; NMI is an external interrupt there); after STI, "NMI interrupts (and
+SMIs) may be blocked for one instruction" (AMD 15.13.2; SDM vol. 3, 7.8.1 likewise), and the model
+blocks them. A halted processor is woken by any of 1-4 (INTR only with IF = 1). -/
+@[inline] def nextEvent (m : Machine) : Event :=
+  let c := m.cpu
+  if m.smiPending && !c.smm && !c.shadow then .smi
+  else if m.dbPend != 0 && !c.shadow then .dbTrap
+  else if c.sysbx.nmiPending && c.sysbx.nmiDelay == 0 && !c.sysbx.nmiBlocked && !c.shadow then .nmi
+  else if m.intr && c.eflags &&& Flag.IF != 0 && !c.shadow then .intr
+  else if c.sysbx.nmiPending && c.sysbx.nmiDelay != 0 then .nmiDelay
+  else .instr
+
+/-- One step at an instruction boundary after the timers have been updated: the event `nextEvent`
+selects. -/
+def stepAt (m : Machine) : Machine :=
+  match nextEvent m with
+  | .smi =>
+    -- another SMI stays latched until RSM
+    match smmEnter { m with smiPending := false } with
+    | .ok _ m => m
+    | .error f m => { m with fatal := some f }
+  | .dbTrap => dbTrap { m with cpu := { m.cpu with halted := false } } m.dbPend
+  | .nmi => deliverNmi m
+  | .intr =>
+    let m := { m with cpu := { m.cpu with halted := false } }
+    let (vec, m) := m.intAck
+    pendHits (raiseExc m vec none true true)
+  | .nmiDelay =>
+    let c := m.cpu
+    stepInstr { m with cpu := { c with sysbx := { c.sysbx with nmiDelay := c.sysbx.nmiDelay - 1 } } }
+  | .instr => stepInstr m
+
+/-- One architectural step: timer events due, then `stepAt`. -/
+def step (m : Machine) : Machine :=
+  stepAt (if m.icount ≥ m.timerAt then m.timerFire else m)
 
 /-- `true` if the machine can make no progress without external input. -/
 def Machine.idle (m : Machine) : Bool :=
-  m.cpu.halted && m.dbPend == 0 && !m.smiPending && m.timerAt == maxU64 && !(m.intr && m.cpu.eflags &&& Flag.IF != 0)
+  m.cpu.halted && m.dbPend == 0 && !m.smiPending && m.timerAt == maxU64 &&
+    !(m.intr && m.cpu.eflags &&& Flag.IF != 0) &&
+    !(m.cpu.sysbx.nmiPending && (!m.cpu.sysbx.nmiBlocked || m.cpu.sysbx.nmiDelay != 0))
 
 /-- Run until the instruction count reaches `limit`, the machine is idle, or a fatal stop. -/
 partial def Machine.runUntil (m : Machine) (limit : UInt64) : Machine :=
