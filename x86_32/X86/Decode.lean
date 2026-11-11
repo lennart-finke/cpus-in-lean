@@ -27,10 +27,12 @@ otherwise they are LES/LDS (whose ModRM must name memory). In 32-bit (and 16-bit
 inverted VEX.R and VEX.X are then necessarily 1, VEX.B is ignored, and so is the high bit of
 VEX.vvvv (`Inst.vvvv` holds the low three bits of the non-inverted field). The decoder accepts VEX
 in every mode; execution raises #UD in real and virtual-8086 mode, with a 66, F2, F3 or LOCK prefix
-before the VEX prefix, and for unknown maps (`Dispatch.vexExec`). Lengths: map 1 has a ModRM byte
-except 0F 77 (VZEROUPPER/VZEROALL), and an imm8 with 70..73, C2, C4..C6; map 2 has a ModRM
-byte; map 3 a ModRM byte and an imm8. An unknown map has neither (its opcode byte ends the
-instruction). EVEX (62 with ModRM.mod = 11b) and XOP (8F with ModRM.reg ≠ 0) are not decoded: on
+before the VEX prefix, and for unknown maps (`Dispatch.vexExec`). The VEX prefix replaces the 0F,
+0F 38 or 0F 3A escape and the rest of the instruction (ModRM, SIB, displacement, immediates) is laid
+out as in the legacy map with the same opcode (`opInfo`): e.g. VEX.0F 77 (VZEROUPPER/VZEROALL) has no
+ModRM byte like EMMS, VEX.0F 70..73, C2, C4..C6 and VEX.0F3A have an imm8, and an unassigned VEX.0F
+8x is laid out like Jcc rel32 (as QEMU decodes it). An unknown map has no ModRM byte (its opcode byte
+ends the instruction). EVEX (62 with ModRM.mod = 11b) and XOP (8F with ModRM.reg ≠ 0) are not decoded: on
 Zen 2, which has neither, they are the #UD register forms of BOUND and POP r/m.
 -/
 namespace X86
@@ -157,15 +159,6 @@ def opInfo (op : UInt32) : UInt8 :=
 /-- `opInfo` for every opcode 0x000..0x3FF, precomputed. -/
 def opInfoTable : ByteArray := ⟨Array.ofFn (n := 1024) fun k => opInfo k.val.toUInt32⟩
 
-/-- `opInfo` of a VEX-encoded opcode (see the module documentation). -/
-def vexInfo (op : UInt32) : UInt8 :=
-  if op < 0x100 then 0
-  else if op < 0x200 then
-    let b := op - 0x100
-    if b == 0x77 then 0
-    else if (0x70 ≤ b && b ≤ 0x73) || b == 0xC2 || (0xC4 ≤ b && b ≤ 0xC6) then 0x11 else 0x01
-  else if op < 0x300 then 0x01 else 0x11
-
 /-- Decode the instruction at CS:EIP; returns the instruction and its length. -/
 def decodeRaw : M (Inst × UInt32) := do
   let c ← cpu
@@ -228,7 +221,7 @@ def decodeRaw : M (Inst × UInt32) := do
         op := if 1 ≤ map && map ≤ 3 then map * 0x100 + ob else ob
     else
       pre := v1
-  let info := if vx == 0 then opInfoTable.get! op.toNat else vexInfo op
+  let info := if vx != 0 && op < 0x100 then 0 else opInfoTable.get! op.toNat
   let p66 := opsz != (if d32 then 4 else 2)
   let pp : UInt8 :=
     if vx != 0 then (vx &&& 3).toUInt8
@@ -246,7 +239,7 @@ def decodeRaw : M (Inst × UInt32) := do
     let rm := modrm &&& 7
     i := { i with modrm }
     -- MOV to/from control/debug registers always uses the register form
-    if md != 3 && !(op ≥ 0x120 && op ≤ 0x123 && vx == 0) then
+    if md != 3 && !(op ≥ 0x120 && op ≤ 0x123) then
       let mut base : UInt8 := 8
       let mut index : UInt8 := 8
       let mut scale : UInt8 := 0
