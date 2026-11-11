@@ -142,5 +142,7 @@ void test_crypto(void);
 void test_crypto_model(void);
 void test_gpr(void);
 void test_gpr_model(void);
+void test_avx(void);
+void test_avx_model(void);
 
 #endif
