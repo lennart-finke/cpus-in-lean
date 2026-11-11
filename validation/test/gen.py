@@ -20,12 +20,13 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
   Zen 2: unused 0F 38 / 0F 3A / VEX opcodes, VEX after 66/F2/F3/LOCK, unknown VEX maps, EVEX and
   XOP register forms, ...), 'len' (such encodings padded with prefixes to 15 bytes (#UD) or 16
   bytes (#GP(0)); for 16 bytes QEMU reports #UD, see TestMain.lean) and 'ext' (forms in
-  isa_forms.IMPLEMENTED, none yet). Forms listed in
+  isa_forms.IMPLEMENTED: the XSAVE forms, xsave_gen.py). Forms listed in
   isa_forms.NOT_YET_IMPLEMENTED (which QEMU's EPYC-Rome CPU executes) are never generated.
 """
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isa_forms
+import xsave_gen
 
 DATA, DATA_SIZE = 0x8000, 8192
 CODE, INSN_OFF, CODE_SIZE = 0x20000, 256, 512
@@ -370,6 +371,7 @@ def gen_one():
     return insn, g
 
 V2 = False   # set by main() for --v2
+VFLAGS = 0   # vector flags of the run (main)
 V2_MAGIC = b'X86VEC\x00\x02'
 V2_SIZE = 96
 
@@ -501,6 +503,8 @@ def gen_v2_family(g):
         insn = b'\x3e' * (total - len(body)) + body
         g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
         return insn[:15]
+    if r < 0.26:   # 'ext': the XSAVE forms (isa_forms.IMPLEMENTED, owner Xsave) and their neighbours
+        return xsave_gen.gen(g, VFLAGS)
     return None
 
 def main():
@@ -512,10 +516,12 @@ def main():
     seed = int(args[1]) if len(args) > 1 else 1
     out = args[2] if len(args) > 2 else 'vectors'
     random.seed(seed)
-    # bit 0: CR4.OSXSAVE and XCR0 = 7, once the model implements XSAVE and AVX (or forced with
-    # GEN_FORCE_OSXSAVE=1 to exercise the harness's YMM path)
-    vflags = 1 if (isa_forms.model_has('xsave') and isa_forms.model_has('avx')) or \
-        os.environ.get('GEN_FORCE_OSXSAVE') == '1' else 0
+    # bit 0: CR4.OSXSAVE and XCR0 = 7, once the model implements XSAVE (with the AVX state component;
+    # the AVX instructions are #UD in both until implemented, VEX forms are only generated as #UD) (or
+    # forced with GEN_FORCE_OSXSAVE=1 to exercise the harness's YMM path)
+    global VFLAGS
+    vflags = 1 if isa_forms.model_has('xsave') or os.environ.get('GEN_FORCE_OSXSAVE') == '1' else 0
+    VFLAGS = vflags
     with open(out + '.bin', 'wb') as vb, open(out + '.meta', 'w') as mf:
         if v2:
             vb.write(V2_MAGIC + struct.pack('<II', V2_SIZE, 0))
