@@ -13,7 +13,8 @@ import X86.Proofs.Basic
 -/
 namespace X86
 
-/-- The former CPUID (`Exec.cpuidVals` with `addSimd`), for reference. -/
+/-- The former CPUID (`Exec.cpuidVals` with `addSimd`), for reference, plus the feature bits that
+workstreams have implemented since (marked with their owner). -/
 def formerCpuid (leaf : UInt32) : Regs :=
   match leaf with
   | 0 => (1, 0x756E6547, 0x6C65746E, 0x49656E69)

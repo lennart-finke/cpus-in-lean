@@ -132,5 +132,7 @@ void test_paging_fuzz_model(void);
 void test_tsf(void);
 void test_cgf(void);
 void test_xfer_model(void);
+void test_sse(void);
+void test_sse_model(void);
 
 #endif

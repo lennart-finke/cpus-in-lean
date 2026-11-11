@@ -299,6 +299,13 @@ def alignStrict (i : Inst) : Bool :=
   i.vex || i.op == 0x128 || i.op == 0x129 || i.op == 0x12B || i.op == 0x1E7 || i.op == 0x1AE ||
   i.op == 0x22A || ((i.op == 0x16F || i.op == 0x17F) && i.pp == 1)
 
+/-- The exception (error code 0) for a misaligned operand that must be 16-byte aligned: #GP, or with
+MXCSR.MM = 1 for a non-strict instruction #AC when alignment checking is enabled and none otherwise. -/
+def misalignExc (c : Cpu) (i : Inst) : Option UInt8 :=
+  if c.mxcsr &&& MXCSR_MM == 0 || alignStrict i then some Vec.GP
+  else if c.cr0 &&& CR0.AM != 0 && c.eflags &&& Flag.AC != 0 && c.cpl == 3 then some Vec.AC
+  else none
+
 /-- Linear address of an `n`-byte vector operand: segment checks, 16-byte alignment if `align`, and
 for a store a write check of the whole range before anything is written. A misaligned operand
 raises #GP(0); with MXCSR.MM = 1 (Misaligned SSE mode), except for `alignStrict` instructions, it
@@ -307,9 +314,9 @@ otherwise (AMD APM vol. 1, 4.2.2 and 4.3.2). -/
 def vecAddr (i : Inst) (n : UInt32) (write align : Bool) : M UInt32 := do
   let lin ← segAddr i.seg (← fpEa i) n write
   if align && lin &&& 15 != 0 then
-    let c ← cpu
-    if c.mxcsr &&& MXCSR_MM == 0 || alignStrict i then gp 0
-    if c.cr0 &&& CR0.AM != 0 && c.eflags &&& Flag.AC != 0 && c.cpl == 3 then exc Vec.AC (some 0)
+    match misalignExc (← cpu) i with
+    | some v => exc v (some 0)
+    | none => pure ()
   if write then linProbeWr lin n (← isUser)
   return lin
 

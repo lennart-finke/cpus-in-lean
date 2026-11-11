@@ -50,20 +50,6 @@ NOT_YET_IMPLEMENTED = [
     F('wbnoinvd', 'Gpr', 'legacy', 1, 2, [0x09]),
     F('prefetchw', 'Gpr', 'legacy', 1, None, [0x0D]),
     F('rdpmc', 'Gpr', 'legacy', 1, None, [0x33]),
-    # --- Sse ---
-    F('sse3', 'Sse', 'legacy', 1, 2, [0x12, 0x16]),
-    F('sse3', 'Sse', 'legacy', 1, 3, [0x12, 0xF0]),
-    F('sse3', 'Sse', 'legacy', 1, None, [0x7C, 0x7D, 0xD0]),
-    F('sse4a', 'Sse', 'legacy', 1, 1, [0x78, 0x79]),
-    F('sse4a', 'Sse', 'legacy', 1, 3, [0x78, 0x79]),
-    F('sse4a', 'Sse', 'legacy', 1, 2, [0x2B]),
-    F('sse4a', 'Sse', 'legacy', 1, 3, [0x2B]),
-    F('ssse3', 'Sse', 'legacy', 2, None, rng(0x00, 0x0B) + [0x1C, 0x1D, 0x1E]),
-    F('sse41', 'Sse', 'legacy', 2, None, [0x10, 0x14, 0x15, 0x17] + rng(0x20, 0x25) + rng(0x28, 0x2B) +
-      rng(0x30, 0x35) + rng(0x37, 0x41)),
-    F('ssse3', 'Sse', 'legacy', 3, None, [0x0F]),
-    F('sse41', 'Sse', 'legacy', 3, None, rng(0x08, 0x0E) + rng(0x14, 0x17) + rng(0x20, 0x22) + rng(0x40, 0x42)),
-    F('sse42', 'Sse', 'legacy', 3, None, rng(0x60, 0x63)),
     # --- Crypto ---
     F('aes', 'Crypto', 'legacy', 2, None, rng(0xDB, 0xDF)),
     F('sha', 'Crypto', 'legacy', 2, None, rng(0xC8, 0xCD)),
@@ -95,6 +81,28 @@ NOT_YET_IMPLEMENTED = [
 # Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
 # hints; see gen.py (ext_form). Empty until a workstream adds its forms.
 IMPLEMENTED = [
+    # --- Sse (exact forms; generator: gen_sse.py) ---
+    F('sse3', 'Sse', 'legacy', 1, 2, [0x12, 0x16]),                 # MOVSLDUP, MOVSHDUP
+    F('sse3', 'Sse', 'legacy', 1, 3, [0x12]),                       # MOVDDUP
+    F('sse3', 'Sse', 'legacy', 1, 3, [0xF0], ('mem', None)),        # LDDQU
+    F('sse3', 'Sse', 'legacy', 1, 1, [0x7C, 0x7D, 0xD0]),           # HADDPD, HSUBPD, ADDSUBPD
+    F('sse3', 'Sse', 'legacy', 1, 3, [0x7C, 0x7D, 0xD0]),           # HADDPS, HSUBPS, ADDSUBPS
+    F('sse4a', 'Sse', 'legacy', 1, 1, [0x78], ('reg', 0)),          # EXTRQ xmm, imm8, imm8
+    F('sse4a', 'Sse', 'legacy', 1, 3, [0x78], ('reg', None)),       # INSERTQ xmm, xmm, imm8, imm8
+    F('sse4a', 'Sse', 'legacy', 1, 1, [0x79], ('reg', None)),       # EXTRQ xmm, xmm
+    F('sse4a', 'Sse', 'legacy', 1, 3, [0x79], ('reg', None)),       # INSERTQ xmm, xmm
+    F('sse4a', 'Sse', 'legacy', 1, 2, [0x2B], ('mem', None)),       # MOVNTSS
+    F('sse4a', 'Sse', 'legacy', 1, 3, [0x2B], ('mem', None)),       # MOVNTSD
+    F('ssse3', 'Sse', 'legacy', 2, 0, rng(0x00, 0x0B) + [0x1C, 0x1D, 0x1E]),   # MMX forms
+    F('ssse3', 'Sse', 'legacy', 2, 1, rng(0x00, 0x0B) + [0x1C, 0x1D, 0x1E]),   # XMM forms
+    F('ssse3', 'Sse', 'legacy', 3, 0, [0x0F]),                      # PALIGNR mm
+    F('ssse3', 'Sse', 'legacy', 3, 1, [0x0F]),                      # PALIGNR xmm
+    F('sse41', 'Sse', 'legacy', 2, 1, [0x10, 0x14, 0x15, 0x17] + rng(0x20, 0x25) + [0x28, 0x29, 0x2B] +
+      rng(0x30, 0x35) + rng(0x38, 0x41)),
+    F('sse41', 'Sse', 'legacy', 2, 1, [0x2A], ('mem', None)),       # MOVNTDQA
+    F('sse42', 'Sse', 'legacy', 2, 1, [0x37]),                      # PCMPGTQ
+    F('sse41', 'Sse', 'legacy', 3, 1, rng(0x08, 0x0E) + rng(0x14, 0x17) + rng(0x20, 0x22) + rng(0x40, 0x42)),
+    F('sse42', 'Sse', 'legacy', 3, 1, rng(0x60, 0x63)),             # PCMPESTRM/I, PCMPISTRM/I
 ]
 
 
@@ -105,9 +113,10 @@ def _matches(f, encoding, map_, pp, op, mod, reg):
         return False
     if f.modrm is not None:
         m, r = f.modrm
-        if m == 'mem' and mod == 3 or m == 'reg' and mod != 3:
+        # (mod None = unknown: the form may be defined)
+        if m == 'mem' and mod == 3 or m == 'reg' and mod is not None and mod != 3:
             return False
-        if r is not None and reg != r:
+        if r is not None and reg is not None and reg != r:
             return False
     return True
 

@@ -35,3 +35,6 @@
 ^((?:tsf|cgf) \d+ .*)#0b\((02c[08]|02d[08])\)	\g<1>#0c(\2)	# a not-present stack segment (I_SSNP, 0x2C0..0x2D8, used only as SS) is #SS(selector) on a task switch (SDM table 7-1) and on RET to an outer level (SDM RET); TCG raises #NP.
 ^(cgf \d+ callg .*)#0a\((02c[08]|02d0)\)	\g<1>#0c(\2)	# a not-present inner stack segment from the TSS on a CALL through a call gate is #SS(selector) (SDM CALL); TCG raises #TS.
 ^(cgf \d+ callg r(\d) .* tgt=d\dc1p1D\d .*-> in: cs=\w{4} rpl=)\d	\g<1>\2	# a CALL through a call gate to a conforming segment keeps CPL: CS.RPL = CPL (SDM CALL); TCG sets the RPL to the segment's DPL.
+^(simd\.fxsave: .* mask=)0000ffff 	\g<1>0002ffff 	# MXCSR_MASK bit 17 is 1 on CPUs with Misaligned SSE mode, CPUID 8000_0001:ECX[MisAlignSse] (AMD APM vol. 1, 4.2.2 "The corresponding MXCSR_MASK bit (17) is 1, regardless of whether MM is set"); TCG lacks MisalignSse (test/qemu-cpu.sh disables it), so QEMU reports 0xFFFF.
+^(sse\.noosfxsr: .* extrq=)0000ffff	\g<1>00000006	# EXTRQ/INSERTQ (SSE4a) raise #UD with CR4.OSFXSR = 0 and with CR0.EM = 1 (AMD APM vol. 4, EXTRQ and INSERTQ exception tables); TCG executes them.
+^(sse\.em: .* insertq=)0000ffff	\g<1>00000006	# (same: INSERTQ with CR0.EM = 1)
