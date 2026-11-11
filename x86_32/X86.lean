@@ -26,4 +26,5 @@ import X86.Ext.LongMode
 import X86.Ext.Smp
 import X86.Dispatch
 import X86.Step
+import X86.Mp
 import X86.Boot

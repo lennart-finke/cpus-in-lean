@@ -272,10 +272,12 @@ def mwait (x : Bool) : M Unit := do
   let iflag := c.eflags &&& IF != 0
   let m ← getM
   let timed := x && c.ecx &&& 2 != 0 && c.ebx != 0
+  -- SMP workstream: the wait also ends when another CPU changes the line (`Mp.mwaitWake`)
+  let wait := fun (c : Cpu) => { c with halted := true, smpx := { c.smpx with mwait := some (line, g.monData) } }
   if !timed then
-    if iflag || !ibe then modCpu fun c => { c with halted := true }
+    if iflag || !ibe then modCpu wait
     else if m.intr then return
-    else if m.timerAt == 0xFFFFFFFFFFFFFFFF then modCpu fun c => { c with halted := true }
+    else if m.timerAt == 0xFFFFFFFFFFFFFFFF then modCpu wait
     else modM fun m => { m with icount := max m.icount m.timerAt }
   else
     let deadline := m.icount + c.ebx.toUInt64

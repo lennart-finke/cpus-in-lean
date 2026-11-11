@@ -131,6 +131,24 @@ structure LongModeState where
   entry : String := ""
   deriving Repr, Inhabited
 
+/-- State of `X86/Ext/Smp.lean` that belongs to the CPU core (the local APIC itself is
+`Machine.apic`): the topology identity CPUID reports and the INIT/STARTUP state. -/
+structure SmpState where
+  /-- Initial APIC ID (CPUID 1:EBX[31:24], 0xB:EDX, the x2APIC ID): this CPU's index. -/
+  apicId : UInt32 := 0
+  /-- Number of logical processors of the machine (the enabled threads of the package). -/
+  ncpu : UInt32 := 1
+  /-- Local APIC mode, mirrored from APIC_BASE for CPUID 8000_001E:EAX (APM vol. 2, 16.12):
+  0 disabled, 1 xAPIC, 2 x2APIC. -/
+  apicMode : UInt8 := 1
+  /-- In the INIT state, waiting for a STARTUP IPI (APM vol. 2, 16.5): executes nothing and holds
+  every other interrupt pending (`Cpu.halted` is set as well). -/
+  waitSipi : Bool := false
+  /-- MWAIT in progress on this monitored physical line with the contents it had at MONITOR
+  (`Gpr.mwait`): a store by another CPU that changes the line ends the wait (`Smp.mwaitWake`). -/
+  mwait : Option (UInt64 × Array UInt32) := none
+  deriving Repr, Inhabited
+
 /-- State of `X86/Ext/Xsave.lean`: the tracking behind XSAVEOPT/XSAVEC/XSAVES (SDM vol. 1, 13.6).
 `inuse` holds the XINUSE bits last set (1) or cleared (0) by XRSTOR/XRSTORS; the effective XINUSE
 also has bit i set while state component i is not in its initial configuration (`Xsave.xinuse`).
@@ -185,6 +203,7 @@ structure CpuExt where
   svmx : SvmState := {}
   lmx : LongModeState := {}
   xsx : XsaveState := {}
+  smpx : SmpState := {}
   deriving Repr, Inhabited
 
 structure Cpu extends CpuExt where

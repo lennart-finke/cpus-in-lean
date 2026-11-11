@@ -23,3 +23,8 @@ System.map
 .claude/
 **/test/sys/out/
 campaign/
+# SMP guest kernel (guest/build.sh smp)
+bzImage-smp
+vmlinux-smp
+System.map-smp
+**/guest/config-smp

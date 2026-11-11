@@ -1,5 +1,6 @@
 /* Framework of the system-level test kernel: console, descriptor tables, trap dispatch. */
 #include "sys.h"
+#include "smp.h"
 #include <stdarg.h>
 
 u64 gdt[GDT_ENTRIES] __attribute__((aligned(8)));
@@ -160,6 +161,12 @@ void sys_main(void) {
 	setup();
 	kputs("BEGIN\n");
 	if (param("seed", 0)) kprintf("PARAMS seed=%x\n", param("seed", 0));
+	if (param("smp", 0)) {   /* the SMP transcript (second run of run.sh) */
+		test_smp();
+		kputs("MODEL-ONLY\n");
+		test_smp_model();
+		sys_exit();
+	}
 	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
 		test_long();
 		kputs("MODEL-ONLY\n");
@@ -189,6 +196,9 @@ void sys_main(void) {
 	test_crypto();
 	test_gpr();
 	test_avx();
+	test_apic_errors();
+	test_ioapic();
+	test_x2apic();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -204,5 +214,8 @@ void sys_main(void) {
 	test_sse_model();
 	test_gpr_model();
 	test_avx_model();
+	test_apic_model();
+	test_ioapic_model();
+	test_x2apic_model();
 	sys_exit();
 }
