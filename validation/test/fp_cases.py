@@ -250,3 +250,10 @@ def cases(seed=20261111, count=10000):
     for family, requires in FAMILIES:
         for raw, m in family(rng, count):
             yield raw, (dict(m, requires=list(requires)) if requires else m)
+
+
+# XSAVE feature set (test/native_xsave.py), appended by the XSAVE work.
+from native_xsave import xsave_family, xsavec_family, xsaves_family  # noqa: E402
+FAMILIES.append((xsave_family, ('xsave', 'osxsave', 'avx', 'xsaveopt', 'xgetbv1')))
+FAMILIES.append((xsavec_family, ('xsave', 'osxsave', 'avx', 'xsavec')))
+FAMILIES.append((xsaves_family, ('xsave', 'osxsave', 'avx', 'xsaves')))
