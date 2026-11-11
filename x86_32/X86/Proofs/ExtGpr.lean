@@ -162,11 +162,12 @@ end Gpr
 /-! ## CPUID -/
 
 /-- CPUID 7.0 (legacy identity): EBX = BMI1, BMI2, RDSEED, ADX, CLFLUSHOPT, CLWB and SHA (Crypto; reported
-since SSSE3 exists); ECX = RDPID (and system A's SMEP, SMAP in EBX and UMIP in ECX: 0x00100080, 0x4). -/
+since SSSE3 exists); ECX = RDPID (and system A's SMEP, SMAP in EBX and UMIP in ECX: 0x00100080, 0x4; and
+Avx2's AVX2 in EBX: 0x20). -/
 theorem cpuid_leaf7_gpr (c : Cpu) :
-    cpuid c 7 0 = (0, 0x218C0108 ||| 0x00100080, 0x00400000 ||| 0x4, 0) := by
+    cpuid c 7 0 = (0, 0x218C0108 ||| 0x00100080 ||| 0x20, 0x00400000 ||| 0x4, 0) := by
   have h0 : Cpuid.maskReg 7 0 0 0 = 0 := by decide
-  have h1 : Cpuid.maskReg 7 0 1 0x219C91A9 = 0x218C0108 ||| 0x00100080 := by decide
+  have h1 : Cpuid.maskReg 7 0 1 0x219C91A9 = 0x218C0108 ||| 0x00100080 ||| 0x20 := by decide
   have h2 : Cpuid.maskReg 7 0 2 0x00400004 = 0x00400000 ||| 0x4 := by decide
   have h3 : Cpuid.maskReg 7 0 3 0 = 0 := by decide
   simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw,

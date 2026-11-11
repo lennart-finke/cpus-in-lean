@@ -71,11 +71,15 @@ def lockOk (i : Inst) : Bool :=
   (implemented .altMovCr8 && !i.vex && (i.op == 0x120 || i.op == 0x122))
 
 /-- Restore instruction-start state on a fault, except for POPA's completed
-register loads and MXCSR: the exception flags of an unmasked SIMD exception are set when it is
-raised (#XM), and no instruction changes MXCSR before another fault can occur.
+register loads, the vector registers of an AVX2 gather (VEX.0F38 90..93: the elements loaded before
+the faulting one stay in the destination with their mask elements cleared, so that the instruction can
+be restarted; SDM VPGATHERDD, AMD APM vol. 4 VGATHERDPS; `Ext/Avx2.lean`) and MXCSR: the exception
+flags of an unmasked SIMD exception are set when it is raised (#XM), and no instruction changes MXCSR
+before another fault can occur.
 ESP and EIP always retain their restart values. -/
 def faultCpu (saved current : Cpu) (i : Inst) : Cpu :=
-  if i.op == 0x61 then
+  if i.vex && i.op ≥ 0x290 && i.op ≤ 0x293 then { saved with sse := current.sse }
+  else if i.op == 0x61 then
     { saved with
       sse := { saved.sse with mxcsr := current.mxcsr }
       eax := current.eax

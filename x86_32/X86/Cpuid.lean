@@ -222,9 +222,9 @@ def implemented : Feature → Bool
   -- X86/Ext/Avx.lean
   | .avx => true
   -- X86/Ext/Avx2.lean
-  | .avx2 => false
-  | .fma => false
-  | .f16c => false
+  | .avx2 => true
+  | .fma => true
+  | .f16c => true
   -- X86/Ext/Sys.lean (system A: SYSENTER/SYSCALL, MSRs, SMEP/SMAP/UMIP, paging features)
   | .tsc => true
   | .pse => true
