@@ -9,7 +9,8 @@ import X86.Proofs.Basic
 * `step_waitSipi`: a CPU in the INIT state without INIT or STARTUP pending executes nothing and takes
   no other event, whatever INTR, NMI or SMI it has pending; `runnableState_waitSipi`: the scheduler
   never gives it a turn.
-* `nextRunnable_runnable`: the CPU the scheduler switches to is runnable.
+* `nextRunnable_runnable`, `nextRunnable_none`: the CPU the scheduler switches to is runnable, and if it
+  finds none, every CPU was checked and is idle.
 * `apicBaseWr_*`: the invalid IA32_APIC_BASE writes and x2APIC mode transitions are #GP(0) (APM vol. 2,
   table 16-5, figure 16-32); `x2Read_xapic`, `x2Write_xapic`: the x2APIC MSRs are #GP(0) outside
   x2APIC mode (16.11).
@@ -44,6 +45,14 @@ theorem nextRunnable_runnable (s : MpMachine) (k : Nat) (h : s.nextRunnable = so
     s.runnableAt k = true := by
   unfold nextRunnable at h
   exact List.find?_some h
+
+/-- If the scheduler finds no CPU to switch to, every CPU in the round-robin order (cur+1, …, cur)
+was checked and is idle. -/
+theorem nextRunnable_none (s : MpMachine) (h : s.nextRunnable = none) (j : Nat) (hj : j < s.ncpu) :
+    s.runnableAt ((s.m.cur + 1 + j) % s.ncpu) = false := by
+  unfold nextRunnable at h
+  have := List.find?_eq_none.mp h ((s.m.cur + 1 + j) % s.ncpu) (List.mem_map.mpr ⟨j, List.mem_range.mpr hj, rfl⟩)
+  simpa using this
 
 end MpMachine
 
