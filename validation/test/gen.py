@@ -20,12 +20,13 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
   Zen 2: unused 0F 38 / 0F 3A / VEX opcodes, VEX after 66/F2/F3/LOCK, unknown VEX maps, EVEX and
   XOP register forms, ...), 'len' (such encodings padded with prefixes to 15 bytes (#UD) or 16
   bytes (#GP(0)); for 16 bytes QEMU reports #UD, see TestMain.lean) and 'ext' (forms in
-  isa_forms.IMPLEMENTED, none yet). Forms listed in
+  isa_forms.IMPLEMENTED: gen_gpr.py for the general-purpose extensions). Forms listed in
   isa_forms.NOT_YET_IMPLEMENTED (which QEMU's EPYC-Rome CPU executes) are never generated.
 """
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isa_forms
+import gen_gpr   # 'ext' family: general-purpose extensions (x86_32/X86/Ext/Gpr.lean)
 
 DATA, DATA_SIZE = 0x8000, 8192
 CODE, INSN_OFF, CODE_SIZE = 0x20000, 256, 512
@@ -501,8 +502,10 @@ def gen_v2_family(g):
         insn = b'\x3e' * (total - len(body)) + body
         g.desc = 'len%d-%s:%s' % (total, kind, insn.hex())
         return insn[:15]
-    # 'ext' family, Crypto workstream: AES-NI, PCLMULQDQ, SHA (gen_crypto.py)
     if r < 0.40:
+        return gen_gpr.gen(g)   # 'ext' family of the Gpr forms (gen_gpr.py)
+    # 'ext' family, Crypto workstream: AES-NI, PCLMULQDQ, SHA (gen_crypto.py)
+    if r < 0.55:
         import gen_crypto
         return gen_crypto.gen(g)
     return None
@@ -533,6 +536,8 @@ def main():
             patches = (g.patches + [(0xFFFF, 0), (0xFFFF, 0)])[:2]
             poff = [p[0] if p[0] == 0xFFFF or 0 <= p[0] <= DATA_SIZE - 4 else 0xFFFF for p in patches]
             paging = random.random() < 0.5
+            if getattr(g, 'no_paging', False):
+                paging = False   # e.g. CLFLUSH: TCG makes no access (gen_gpr.py)
             mode = (1 if paging else 0) | (2 if random.random() < 0.5 else 0)
             # REP + single-step: QEMU traps with EIP on the instruction even after the last
             # iteration (the SDM REP loop completes the instruction); not generated
