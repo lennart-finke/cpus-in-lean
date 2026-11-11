@@ -3,6 +3,13 @@
  "packages":
  [{"type": "path",
    "scope": "",
+   "name": "x86_64",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../x86_64",
+   "configFile": "lakefile.toml"},
+  {"type": "path",
+   "scope": "",
    "name": "x86",
    "manifestFile": "lake-manifest.json",
    "inherited": false,

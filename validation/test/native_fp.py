@@ -46,6 +46,7 @@ FEATURES={
     'xgetbv1':(0xd,1,0,2),
 }
 FEATURES.update({'clfsh':(1,0,3,19),'monitor':(1,0,2,3),'mcommit':(0x80000008,0,1,8)})  # Gpr families
+FEATURES.update({'lm':(0x80000001,0,3,29)})  # long-mode family (native_longmode.py)
 
 
 def parse_cpuid(text):
@@ -228,7 +229,7 @@ def prepare(args):
         (out/(name+'.bin')).write_bytes((len(batch)|1<<63).to_bytes(8,'little')+b''.join(batch))
         write_json(out/(name+'.json'),metadata)
         with (out/(name+'.model')).open('w') as log:
-            subprocess.run([str(ROOT/'.lake/build/bin/x86fp'),str(out/(name+'.bin'))],
+            subprocess.run([str(ROOT/'.lake/build/bin/x86fp'),'--compat',str(out/(name+'.bin'))],
                            stdout=log,check=True,timeout=args.timeout)
         list(rows(out/(name+'.model'),len(batch),KINDS[KIND]['model']))
         manifest['campaigns'].append(dict(name=name,count=len(batch),**(dict(requires=requires[:]) if requires else {})))
