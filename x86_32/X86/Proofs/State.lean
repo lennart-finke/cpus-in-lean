@@ -71,10 +71,13 @@ theorem segAllowed_spec {sr : SegReg} {off n : UInt32} {write : Bool}
 
 /-! ## Paging -/
 
-/-- With paging disabled, translation is the identity and does not change the machine. -/
-theorem translate_nopg {lin : UInt32} {w u f i : Bool} {m : Machine} (h : m.cpu.cr0 &&& CR0.PG = 0) :
+/-- With paging disabled (and outside an SVM guest with nested paging, where the linear address is a
+guest-physical address translated by the nested tables), translation is the identity and does not
+change the machine. -/
+theorem translate_nopg {lin : UInt32} {w u f i : Bool} {m : Machine} (h : m.cpu.cr0 &&& CR0.PG = 0)
+    (hn : m.cpu.npOn = false) :
     translate lin w u f i m = .ok lin.toUInt64 m := by
-  simp [translate, h]
+  simp [translate, h, hn]
 
 /-- User-mode accesses are only allowed through entries with U/S set at every level. -/
 theorem pageAllowed_user {pde pte : UInt32} {large w wp : Bool}

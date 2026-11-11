@@ -195,7 +195,8 @@ def splitmix (s : UInt64) : UInt64 × UInt64 :=
 @[inline] def modG (f : GprState → GprState) : M Unit := modCpu fun c => { c with gprx := f c.gprx }
 
 /-- The time-stamp counter, as the core's RDTSC reads it (`Exec`, 0F 31). -/
-@[inline] def tsc : M UInt64 := X86.tsc  -- the core TSC (`Exec.tsc`, writable as MSR 0x10)
+@[inline] def tsc : M UInt64 := X86.tscScaled  -- the core TSC (`Exec.tsc`, writable as MSR 0x10;
+-- in an SVM guest scaled by TSC_RATIO, without TSC_OFFSET: MPERF/APERF, AMD APM vol. 2, 15.30.5)
 
 /-- Set the arithmetic flags to `v` (only bits of `Flag.arith`). -/
 @[inline] def setArith (v : UInt32) : M Unit := setFlags arith v
@@ -256,6 +257,7 @@ def monitor (i : Inst) (x : Bool) : M Unit := do
   if c.ecx != 0 then gp 0
   let lin ← segAddr (raxSeg i) (← raxOff i) 1 false
   let p ← translate lin false (← isUser)
+  Svm.icpt4 10   -- SVM MONITOR/MONITORX: after every exception (AMD APM vol. 2, table 15-7)
   let line := p &&& ~~~63
   let d ← lineData line
   modG fun g => { g with monLine := some line, monData := d }
@@ -266,6 +268,7 @@ def mwait (x : Bool) : M Unit := do
   if !x && c.cpl != 0 && !c.gprx.monMwaitUserEn then ud
   -- ECX[0]: interrupts wake even if masked (CPUID 5:ECX.IBE = 1); MWAITX also ECX[1]: timer
   if c.ecx &&& ~~~(if x then 3 else 1) != 0 then gp 0
+  Svm.mwait c.gprx.monLine.isSome   -- SVM: after every exception, conditional before unconditional
   let g := c.gprx
   modG fun g => { g with monLine := none, monData := #[] }
   let some line := g.monLine | return
@@ -305,6 +308,7 @@ def rdpmc : M Unit := do
   if c.cr4 &&& CR4.PCE == 0 && c.cpl != 0 then gp 0
   let n := c.ecx
   if n ≥ (if implemented .perfCtrExtCore then 6 else 4) then gp 0
+  Svm.icpt3 15   -- SVM RDPMC: after every exception
   let v := c.gprx.perfCtr[n.toNat]!
   setReg 0 v.toUInt32
   setReg 2 (v >>> 32).toUInt32
@@ -313,6 +317,7 @@ def rdpmc : M Unit := do
 def rdpru : M Unit := do
   let c ← cpu
   if c.cpl != 0 && c.cr4 &&& CR4.TSD != 0 then ud
+  Svm.icpt4 14   -- SVM RDPRU: after every exception
   let t ← tsc
   let (v, ok) : UInt64 × Bool :=
     if c.ecx == 0 then (t + c.gprx.mperfOff, true)
@@ -332,7 +337,8 @@ def rdrand (i : Inst) : M Unit := do
 def rdtscp : M Unit := do
   let c ← cpu
   if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
-  let t ← tsc
+  Svm.icpt4 7   -- SVM RDTSCP: after every exception
+  let t ← X86.tsc   -- with TSC_OFFSET in an SVM guest
   setReg 0 t.toUInt32
   setReg 2 (t >>> 32).toUInt32
   setReg 1 c.gprx.tscAux
@@ -340,6 +346,7 @@ def rdtscp : M Unit := do
 /-- MCOMMIT: #UD unless EFER.MCOMMIT; no delayed-error memory, so CF = 1, OF/SF/ZF/AF/PF = 0. -/
 def mcommit : M Unit := do
   if (← cpu).efer &&& EFER.MCOMMIT == 0 then ud
+  Svm.icpt5 3 0xA3   -- SVM MCOMMIT intercept (VMCB 014h bit 3, exit code A3h)
   setArith CF
 
 /-- The 0F-map hook (see the module documentation). -/
@@ -352,7 +359,7 @@ def op0F? (i : Inst) : Option (M Unit) :=
   | 0x10D => if implemented .prefetchw then some (if i.isMem then pure () else ud) else none
   | 0x133 => some rdpmc
   -- F3 0F 09: WBNOINVD (CPL 0; no cache to write back)
-  | 0x109 => if implemented .wbnoinvd then some cplIs0 else none
+  | 0x109 => if implemented .wbnoinvd then some (do cplIs0; Svm.icpt4 9) else none
   | 0x101 =>
     if i.isMem then none else
     match i.modrm with

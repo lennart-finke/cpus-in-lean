@@ -109,26 +109,26 @@ theorem xgetbv_noosxsave {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE = 0) :
     xgetbv m = .error (.exc Vec.UD none 0) m := by
   simp [xgetbv, cpu, h, bind, EStateM.bind, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
-theorem xsetbv_noosxsave {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE = 0) :
+theorem xsetbv_noosxsave {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE = 0) (hg : m.cpu.svmx.guest = false) :
     xsetbv m = .error (.exc Vec.UD none 0) m := by
-  simp [xsetbv, cpu, h, bind, EStateM.bind, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
+  simp [xsetbv, Svm.icpt4, Cpu.svmOn, hg, cpu, h, bind, EStateM.bind, ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
-theorem xsetbv_cpl {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE ≠ 0) (hc : m.cpu.cpl ≠ 0) :
+theorem xsetbv_cpl {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE ≠ 0) (hc : m.cpu.cpl ≠ 0) (hg : m.cpu.svmx.guest = false) :
     xsetbv m = .error (.exc Vec.GP (some 0) 0) m := by
-  simp [xsetbv, cpu, h, hc, bind, EStateM.bind, gp, throw, throwThe, MonadExceptOf.throw,
+  simp [xsetbv, Svm.icpt4, Cpu.svmOn, hg, cpu, h, hc, bind, EStateM.bind, gp, throw, throwThe, MonadExceptOf.throw,
     EStateM.throw]
 
 theorem xsetbv_invalid {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE ≠ 0)
-    (hv : xcr0Valid (edxEax m.cpu) = false) :
+    (hv : xcr0Valid (edxEax m.cpu) = false) (hg : m.cpu.svmx.guest = false) :
     xsetbv m = .error (.exc Vec.GP (some 0) 0) m := by
-  simp [xsetbv, cpu, h, hv, bind, EStateM.bind, gp, throw, throwThe, MonadExceptOf.throw]
+  simp [xsetbv, Svm.icpt4, Cpu.svmOn, hg, cpu, h, hv, bind, EStateM.bind, gp, throw, throwThe, MonadExceptOf.throw]
   split <;> simp_all [EStateM.bind, EStateM.throw]
 
 /-- XSETBV of a valid value at CPL 0 with ECX = 0 sets XCR0 := EDX:EAX and nothing else. -/
 theorem xsetbv_valid {m : Machine} (h : m.cpu.cr4 &&& CR4.OSXSAVE ≠ 0) (hc : m.cpu.cpl = 0)
-    (he : m.cpu.ecx = 0) (hv : xcr0Valid (edxEax m.cpu) = true) :
+    (he : m.cpu.ecx = 0) (hv : xcr0Valid (edxEax m.cpu) = true) (hg : m.cpu.svmx.guest = false) :
     xsetbv m = .ok () { m with cpu := { m.cpu with xcr0 := edxEax m.cpu } } := by
-  simp [xsetbv, cpu, h, hc, he, hv, bind, EStateM.bind, modCpu]
+  simp [xsetbv, Svm.icpt4, Cpu.svmOn, hg, cpu, h, hc, he, hv, bind, EStateM.bind, modCpu]
 
 theorem pre_noosxsave {m : Machine} (priv : Bool) (h : m.cpu.cr4 &&& CR4.OSXSAVE = 0) :
     pre priv m = .error (.exc Vec.UD none 0) m := by

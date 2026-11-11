@@ -316,6 +316,7 @@ def ioCheck (port : UInt32) (sz : Sz) : M Unit := do
   | 5 =>
     let port := c.edx &&& 0xFFFF
     ioCheck port sz
+    Svm.ioio port sz true true (i.rep != 0) SegN.ES i.adsz
     let _ ← translate (← segAddr SegN.ES di n true) true (c.cpl == 3)
     let v ← portIn port sz
     wrMem SegN.ES di n v
@@ -324,6 +325,7 @@ def ioCheck (port : UInt32) (sz : Sz) : M Unit := do
   | _ =>
     let port := c.edx &&& 0xFFFF
     ioCheck port sz
+    Svm.ioio port sz false true (i.rep != 0) src i.adsz
     let v ← rdMem src si n
     portOut port sz v
     modCpu fun c => { c with esi := upd c.esi }
@@ -435,6 +437,8 @@ def eferMsr : MsrImpl where
   rd := do return (← cpu).efer.toUInt64
   wr v := do
     if v &&& ~~~(Cpuid.eferWritable ||| EFER.LMA).toUInt64 != 0 then gp 0
+    -- VM_CR.SVMDIS: EFER.SVME is MBZ (AMD APM vol. 2, 15.30.1; SVM workstream)
+    if v &&& EFER.SVME.toUInt64 != 0 && (← cpu).svmx.vmCr &&& 0x10 != 0 then gp 0
     if !LongMode.eferOk (← cpu) v.toUInt32 then gp 0
     modCpu fun c => { c with efer := v.toUInt32 }
     flushTlbAll
@@ -468,6 +472,7 @@ def coreMsr? (n : UInt32) : Option MsrImpl :=
 /-- RDMSR of MSR `n`, looked up with `look`. -/
 def rdmsrWith (look : UInt32 → Option MsrImpl) (n : UInt32) : M UInt64 := do
   cplIs0
+  Svm.msr n false   -- SVM: after the CPL check, before the MSR's own (AMD APM vol. 2, 15.11)
   match look n with
   | some m => m.rd
   | none => gp 0
@@ -475,13 +480,15 @@ def rdmsrWith (look : UInt32 → Option MsrImpl) (n : UInt32) : M UInt64 := do
 /-- WRMSR of MSR `n`, looked up with `look`. -/
 def wrmsrWith (look : UInt32 → Option MsrImpl) (n : UInt32) (v : UInt64) : M Unit := do
   cplIs0
+  Svm.msr n true
+  Svm.wrmsrGuest n
   match look n with
   | some m => m.wr v
   | none => gp 0
 
 /-! ## System instructions -/
 
-def movToCr (n : UInt8) (v : UInt32) : M Unit := do
+def movToCr (n : UInt8) (v : UInt32) (gpr : UInt8 := 0) : M Unit := do
   cplIs0
   let c ← cpu
   let pae := c.cr4 &&& CR4.PAE != 0
@@ -491,14 +498,19 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
     if v &&& CR0.PG != 0 && v &&& CR0.PE == 0 then gp 0
     -- long-mode consistency checks; with EFER.LME, PG = 1 activates long mode (EFER.LMA)
     if !LongMode.cr0Ok c v then gp 0
+    -- SVM: after the non-memory checks, before the PDPTE loads (AMD APM vol. 2, table 15-7)
+    Svm.cr0Write c.cr0 v (Svm.movCrInfo gpr)
     -- enabling PAE paging (or changing CD/NW with it on) loads the PDPTE registers (not in long mode)
     if v &&& CR0.PG != 0 && pae && c.efer &&& EFER.LME == 0 &&
        (c.cr0 &&& CR0.PG == 0 || (v ^^^ c.cr0) &&& 0x60000000 != 0) then
       let p ← readPdptes c.cr3
       modCpu fun c => { c with pdpte := p }
     LongMode.setCr0 v
-  | 2 => modCpu fun c => { c with cr2 := v }
+  | 2 =>
+    Svm.crWrite 2 (Svm.movCrInfo gpr)
+    modCpu fun c => { c with cr2 := v }
   | 3 =>
+    Svm.crWrite 3 (Svm.movCrInfo gpr)
     if c.cr0 &&& CR0.PG != 0 && pae && !LongMode.lma c then
       let p ← readPdptes v
       modCpu fun c => { c with pdpte := p }
@@ -507,6 +519,7 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
   | 4 =>
     if v &&& ~~~Cpuid.cr4Writable != 0 then gp 0
     if !LongMode.cr4Ok c v then gp 0
+    Svm.crWrite 4 (Svm.movCrInfo gpr)
     if c.cr0 &&& CR0.PG != 0 && v &&& CR4.PAE != 0 && !LongMode.lma c &&
        (v ^^^ c.cr4) &&& (CR4.PAE ||| CR4.PGE ||| CR4.PSE) != 0 then
       let p ← readPdptes c.cr3
@@ -515,15 +528,16 @@ def movToCr (n : UInt8) (v : UInt32) : M Unit := do
     if (v ^^^ c.cr4) &&& (CR4.PSE ||| CR4.PGE ||| CR4.PAE) != 0 then flushTlbAll
   | _ => ud
 
-def movFromCr (n : UInt8) : M UInt32 := do
+def movFromCr (n : UInt8) (gpr : UInt8 := 0) : M UInt32 := do
   cplIs0
   let c ← cpu
+  if !(n == 0 || n == 2 || n == 3 || n == 4) then ud
+  Svm.crRead n.toUInt32 (Svm.movCrInfo gpr)
   match n with
   | 0 => return c.cr0
   | 2 => return c.cr2
   | 3 => return c.cr3
-  | 4 => return c.cr4
-  | _ => ud
+  | _ => return c.cr4
 
 /-- Debug-register number for MOV DR (DR4/DR5 alias DR6/DR7 unless CR4.DE). With DR7.GD set, any
 debug-register access is a #DB fault with DR6.BD (the `addr` of the fault carries the DR6 bits). -/
@@ -544,7 +558,10 @@ check comes after the #UD checks of the form and before any memory access. -/
   if c.cr4 &&& CR4.UMIP != 0 && c.cpl != 0 then gp 0
 
 /-- The time-stamp counter: the instruction count plus the offset set by WRMSR 0x10. -/
-@[inline] def tsc : M UInt64 := fun m => .ok (m.icount + m.cpu.sysx.tscOff) m
+@[inline] def tsc : M UInt64 := fun m => .ok (Svm.guestTsc m.cpu (m.icount + m.cpu.sysx.tscOff)) m
+
+/-- The TSC as MPERF/APERF see it: in an SVM guest scaled by TSC_RATIO, without TSC_OFFSET. -/
+@[inline] def tscScaled : M UInt64 := fun m => .ok (Svm.guestScaled m.cpu (m.icount + m.cpu.sysx.tscOff)) m
 
 def grp6 (i : Inst) : M Unit := do
   let c ← cpu
@@ -552,12 +569,15 @@ def grp6 (i : Inst) : M Unit := do
   match i.reg with
   | 0 =>
     umipCheck
+    Svm.icpt3 8   -- SVM: after #UD and #GP, before any memory access (table 15-7)
     if i.isMem then wrE i 2 c.ldtr.sel.toUInt32 else wrReg i.opsz i.rm c.ldtr.sel.toUInt32
   | 1 =>
     umipCheck
+    Svm.icpt3 9
     if i.isMem then wrE i 2 c.tr.sel.toUInt32 else wrReg i.opsz i.rm c.tr.sel.toUInt32
   | 2 => -- LLDT
     cplIs0
+    Svm.icpt3 12
     let sel := (← rdE i 2).toUInt16
     if sel &&& 0xFFFC == 0 then
       modCpu fun c => { c with ldtr := { sel, base := 0, limit := 0, attr := 0 } }
@@ -569,6 +589,7 @@ def grp6 (i : Inst) : M Unit := do
       modCpu fun c => { c with ldtr := d.toSeg sel }
   | 3 => -- LTR
     cplIs0
+    Svm.icpt3 13
     let sel := (← rdE i 2).toUInt16
     if sel &&& 0xFFFC == 0 then gp 0
     if sel &&& 4 != 0 then gp (sel.toUInt32 &&& 0xFFFC)
@@ -629,6 +650,7 @@ def grp7 (i : Inst) : M Unit := do
   | 0 | 1 => -- SGDT / SIDT
     needMem i
     umipCheck
+    Svm.icpt3 (if i.reg == 0 then 7 else 6)
     let c ← cpu
     let (b, l) := if i.reg == 0 then (c.gdtBase, c.gdtLimit) else (c.idtBase, c.idtLimit)
     let off ← eaOff i
@@ -637,6 +659,7 @@ def grp7 (i : Inst) : M Unit := do
   | 2 | 3 => -- LGDT / LIDT
     needMem i
     cplIs0
+    Svm.icpt3 (if i.reg == 2 then 11 else 10)
     let off ← eaOff i
     let l ← rdMem i.seg off 2
     let b ← rdMem i.seg (off + 2) 4
@@ -645,10 +668,12 @@ def grp7 (i : Inst) : M Unit := do
     else modCpu fun c => { c with idtBase := b, idtLimit := l }
   | 4 => -- SMSW
     umipCheck
+    Svm.crRead 0 0   -- SVM: before the memory exceptions, no decode assist (15.8.1)
     let c ← cpu
     if i.isMem then wrE i 2 c.cr0 else wrReg i.opsz i.rm c.cr0
   | 6 => -- LMSW
     cplIs0
+    Svm.cr0Write 0 0 0 (lmsw := true)   -- SVM: before the memory exceptions (table 15-7)
     let v ← rdE i 2
     let c ← cpu
     let nv := (c.cr0 &&& ~~~(0xE : UInt32)) ||| (v &&& 0xF) ||| (c.cr0 &&& 1)
@@ -658,6 +683,7 @@ def grp7 (i : Inst) : M Unit := do
     cplIs0
     let off ← eaOff i
     let sr := (← cpu).getSeg i.seg
+    Svm.invlpg (sr.base + off)
     flushTlbPage (sr.base + off)
   | _ => ud
 
@@ -756,7 +782,9 @@ def execOp60 (op : Nat) : Inst → M Unit :=
     let lo := toSInt sz (← rdMem i.seg off sz.toUInt32)
     let hi := toSInt sz (← rdMem i.seg (off + sz.toUInt32) sz.toUInt32)
     let v := toSInt sz (← rdReg sz i.reg)
-    if v < lo || v > hi then exc Vec.BR
+    if v < lo || v > hi then
+      Svm.excInstr Vec.BR   -- SVM #BR intercept: rIP of BOUND, nRIP saved (15.7.1)
+      exc Vec.BR
   | 0x63 => fun i => do -- ARPL
     let c ← cpu
     if !c.pe || c.vm86 then ud
@@ -813,7 +841,7 @@ def execOp60 (op : Nat) : Inst → M Unit :=
     if i.reg != 0 then ud
     let v ← pop i.opsz
     wrE i i.opsz v
-  | 0x90 => fun _ => pure ()
+  | 0x90 => fun i => if i.rep == 0xF3 then Svm.pause else pure ()
   | 0x91 | 0x92 | 0x93 | 0x94 | 0x95 | 0x96 | 0x97 => fun i => do
     let r := (i.op &&& 7).toUInt8
     let a ← rdReg i.opsz 0
@@ -829,13 +857,14 @@ def execOp60 (op : Nat) : Inst → M Unit :=
   | 0x9A => fun i => farJump i.imm2.toUInt16 i.imm true i.opsz
   | 0x9B => fun _ => fwait
   | 0x9C => fun i => do
+    Svm.icpt3 16   -- SVM: priority over every exception (table 15-7)
     let c ← cpu
     if c.vm86 && c.iopl < 3 then
       -- CR4.VME: the 16-bit PUSHF pushes VIF as IF and IOPL = 3; PUSHFD stays #GP(0)
       if c.cr4 &&& CR4.VME == 0 || i.opsz == 4 then gp 0
       push 2 (vmeFlagsImage c.eflags)
     else push i.opsz ((c.eflags &&& ~~~(VM ||| RF)) &&& i.opsz.mask)
-  | 0x9D => fun i => popf i.opsz
+  | 0x9D => fun i => do Svm.icpt3 17; popf i.opsz
   | 0x9E => fun _ => do
     let ah := ((← getReg 0) >>> 8) &&& 0xFF
     setFlags (SF ||| ZF ||| AF ||| PF ||| CF) ah
@@ -902,18 +931,27 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
     wrReg i.opsz 5 (← pop i.opsz)
   | 0xCA => fun i => farRet i.opsz i.imm
   | 0xCB => fun i => farRet i.opsz 0
-  | 0xCC => fun _ => deliver Vec.BP none true false
+  -- SVM (AMD APM vol. 2, 15.7.2, 15.12): INT3/INTO raise #BP/#OF, checked for their exception
+  -- intercept; INT n checks the software-interrupt intercept before any exception; IDT delivery on
+  -- their behalf records the event for EXITINTINFO (`Svm.deliverAs`)
+  | 0xCC => fun _ => do
+    Svm.excInstr Vec.BP
+    Svm.deliverAs (Svm.intInfo Vec.BP 3 none) (deliver Vec.BP none true false)
   | 0xCD => fun i => do
     -- INT n is IOPL-sensitive in virtual-8086 mode (INT3 and INTO are not); with CR4.VME it may be
     -- redirected to the 8086 handler (`Sys.vmeInt`)
-    let c ← cpu
     let n := i.imm.toUInt8
+    Svm.swint n
+    let c ← cpu
     if c.vm86 && c.cr4 &&& CR4.VME != 0 && (← vmeRedirected n) then vmeInt n
     else
       if c.vm86 && c.iopl < 3 then gp 0
-      deliver n none true false
-  | 0xCE => fun _ => do if (← flag OF) then deliver Vec.OF none true false
-  | 0xCF => fun i => iret i.opsz
+      Svm.deliverAs (Svm.intInfo n 4 none) (deliver n none true false)
+  | 0xCE => fun _ => do
+    if (← flag OF) then
+      Svm.excInstr Vec.OF
+      Svm.deliverAs (Svm.intInfo Vec.OF 3 none) (deliver Vec.OF none true false)
+  | 0xCF => fun i => do Svm.icpt3 20; iret i.opsz   -- SVM: priority over every exception
   | 0xD0 | 0xD1 => fun i => shiftGrp i 1
   | 0xD2 | 0xD3 => fun i => do shiftGrp i ((← getReg 1) &&& 0xFF)
   | 0xD4 => fun i => do -- AAM
@@ -952,20 +990,24 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xE4 | 0xE5 => fun i => do
     let sz := bsz i
     ioCheck (i.imm &&& 0xFF) sz
+    Svm.ioio (i.imm &&& 0xFF) sz true false false 0 i.adsz
     wrReg sz 0 (← portIn (i.imm &&& 0xFF) sz)
   | 0xE6 | 0xE7 => fun i => do
     let sz := bsz i
     ioCheck (i.imm &&& 0xFF) sz
+    Svm.ioio (i.imm &&& 0xFF) sz false false false 0 i.adsz
     portOut (i.imm &&& 0xFF) sz (← rdReg sz 0)
   | 0xEC | 0xED => fun i => do
     let sz := bsz i
     let p := (← getReg 2) &&& 0xFFFF
     ioCheck p sz
+    Svm.ioio p sz true false false 0 i.adsz
     wrReg sz 0 (← portIn p sz)
   | 0xEE | 0xEF => fun i => do
     let sz := bsz i
     let p := (← getReg 2) &&& 0xFFFF
     ioCheck p sz
+    Svm.ioio p sz false false false 0 i.adsz
     portOut p sz (← rdReg sz 0)
   | 0xE8 => fun i => do
     let ret ← getEip
@@ -979,9 +1021,12 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
   | 0xEB => fun i => jumpRel i (sext 1 i.imm)
   -- INT1 (ICEBP): no gate DPL check, and the EXT bit is set in the error code of a fault during its
   -- delivery (SDM vol. 3, 7.13: "also set if the exception occurred during delivery of INT1")
-  | 0xF1 => fun _ => deliver Vec.DB none false true
+  | 0xF1 => fun _ => do
+    Svm.icpt4 8   -- SVM ICEBP intercept (not the #DB intercept, 15.12.2); an exception for EXITINTINFO
+    Svm.deliverAs (Svm.intInfo Vec.DB 3 none) (deliver Vec.DB none false true)
   | 0xF4 => fun _ => do
     cplIs0
+    Svm.icpt3 24   -- SVM: after every exception (table 15-7)
     modCpu fun c => { c with halted := true }
   | 0xF5 => fun _ => modCpu fun c => { c with eflags := c.eflags ^^^ CF }
   | 0xF6 | 0xF7 => grp3
@@ -1026,19 +1071,23 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x103 => fun i => larLsl i true
   | 0x106 => fun _ => do
     cplIs0
+    Svm.crWrite 0 0   -- SVM: CLTS checks the CR0 write intercept, not the selective one (table 15-7)
     modCpu fun c => { c with cr0 := c.cr0 &&& ~~~CR0.TS }
-  | 0x108 | 0x109 => fun _ => cplIs0
+  | 0x108 => fun _ => do cplIs0; Svm.icpt3 22   -- INVD (SVM: after #GP)
+  | 0x109 => fun _ => do cplIs0; Svm.icpt4 9    -- WBINVD (SVM: after #GP)
   | 0x10D => fun _ => pure ()
-  | 0x120 => fun i => do setReg i.rm (← movFromCr i.reg)
-  | 0x122 => fun i => do movToCr i.reg (← getReg i.rm)
+  | 0x120 => fun i => do setReg i.rm (← movFromCr i.reg i.rm)
+  | 0x122 => fun i => do movToCr i.reg (← getReg i.rm) i.rm
   | 0x121 => fun i => do
     let n ← drIndex i.reg
+    Svm.drRead i.reg i.rm   -- SVM: after every exception check (table 15-7)
     let c ← cpu
     let v := match n with
       | 0 => c.dr0 | 1 => c.dr1 | 2 => c.dr2 | 3 => c.dr3 | 6 => c.dr6 | _ => c.dr7
     setReg i.rm v
   | 0x123 => fun i => do
     let n ← drIndex i.reg
+    Svm.drWrite i.reg i.rm
     let v ← getReg i.rm
     modCpu fun c => match n with
       | 0 => { c with dr0 := v } | 1 => { c with dr1 := v } | 2 => { c with dr2 := v }
@@ -1047,13 +1096,15 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x131 => fun _ => do
     let c ← cpu
     if c.cr4 &&& CR4.TSD != 0 && c.cpl != 0 then gp 0
+    Svm.icpt3 14   -- SVM RDTSC: after every exception
     let t ← tsc
     setReg 0 t.toUInt32
     setReg 2 (t >>> 32).toUInt32
-  | 0x1AA => fun _ => rsm
+  | 0x1AA => fun _ => do Svm.icpt3 19; rsm   -- SVM RSM: priority over every exception
   | 0x1A0 => pushSeg SegN.FS | 0x1A1 => popSeg SegN.FS
   | 0x1A8 => pushSeg SegN.GS | 0x1A9 => popSeg SegN.GS
   | 0x1A2 => fun _ => do
+    Svm.icpt3 18   -- SVM CPUID
     let (a, b, c, d) := cpuid (← cpu) (← getReg 0) (← getReg 1)
     setReg 0 a; setReg 3 b; setReg 1 c; setReg 2 d
   | 0x1A3 => fun i => do bitOp i 0 (← rdReg i.opsz i.reg) false

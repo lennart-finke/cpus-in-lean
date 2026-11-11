@@ -78,6 +78,13 @@ namespace MpMachine
 module documentation. `intr`: the CPU's INTR line. -/
 def runnableState (c : Cpu) (a : Apic) (smi : Bool) (dbPend : UInt32) (intr : Bool) : Bool :=
   if c.smpx.waitSipi then a.init || a.sipi.isSome
+  -- SVM guest mode or GIF = 0 (`Step.stepAtSvm`, `Machine.svmIdle`)
+  else if c.svmx.guest || !c.svmx.gif then
+    let s := c.svmx
+    !c.halted || s.inject != 0 || (s.gif && a.init && !c.smm) || a.sipi.isSome ||
+    (s.gif && (a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) ||
+    (s.gif && smi && !c.smm) || (if s.gif then dbPend else dbPend &&& ~~~0xF) != 0 ||
+    (s.gif && intr && c.physIntrOk) || c.vintrReady
   else !c.halted || (a.init && !c.smm) || a.sipi.isSome ||
     ((a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) || (smi && !c.smm) ||
     dbPend != 0 || (intr && c.eflags &&& Flag.IF != 0)

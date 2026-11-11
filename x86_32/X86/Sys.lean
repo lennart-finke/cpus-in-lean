@@ -1,4 +1,5 @@
 import X86.Ext.LongModeBase
+import X86.Ext.SvmBase
 /-!
 # System architecture
 
@@ -183,7 +184,8 @@ def tsLoadSeg (s : UInt8) (sel : UInt16) (cpl ext : UInt32) : M Unit := do
 /-- Switch to the task whose (non-busy for JMP/CALL/INT, busy for IRET) TSS descriptor `d` at
 linear address `daddr` is selected by `sel`. EIP must hold the old task's resume address. `ext`
 is the EXT bit for error codes of faults raised by the switch. -/
-def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext : UInt32 := 0) : M Unit := do
+def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext : UInt32 := 0)
+    (errc : Option UInt32 := none) : M Unit := do
   let c ← cpu
   let err := (sel.toUInt32 &&& 0xFFFC) ||| ext
   let t32 := d.sysType &&& 8 != 0
@@ -193,6 +195,9 @@ def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext :
   let o32 := otr.typ &&& 8 != 0
   if otr.limit < (if o32 then 0x67 else 0x2B) then
     exc Vec.TS (some ((otr.sel.toUInt32 &&& 0xFFFC) ||| ext))
+  -- SVM task-switch intercept: after the incoming TSS (and task gate) checks, before the switch
+  -- (AMD APM vol. 2, 15.14.1); `errc` the error code the new task would get
+  Svm.taskSwitch sel (src == .iret) (src == .jmp) errc
   -- the new task's state: read once before modifying anything (so that its faults leave the old task
   -- intact) and again after the old state has been saved (SDM 7.3 steps 8 and 12: an IRET to the
   -- current task itself loads the state it has just saved)
@@ -507,7 +512,7 @@ def deliver (vec : UInt8) (err : Option UInt32) (soft ext : Bool) : M Unit := do
   if gtype == 0x05 then
     -- task gate: switch tasks (nesting), then push the error code on the new task's stack
     let (tsel, td, taddr) ← taskGateTss { lo, hi } extB
-    taskSwitch tsel td taddr .int extB
+    taskSwitch tsel td taddr .int extB err
     if let some e := err then push (if td.sysType &&& 8 != 0 then 4 else 2) e
     return
   let g32 := gtype &&& 8 != 0

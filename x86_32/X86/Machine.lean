@@ -804,8 +804,272 @@ def walkLongTlb (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := 
   | .ok (p, bits, size) m => .ok p (tlbFill m lin (p &&& ~~~0xFFF) bits (size != 0) (size == 2))
   | .error f m => .error f m
 
+/-! ### SVM nested paging (owner: the SVM workstream, `X86/Ext/Svm.lean`)
+
+AMD APM vol. 2, 15.25. In guest mode with NP_ENABLE (`SvmState.np`, not in SMM: the SMM handler of
+an unintercepted SMI runs outside the virtualization controls, 15.22.3) every guest-physical address
+is translated by the nested page tables at nCR3 in the paging mode the host had at VMRUN
+(`SvmState.nMode`, 15.25.3: 32-bit paging with or without CR4.PSE, legacy PAE, or 4-level). The
+nested walk treats every access as a user access (U/S = 1 needed at every level; R/W for writes,
+host CR0.WP and SMEP/SMAP do not apply; NX with the host's EFER.NXE), sets A in every nested entry it
+uses and D in the leaf for writes, and raises #VMEXIT(NPF) (code 400h) with EXITINFO1 = P, RW,
+US = 1, RSV, ID | bit 32 (final guest-physical address) or bit 33 (an access to the guest page
+tables, always a user write: 15.25.5), EXITINFO2 = the guest-physical address (15.25.6). With a
+32-bit or legacy-PAE host only guest-physical addresses below 4 GiB are mapped (the four PAE PDPTEs
+of nCR3 are read from memory at each walk, like long-mode tables); a higher one is a not-present NPF
+(the APM does not say; UNCONFIRMED). Nested translations are not cached (no nested TLB).
+
+The guest walks (`gWalk32`, `gWalkPae`, `gWalkLong`) are the walks of `walk32`, `walkPae` and
+`longEntries`/`walkLong` with every paging-structure access translated (steps 1-4 of 15.25.6: nested
+faults of a table access before the guest fault at that level; the guest permission check before
+the nested walk of the final address). With nested paging the PAE PDPTEs are read from memory on each
+walk, not at CR3 loads (15.25.10; `readPdptes`). The TLB entry combines both levels (15.25.7): write
+access only if both allow it, execute-disable if either level forbids execution, D only if both D
+bits are set (so a write walks again), global from the guest entry. -/
+
+/-- EXITINFO1 bit 32: the nested page fault translated the guest's final physical address. -/
+def npfFinal : UInt64 := 0x100000000
+/-- EXITINFO1 bit 33: the nested page fault translated a guest paging-structure access. -/
+def npfTable : UInt64 := 0x200000000
+
+/-- #VMEXIT(NPF) with the nested error code bits `err` (P, RW, RSV, ID; US is always set) and kind. -/
+@[inline] def npfFault (prot rsvd write fetch : Bool) (kind gpa : UInt64) : Fault :=
+  .vmexit { code := 0x400, info2 := gpa,
+            info1 := kind ||| 4 ||| (if prot then 1 else 0) ||| (if write then 2 else 0) |||
+                     (if rsvd then 8 else 0) ||| (if fetch then 0x10 else 0) }
+
+/-- Nested paging is in effect (guest mode with NP_ENABLE, outside SMM). -/
+@[inline] def Cpu.npOn (c : Cpu) : Bool := c.svmx.np && !c.smm
+
+/-- The nested walk of guest-physical `gpa` for a user access (`write`, `fetch`; `kind` = `npfFinal`
+or `npfTable`): the host-physical address, whether every level allows writes, whether the leaf's D
+bit is set after the access, and whether execution is disabled (host EFER.NXE). -/
+def nestedWalk (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M (UInt64 × Bool × Bool × Bool) := fun m =>
+  let s := m.cpu.svmx
+  let nxe := s.nNxe
+  let fault := fun (prot rsvd : Bool) => npfFault prot rsvd write fetch kind gpa
+  -- the leaf: entries `es` (from the top), the leaf's address, its value and the page base
+  let finish := fun (m : Machine) (es : List UInt64) (leafA : UInt64) (leaf base : UInt64) =>
+    let perm := es.foldl (· &&& ·) 0xFFFFFFFFFFFFFFFF
+    let xd := nxe && es.any (· &&& nxBit != 0)
+    if perm &&& 4 == 0 || (write && perm &&& 2 == 0) || (fetch && xd) then .error (fault true false) m else
+    let nleaf := leaf ||| 0x20 ||| (if write then 0x40 else 0)
+    let mem := if nleaf != leaf then wrBytes m.mem leafA.toUInt32 4 nleaf.toUInt32 else m.mem
+    .ok (base, perm &&& 2 != 0, nleaf &&& 0x40 != 0, xd) { m with mem }
+  if s.nMode ≤ 1 then
+    -- 32-bit paging (nMode 1: CR4.PSE, 4 MiB pages with PSE-36)
+    if gpa >>> 32 != 0 then .error (fault false false) m else
+    let lin := gpa.toUInt32
+    let pdeA := (s.ncr3.toUInt32 &&& 0xFFFFF000) + ((lin >>> 22) <<< 2)
+    let pde := rdBytes m.mem pdeA 4
+    if pde &&& 1 == 0 then .error (fault false false) m else
+    if pde &&& 0x80 != 0 && s.nMode == 1 then
+      if pde &&& pse4mRsvd != 0 then .error (fault true true) m else
+      finish m [pde.toUInt64] pdeA.toUInt64 pde.toUInt64 (pse36Base pde ||| (lin &&& 0x3FF000).toUInt64)
+    else
+    let m := setTableA m pdeA pde
+    let pteA := pteAddr pde lin
+    let pte := rdBytes m.mem pteA 4
+    if pte &&& 1 == 0 then .error (fault false false) m else
+    finish m [pde.toUInt64, pte.toUInt64] pteA.toUInt64 pte.toUInt64 (pte &&& 0xFFFFF000).toUInt64
+  else if s.nMode == 2 then
+    -- legacy PAE: the PDPTE from memory at nCR3[31:5]
+    if gpa >>> 32 != 0 then .error (fault false false) m else
+    let rsv := paeRsvd nxe
+    let pdpte := rd64 m.mem ((s.ncr3 &&& 0xFFFFFFE0) + ((gpa >>> 30) <<< 3))
+    if pdpte &&& 1 == 0 then .error (fault false false) m else
+    if pdpte &&& pdpteRsvd != 0 then .error (fault true true) m else
+    let pdeA := (pdpte &&& paeAddr) + (((gpa >>> 21) &&& 0x1FF) <<< 3)
+    let pde := rd64 m.mem pdeA
+    if pde &&& 1 == 0 then .error (fault false false) m else
+    let large := pde &&& 0x80 != 0
+    if pde &&& rsv != 0 || (large && pde &&& 0x1FE000 != 0) then .error (fault true true) m else
+    if large then finish m [pde] pdeA pde ((pde &&& 0xFFFFFFE00000) ||| (gpa &&& 0x1FF000)) else
+    let m := setTableA m pdeA.toUInt32 pde.toUInt32
+    let pteA := (pde &&& paeAddr) + (((gpa >>> 12) &&& 0x1FF) <<< 3)
+    let pte := rd64 m.mem pteA
+    if pte &&& 1 == 0 then .error (fault false false) m else
+    if pte &&& rsv != 0 then .error (fault true true) m else
+    finish m [pde, pte] pteA pte (pte &&& paeAddr)
+  else
+    -- 4-level (the host in long mode)
+    let rsv := longRsvd nxe
+    let e4A := (s.ncr3 &&& paeAddr) + (((gpa >>> 39) &&& 0x1FF) <<< 3)
+    let e4 := rd64 m.mem e4A
+    if e4 &&& 1 == 0 then .error (fault false false) m else
+    if e4 &&& (rsv ||| 0x180) != 0 then .error (fault true true) m else
+    let m := setTableA m e4A.toUInt32 e4.toUInt32
+    let e3A := (e4 &&& paeAddr) + (((gpa >>> 30) &&& 0x1FF) <<< 3)
+    let e3 := rd64 m.mem e3A
+    if e3 &&& 1 == 0 then .error (fault false false) m else
+    let g1 := e3 &&& 0x80 != 0
+    if e3 &&& rsv != 0 || (g1 && e3 &&& 0x3FFFE000 != 0) then .error (fault true true) m else
+    if g1 then finish m [e4, e3] e3A e3 ((e3 &&& 0xFFFFC0000000) ||| (gpa &&& 0x3FFFF000)) else
+    let m := setTableA m e3A.toUInt32 e3.toUInt32
+    let e2A := (e3 &&& paeAddr) + (((gpa >>> 21) &&& 0x1FF) <<< 3)
+    let e2 := rd64 m.mem e2A
+    if e2 &&& 1 == 0 then .error (fault false false) m else
+    let m2 := e2 &&& 0x80 != 0
+    if e2 &&& rsv != 0 || (m2 && e2 &&& 0x1FE000 != 0) then .error (fault true true) m else
+    if m2 then finish m [e4, e3, e2] e2A e2 ((e2 &&& 0xFFFFFFE00000) ||| (gpa &&& 0x1FF000)) else
+    let m := setTableA m e2A.toUInt32 e2.toUInt32
+    let e1A := (e2 &&& paeAddr) + (((gpa >>> 12) &&& 0x1FF) <<< 3)
+    let e1 := rd64 m.mem e1A
+    if e1 &&& 1 == 0 then .error (fault false false) m else
+    if e1 &&& rsv != 0 then .error (fault true true) m else
+    finish m [e4, e3, e2, e1] e1A e1 (e1 &&& paeAddr)
+
+/-- Host-physical address of guest-physical `gpa` (page offset kept). -/
+@[inline] def nestedPhys (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M UInt64 := do
+  let (b, _) ← nestedWalk gpa write fetch kind
+  return b ||| (gpa &&& 0xFFF)
+
+/-- A guest paging-structure entry of `n` (4 or 8) bytes at guest-physical `gpa`: its host-physical
+address and value (the nested walk is a user write, 15.25.5). -/
+def gEntry (gpa : UInt64) (n : UInt32) : M (UInt64 × UInt64) := do
+  let h ← nestedPhys gpa true false npfTable
+  let v ← fun m => .ok (if n == 4 then (if h >>> 32 != 0 then 0xFFFFFFFF else (rdBytes m.mem h.toUInt32 4).toUInt64)
+                        else rd64 m.mem h) m
+  return (h, v)
+
+/-- Write the low dword of a guest paging entry (A/D bits) at host-physical `h`. -/
+@[inline] def gSet (h : UInt64) (v : UInt32) : M Unit := fun m =>
+  .ok () (if h >>> 32 != 0 then m else { m with mem := wrBytes m.mem h.toUInt32 4 v })
+
+/-- The final nested translation of a guest walk's result and the TLB fill (see above): `gpa` the
+guest-physical address, `gbits` the guest's TLB bits, `large` a guest large page. -/
+def gFinish (lin : UInt32) (gpa : UInt64) (gbits : UInt64) (large write fetch : Bool) : M UInt64 := do
+  let (hb, w, d, xd) ← nestedWalk gpa write fetch npfFinal
+  let bits := (if w then gbits else gbits &&& ~~~(Tlb.UW ||| Tlb.SW)) &&& (if d then 0xFFFFFFFFFFFFFFFF else ~~~Tlb.D)
+  let bits := bits ||| (if xd then Tlb.NX else 0)
+  modM fun m => tlbFill m lin hb bits large
+  return hb ||| (lin &&& 0xFFF).toUInt64
+
+/-- Guest 32-bit paging walk under nested paging (`walk32` with nested table accesses). -/
+def gWalk32 (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := do
+  let c ← cpu
+  let wp := c.cr0 &&& CR0.WP != 0
+  let idf := fetch && c.cr4 &&& CR4.SMEP != 0
+  let pf := fun (prot rsvd : Bool) => Fault.exc Vec.PF (some (pfErr write user prot rsvd idf)) lin
+  let (pdeH, pdeV) ← gEntry (pdeAddr c lin).toUInt64 4
+  let pde := pdeV.toUInt32
+  if pde &&& 1 == 0 then throw (pf false false)
+  let large := pde &&& 0x80 != 0 && c.cr4 &&& CR4.PSE != 0
+  if large && pde &&& pse4mRsvd != 0 then throw (pf true true)
+  if !large && pde &&& 0x20 == 0 then gSet pdeH (pde ||| 0x20)
+  let pde := if large then pde else pde ||| 0x20
+  let (pteH, pte) ← if large then pure (pdeH, pde) else do
+    let (h, v) ← gEntry (pteAddr pde lin).toUInt64 4
+    pure (h, v.toUInt32)
+  if pte &&& 1 == 0 then throw (pf false false)
+  let perm := if large then pde else pde &&& pte
+  if !pageAllowed pde pte large write user wp || !smAllowed perm c.cr4 c.eflags user fetch implicit then
+    throw (pf true false)
+  let npde := pde ||| 0x20 ||| (if large && write then 0x40 else 0)
+  if npde != pde then gSet pdeH npde
+  let pte ← if large then pure npde else do
+    let npte := pte ||| 0x20 ||| (if write then 0x40 else 0)
+    if npte != pte then gSet pteH npte
+    pure npte
+  let gpa := if large then pse36Base pde ||| (lin &&& 0x3FF000).toUInt64 else (pte &&& 0xFFFFF000).toUInt64
+  let bits := tlbBits perm (pte &&& 0x40 != 0) wp ||| globalBit c.cr4 pte
+  gFinish lin (gpa ||| (lin &&& 0xFFF).toUInt64) bits large write fetch
+
+/-- Guest PAE paging walk under nested paging: the PDPTE is read from guest memory (15.25.10); a
+reserved bit in a present PDPTE is a reserved-bit #PF. -/
+def gWalkPae (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := do
+  let c ← cpu
+  let wp := c.cr0 &&& CR0.WP != 0
+  let nxe := c.efer &&& EFER.NXE != 0
+  let pf := fun (prot rsvd : Bool) =>
+    Fault.exc Vec.PF (some (pfErr write user prot rsvd (fetch && (nxe || c.cr4 &&& CR4.SMEP != 0)))) lin
+  let (_, pdpte) ← gEntry (((c.cr3 &&& 0xFFFFFFE0) + ((lin >>> 30) <<< 3))).toUInt64 8
+  if pdpte &&& 1 == 0 then throw (pf false false)
+  if pdpte &&& pdpteRsvd != 0 then throw (pf true true)
+  let rsv := paeRsvd nxe
+  let (pdeH, pde) ← gEntry ((pdpte &&& paeAddr) + (((lin >>> 21) &&& 0x1FF).toUInt64 <<< 3)) 8
+  if pde &&& 1 == 0 then throw (pf false false)
+  let large := pde &&& 0x80 != 0
+  if pde &&& rsv != 0 || (large && pde &&& 0x1FE000 != 0) then throw (pf true true)
+  if !large && pde &&& 0x20 == 0 then gSet pdeH (pde.toUInt32 ||| 0x20)
+  let pde := if large then pde else pde ||| 0x20
+  let (pteH, pte) ← if large then pure (pdeH, pde) else
+    gEntry ((pde &&& paeAddr) + (((lin >>> 12) &&& 0x1FF).toUInt64 <<< 3)) 8
+  if pte &&& 1 == 0 then throw (pf false false)
+  if pte &&& rsv != 0 then throw (pf true true)
+  let perm := (if large then pde else pde &&& pte).toUInt32
+  if !paeAllowed pde pte large write user wp fetch nxe || !smAllowed perm c.cr4 c.eflags user fetch implicit then
+    throw (pf true false)
+  let npde := pde ||| 0x20 ||| (if large && write then 0x40 else 0)
+  if npde != pde then gSet pdeH npde.toUInt32
+  let pte ← if large then pure npde else do
+    let npte := pte ||| 0x20 ||| (if write then 0x40 else 0)
+    if npte != pte then gSet pteH npte.toUInt32
+    pure npte
+  let gpa := if large then (pde &&& 0xFFFFFFE00000) ||| (lin &&& 0x1FF000).toUInt64 else pte &&& paeAddr
+  let xd := nxe && (if large then pde else pde ||| pte) >>> 63 != 0
+  let bits := tlbBits perm (pte &&& 0x40 != 0) wp ||| (if xd then Tlb.NX else 0) ||| globalBit c.cr4 pte.toUInt32
+  gFinish lin (gpa ||| (lin &&& 0xFFF).toUInt64) bits large write fetch
+
+/-- Guest 4-level walk (compatibility mode) under nested paging (`longEntries` and `walkLong` with
+nested table accesses). -/
+def gWalkLong (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := do
+  let c ← cpu
+  let wp := c.cr0 &&& CR0.WP != 0
+  let nxe := c.efer &&& EFER.NXE != 0
+  let pf := fun (prot rsvd : Bool) =>
+    Fault.exc Vec.PF (some (pfErr write user prot rsvd (fetch && (nxe || c.cr4 &&& CR4.SMEP != 0)))) lin
+  let rsv := longRsvd nxe
+  let l := lin.toUInt64
+  let (e4H, e4) ← gEntry ((c.cr3.toUInt64 &&& paeAddr) + (((l >>> 39) &&& 0x1FF) <<< 3)) 8
+  if e4 &&& 1 == 0 then throw (pf false false)
+  if e4 &&& (rsv ||| 0x180) != 0 then throw (pf true true)
+  if e4 &&& 0x20 == 0 then gSet e4H (e4.toUInt32 ||| 0x20)
+  let (e3H, e3) ← gEntry ((e4 &&& paeAddr) + (((l >>> 30) &&& 0x1FF) <<< 3)) 8
+  if e3 &&& 1 == 0 then throw (pf false false)
+  let g1 := e3 &&& 0x80 != 0
+  if e3 &&& rsv != 0 || (g1 && e3 &&& 0x3FFFE000 != 0) then throw (pf true true)
+  let (e2H, e2, e1H, e1, size) ← if g1 then pure (e3H, e3, e3H, e3, (2 : UInt8)) else do
+    if e3 &&& 0x20 == 0 then gSet e3H (e3.toUInt32 ||| 0x20)
+    let (e2H, e2) ← gEntry ((e3 &&& paeAddr) + (((l >>> 21) &&& 0x1FF) <<< 3)) 8
+    if e2 &&& 1 == 0 then throw (pf false false)
+    let m2 := e2 &&& 0x80 != 0
+    if e2 &&& rsv != 0 || (m2 && e2 &&& 0x1FE000 != 0) then throw (pf true true)
+    if m2 then pure (e2H, e2, e2H, e2, (1 : UInt8)) else do
+      if e2 &&& 0x20 == 0 then gSet e2H (e2.toUInt32 ||| 0x20)
+      let (e1H, e1) ← gEntry ((e2 &&& paeAddr) + (((l >>> 12) &&& 0x1FF) <<< 3)) 8
+      if e1 &&& 1 == 0 then throw (pf false false)
+      if e1 &&& rsv != 0 then throw (pf true true)
+      pure (e2H, e2, e1H, e1, (0 : UInt8))
+  let _ := e2H
+  if !longCheck e4 e3 e2 e1 nxe write user wp fetch c.cr4 c.eflags implicit then throw (pf true false)
+  let perm := (e4 &&& e3 &&& e2 &&& e1).toUInt32 &&& 6
+  let xd := nxe && (e4 ||| e3 ||| e2 ||| e1) &&& nxBit != 0
+  let nleaf := e1 ||| 0x20 ||| (if write then 0x40 else 0)
+  if nleaf != e1 then gSet e1H nleaf.toUInt32
+  let gpa : UInt64 :=
+    if size == 2 then (e1 &&& 0xFFFFC0000000) ||| (l &&& 0x3FFFF000)
+    else if size == 1 then (e1 &&& 0xFFFFFFE00000) ||| (l &&& 0x1FF000)
+    else e1 &&& paeAddr
+  let bits := tlbBits perm (nleaf &&& 0x40 != 0) wp ||| (if xd then Tlb.NX else 0) ||| globalBit c.cr4 e1.toUInt32
+  -- a 1 GiB guest page is tracked like a large page (INVLPG drops its slices)
+  gFinish lin (gpa ||| (l &&& 0xFFF)) bits (size != 0) write fetch
+
+/-- The guest's page walk under nested paging, in the guest's paging mode. -/
+def gWalk (lin : UInt32) (write user fetch implicit : Bool) : M UInt64 := fun m =>
+  if m.cpu.cr4 &&& CR4.PAE != 0 then
+    if m.cpu.efer &&& EFER.LMA != 0 then gWalkLong lin write user fetch implicit m
+    else gWalkPae lin write user fetch implicit m
+  else gWalk32 lin write user fetch implicit m
+
+/-- Guest paging disabled under nested paging: the linear address is the guest-physical address,
+translated by the nested tables (15.25.5); not cached. -/
+def gNoPaging (lin : UInt32) (write fetch : Bool) : M UInt64 :=
+  nestedPhys lin.toUInt64 write fetch npfFinal
+
 /-- Page-table walk in the current paging mode. -/
 @[inline] def walk (lin : UInt32) (write user fetch : Bool) (implicit : Bool := false) : M UInt64 := fun m =>
+  if m.cpu.npOn then gWalk lin write user fetch implicit m else
   if m.cpu.cr4 &&& CR4.PAE != 0 then
     if m.cpu.efer &&& EFER.LMA != 0 then walkLongTlb lin write user fetch implicit m
     else walkPae lin write user fetch implicit m
@@ -818,7 +1082,8 @@ from SMAP. A TLB hit is used only if it permits the access under the current CR4
 the walk decides (and faults). -/
 @[inline] def translate (lin : UInt32) (write user : Bool) (fetch : Bool := false) (implicit : Bool := false) :
     M UInt64 := fun m =>
-  if m.cpu.cr0 &&& CR0.PG == 0 then .ok lin.toUInt64 m else
+  if m.cpu.cr0 &&& CR0.PG == 0 then
+    if m.cpu.npOn then gNoPaging lin write fetch m else .ok lin.toUInt64 m else
   let idx := ((lin >>> 12) % tlbSize.toUInt32).toNat
   let tag := m.tlbTag[idx]!
   if tag == ((lin &&& 0xFFFFF000) ||| 1) then
@@ -833,6 +1098,8 @@ the walk decides (and faults). -/
 
 /-- The PDPTE registers for PAE paging with the given CR3: #GP(0) if a present entry has reserved bits set. -/
 def readPdptes (cr3 : UInt32) : M (Array UInt64) := fun m =>
+  -- nested paging: the guest's PDPTEs are read at each walk, not loaded (APM vol. 2, 15.25.10)
+  if m.cpu.npOn then .ok m.cpu.pdpte m else
   let base := (cr3 &&& 0xFFFFFFE0).toUInt64
   let es := #[rd64 m.mem base, rd64 m.mem (base + 8), rd64 m.mem (base + 16), rd64 m.mem (base + 24)]
   if es.any (fun e => e &&& 1 != 0 && e &&& pdpteRsvd != 0) then .error (.exc Vec.GP (some 0) 0) m

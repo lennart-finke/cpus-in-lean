@@ -103,9 +103,9 @@ theorem mwait_cpl3_ud {m : Machine} (h : m.cpu.cpl ≠ 0) (he : m.cpu.gprx.monMw
 /-- MWAIT without an armed monitor completes without waiting: only the CPU state is unchanged
 (no halt, no skipped time). -/
 theorem mwait_unarmed {m : Machine} (hc : m.cpu.cpl = 0) (hx : m.cpu.ecx &&& ~~~1 = 0)
-    (hm : m.cpu.gprx.monLine = none) :
+    (hm : m.cpu.gprx.monLine = none) (hg : m.cpu.svmx.guest = false) :
     ∃ m', mwait false m = .ok () m' ∧ m'.cpu.halted = m.cpu.halted ∧ m'.icount = m.icount := by
-  simp [mwait, cpu, bind, EStateM.bind, hc, hx, hm, modG, modCpu, pure, EStateM.pure]
+  simp [mwait, Svm.mwait, Cpu.svmOn, hg, cpu, bind, EStateM.bind, hc, hx, hm, modG, modCpu, pure, EStateM.pure]
 
 /-- RDPRU at CPL > 0 with CR4.TSD raises #UD. -/
 theorem rdpru_tsd_ud {m : Machine} (h : m.cpu.cpl ≠ 0) (ht : m.cpu.cr4 &&& CR4.TSD ≠ 0) :

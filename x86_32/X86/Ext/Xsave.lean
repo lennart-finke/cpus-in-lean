@@ -212,6 +212,7 @@ def xcr0Valid (v : UInt64) : Bool :=
 mode), for ECX ≠ 0 and for an invalid XCR0 value (`xcr0Valid`). Not serializing on AMD (APM vol. 2,
 7.6.4 does not list it). The state of a component disabled in XCR0 is kept. -/
 def xsetbv : M Unit := do
+  Svm.icpt4 13   -- SVM XSETBV: the intercept before the exceptions (AMD APM vol. 2, table 15-7)
   let c ← cpu
   if c.cr4 &&& CR4.OSXSAVE == 0 then ud
   if c.cpl != 0 then gp 0

@@ -27,9 +27,9 @@ open SysB
 /-! ## Exception classes and double faults -/
 
 /-- The class of the first event as a function of the vector (AMD APM vol. 2, table 8-3, first
-column; table 8-2 for #DF). -/
+column; table 8-2 for #DF and the contributory #SX, vector 30). -/
 def firstClass (n : Nat) : ExcClass :=
-  if n = 0 ∨ n = 10 ∨ n = 11 ∨ n = 12 ∨ n = 13 then .contributory
+  if n = 0 ∨ n = 10 ∨ n = 11 ∨ n = 12 ∨ n = 13 ∨ n = 30 then .contributory
   else if n = 14 then .pageFault else if n = 8 then .doubleFault else .benign
 
 theorem excClass_spec_nat : ∀ n, n < 256 → excClass n.toUInt8 = firstClass n := by decide +kernel

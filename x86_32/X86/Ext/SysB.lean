@@ -57,12 +57,13 @@ inductive ExcClass where
   | benign | contributory | pageFault | doubleFault
   deriving DecidableEq, Repr
 
-/-- The class of exception vector `v` as the first event: contributory #DE, #TS, #NP, #SS, #GP; #PF;
-#DF; every other exception is benign (#DB, NMI, #BP, #OF, #BR, #UD, #NM, #MF, #AC, #MC, #XF; the
-contributory #CP, #VC and #SX of AMD's table 8-2 do not exist on the model). External interrupts
-and NMI are benign whatever their vector (`Step.raiseExcF`). -/
+/-- The class of exception vector `v` as the first event: contributory #DE, #TS, #NP, #SS, #GP and
+#SX (AMD table 8-2, 15.28: "The #SX exception is a contributory fault"; raised by an INIT redirected
+by VM_CR.R_INIT, SVM workstream); #PF; #DF; every other exception is benign (#DB, NMI, #BP, #OF, #BR,
+#UD, #NM, #MF, #AC, #MC, #XF; the contributory #CP and #VC of AMD's table 8-2 do not exist on the
+model). External interrupts and NMI are benign whatever their vector (`Step.raiseExcF`). -/
 def excClass (v : UInt8) : ExcClass :=
-  if v == 0 || v == 10 || v == 11 || v == 12 || v == 13 then .contributory
+  if v == 0 || v == 10 || v == 11 || v == 12 || v == 13 || v == 30 then .contributory
   else if v == 14 then .pageFault
   else if v == 8 then .doubleFault
   else .benign
