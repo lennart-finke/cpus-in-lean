@@ -425,20 +425,26 @@ MODRM_0F = {0x78, 0x79, 0xB8}
 # `vex_neighbours`: an opcode byte with a VEX row, under a mandatory prefix and VEX.L for which no row
 # exists), emitted in turn so that a run covers them independently of chance. The pinned ones come
 # first in every run: forms where a model dispatch on the opcode byte fell into a default arm for an
-# undefined prefix (VEX.256.NP.0F 70 executed as VPSHUFLW, review finding).
+# undefined prefix (VEX.256.NP.0F 70 executed as VPSHUFLW, review finding); every eighth 'vexnb'
+# vector is a pinned one (with VEX.vvvv = 1111b).
 VEXNB_PINNED = [(1, 0, 0x70, 1), (1, 0, 0x70, 0)]
-_vexnb = {'list': None, 'next': 0}
+_vexnb = {'list': None, 'next': 0, 'n': 0}
 
 def vexnb_next():
+    """The next neighbour and whether it is a pinned one."""
     if _vexnb['list'] is None:
         rest = [t for t in isa_forms.vex_neighbours() if t not in VEXNB_PINNED and t != (1, 0, 0xC4, 0)
                 and t != (1, 0, 0xC4, 1)]
         random.shuffle(rest)
-        _vexnb['list'] = VEXNB_PINNED + rest
+        _vexnb['list'] = rest
+    n = _vexnb['n']
+    _vexnb['n'] += 1
+    if n % 8 == 0:
+        return VEXNB_PINNED[(n // 8) % len(VEXNB_PINNED)], True
     lst = _vexnb['list']
     t = lst[_vexnb['next'] % len(lst)]
     _vexnb['next'] += 1
-    return t
+    return t, False
 
 def ud_form(g, a16, force=None):
     """An encoding that is #UD on Zen 2 and in the model, as (bytes, kind); the bytes include the
@@ -471,13 +477,17 @@ def ud_form(g, a16, force=None):
             return body + modrm(), kind
         return (None if force is not None else body), kind
     if kind in ('vex', 'vexpfx', 'vexmap', 'vexnb'):
-        nb = vexnb_next() if kind == 'vexnb' else None
+        nb, pinned = vexnb_next() if kind == 'vexnb' else (None, False)
         while True:
             m = random.choice([1, 2, 3]) if kind != 'vexmap' else random.choice([0] + list(range(4, 32)))
             pp, op = random.randint(0, 3), random.getrandbits(8)
             L, W, vvvv = random.getrandbits(1), random.getrandbits(1), random.getrandbits(4)
             if nb is not None:
+                # mostly VEX.vvvv = 1111b (register 0), so that the undefined prefix/L is the only
+                # reason for the #UD of a form that takes no VEX.vvvv operand
                 m, pp, op, L = nb
+                if pinned or random.random() < 0.75:
+                    vvvv = 0
             # (Avx) the ModRM kind and reg field are chosen first, so that forms defined only for some
             # VEX.L/VEX.W/mod/reg (isa_forms rows) have their undefined neighbours tested as #UD
             lay = vex_layout(m, op, pp) if kind != 'vexmap' else None
