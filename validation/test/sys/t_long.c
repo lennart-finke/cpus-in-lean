@@ -119,6 +119,12 @@ static void showrec(const char *n, int vec) {
 	        RDCR(2));
 }
 
+/* ---- SMM (the handler of t_smm.c, which reads either save-state map) ---- */
+extern char smi_h[], smi_h_end[];
+#define SMS ((volatile u32 *)0x6000)
+static void lm_pci_w8(u32 dev, u32 reg, u8 v) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); outb(0xCFC + (reg & 3), v); }
+static u8 lm_pci_r8(u32 dev, u32 reg) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); return inb(0xCFC + (reg & 3)); }
+
 /* ---- descriptors ---- */
 static u64 gate64lo(u16 sel, u64 off, u32 access, u32 ist) {
 	u32 lo = ((u32)off & 0xFFFF) | ((u32)sel << 16);
@@ -649,6 +655,22 @@ void test_long(void) {
 	        (u32)lmrec[8]);
 	wrmsr(EFER, LME | LMA | NXE);
 	wrmsr(0xC0000081, 0); wrmsr(0xC0000083, 0); wrmsr(0xC0000084, 0);
+	/* an SMI in compatibility mode: the AMD64 save-state map (used in every mode) holds EFER with LME
+	   and LMA, SMM runs with EFER = 0, and RSM returns to long mode with LMA = LME & PG & PAE (AMD APM
+	   vol. 2, 10.2.3, table 10-3, 10.4) */
+	{
+		lm_pci_w8(0x0B00, 0x5B, lm_pci_r8(0x0B00, 0x5B) | 0x02);   /* PIIX4: APMC_EN */
+		lm_pci_w8(0x0000, 0x72, 0x4A);                             /* i440FX: D_OPEN */
+		memcpy((void *)0xA8000, smi_h, smi_h_end - smi_h);
+		for (int i = 0; i < 20; i++) SMS[i] = 0;
+		u32 a = 0x1234;
+		__asm__ volatile("outb %%al, $0xb2" : "+a"(a) :: "memory");
+		kprintf("lm.smm: count=%d eax=%x saved_eax=%x eip_ok=%d cr0=%x rev=%x cs_sel=%x cs_attr=%x cr4=%x efer=%x cr3_ok=%d smm_cr0=%x\n",
+		        SMS[0], a, SMS[1], SMS[2] != 0, SMS[3], SMS[4], SMS[10], SMS[11], SMS[12], SMS[17], SMS[14] == (u32)pml4,
+		        SMS[7] & 0x8000000F);
+		kprintf("lm.smm.after: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));
+		lm_pci_w8(0x0000, 0x72, 0x0A);
+	}
 	/* a code segment with L = 1 and D = 1 (reserved) as a far JMP target: last, since TCG enters it
 	   and the stub's copy of the stack then differs */
 	v = TRY(ljmp(RSVDC, stub_at[0xF6]));

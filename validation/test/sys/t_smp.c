@@ -450,11 +450,11 @@ void test_smp_model(void) {
 	memcpy((void *)0xA8000, smi_h, smi_h_end - smi_h);
 	/* the t_smm handler replaces the saved EAX by 5A5A5A5Ah, which the AP's code may hold a live value
 	   in when the SMI arrives: this copy leaves it alone (the 12 bytes 67 66 C7 86 D0 7F 00 00 imm32 of
-	   that store become NOPs), so the outcome does not depend on where the AP is interrupted */
+	   each such store, one per save-map layout, become NOPs), so the outcome does not depend on where the AP is interrupted */
 	{
 		u8 *h = (u8 *)0xA8000;
 		for (u32 i = 8; i + 4 <= (u32)(smi_h_end - smi_h); i++)
-			if (*(volatile u32 *)(h + i) == 0x5A5A5A5A) { for (u32 j = i - 8; j < i + 4; j++) h[j] = 0x90; break; }
+			if (*(volatile u32 *)(h + i) == 0x5A5A5A5A) for (u32 j = i - 8; j < i + 4; j++) h[j] = 0x90;
 	}
 	for (int i = 0; i < 20; i++) ((volatile u32 *)0x6000)[i] = 0;
 	ipi(1, 0x200);

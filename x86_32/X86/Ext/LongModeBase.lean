@@ -60,9 +60,11 @@ step stops there (an interrupt or debug trap pending at that boundary is deliver
 64-bit mode, as on hardware). This state is exactly what a 64-bit executor needs to resume; the
 bridge in `validation/` (`BridgeMain.lean`) maps it to the `x86_64` model's state.
 
+SMM: SMIs are taken in long mode too; the AMD64 state-save map holds EFER, RIP/RSP and R11, and RSM
+recomputes LMA = LME ∧ PG ∧ PAE (`Sys.lean`, `rsmEfer`).
+
 Not modelled (stop with `Fault.unsupported`): a #PF at a linear address ≥ 4 GiB during a transfer
-(an inner stack above 4 GiB: CR2 is 32 bits in the model), SMM entry with EFER.LMA = 1 and RSM with
-EFER.LME = 1 (the model's SMRAM state-save map is the 32-bit legacy one, without EFER).
+(an inner stack above 4 GiB: CR2 is 32 bits in the model), RSM to a CR3 above 4 GiB.
 -/
 namespace X86
 namespace LongMode
