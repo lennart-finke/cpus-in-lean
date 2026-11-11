@@ -7,3 +7,4 @@ import X86.Proofs.Fpu
 import X86.Proofs.Simd
 import X86.Proofs.Ext
 import X86.Proofs.ExtXsave
+import X86.Proofs.ExtGpr

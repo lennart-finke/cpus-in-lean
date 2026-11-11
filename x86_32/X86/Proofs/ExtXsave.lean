@@ -23,7 +23,7 @@ namespace Xsave
 theorem cpuid_osxsave_legacy (c : Cpu) (sub : UInt32) :
     (cpuid c 1 sub).2.2.1 &&& Cpuid.osxsaveBit =
       (if c.cr4 &&& CR4.OSXSAVE != 0 then Cpuid.osxsaveBit else 0) := by
-  have h12 : Cpuid.featBits 1 0 2 true = 1 <<< 26 := by decide
+  have h12 : Cpuid.featBits 1 0 2 true = 0x44C00008 := by decide
   have hx : implemented .xsave = true := rfl
   simp only [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.osxsave, hx, h12]
   by_cases h : c.cr4 &&& CR4.OSXSAVE = 0 <;> simp [h, Cpuid.osxsaveBit] <;> decide
