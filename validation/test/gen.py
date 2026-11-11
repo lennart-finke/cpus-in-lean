@@ -600,7 +600,7 @@ def main():
                 # all exceptions masked; random rounding control, FTZ, DAZ and sticky flags
                 mxcsr = 0x1F80 | (random.getrandbits(2) << 13) | (0x8000 if random.random() < 0.3 else 0) \
                     | (0x40 if random.random() < 0.3 else 0) | (random.getrandbits(6) if random.random() < 0.3 else 0)
-                mxcsr &= ~getattr(g, 'mxcsr_clear', 0)   # (Avx2) MXCSR bits a generator rules out
+                mxcsr &= getattr(g, 'mxcsr_and', 0xFFFFFFFF)   # (a generator may clear bits, gen_avx.py)
                 vb.write(struct.pack('<II', mxcsr, vflags))
             mf.write('%08x %s\n' % (g.fmask, g.desc))
 

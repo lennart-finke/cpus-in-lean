@@ -165,6 +165,17 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
   -- `tcgVexUd`)
   if lo.vec == 6 && tcgVexUd i then return lo
+  -- (Avx, Avx2) Masked stores (VMASKMOVPS/PD, VEX.66.0F38 2E/2F; VPMASKMOVD/Q, VEX.66.0F38 8E;
+  -- VMASKMOVDQU, VEX.66.0F F7): a faulting instruction leaves memory unchanged (faults are restartable: "the state ... prior to the
+  -- execution of the faulting instruction", SDM vol. 3, 6.5; the model checks every selected element
+  -- before writing any); TCG stores the selected elements one by one and faults in the middle. With
+  -- the same #PF on both sides, only QEMU's data-area hash and the accessed/dirty bits its stores set
+  -- are replaced.
+  if i.vex && qo.vec == 14 && lo.vec == 14 && qo.cr2 == lo.cr2 && qo.err == lo.err &&
+     ((i.map == 2 && i.pp == 1 && (i.byte == 0x2E || i.byte == 0x2F || i.byte == 0x8E)) ||
+      (i.map == 1 && i.pp == 1 && i.byte == 0xF7)) then
+    let ad (q l : UInt32) : UInt32 := if (q ^^^ l) &&& ~~~0x60 == 0 then l else q
+    return { qo with hash := lo.hash, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
   -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
   -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
   -- not-present page faults at that page's first byte. Only that #PF is replaced.
@@ -177,30 +188,20 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   if i.vex && i.vexL && i.map == 1 && i.pp ≥ 2 && qo.vec == 6 && lo.vec != 6 &&
      [0x51, 0x52, 0x53, 0x58, 0x59, 0x5A, 0x5C, 0x5D, 0x5E, 0x5F, 0xC2].contains i.byte then
     return lo
-  -- (Avx2) masked stores VMASKMOVPS/PD, VPMASKMOVD/Q (VEX.66.0F38 2E, 2F, 8E) whose selected elements
-  -- reach an inaccessible page: TCG stores element by element and leaves the elements before the
-  -- faulting one written; the model checks every selected element before it writes any (no partial
-  -- store, as for an ordinary page-crossing store; Intel SDM VMASKMOV only rules out faults of
-  -- masked-out elements, AMD APM vol. 4 VPMASKMOVD calls the details implementation dependent).
-  -- Accepted only when both raise the same #PF and the model left memory unchanged; only the memory
-  -- hash is replaced.
-  -- (Avx2) the scalar FMA forms (VFMADD/VFMSUB/VFNMADD/VFNMSUB 132/213/231 SS/SD: VEX.66.0F38 99, 9B, 9D,
-  -- 9F, A9, AB, AD, AF, B9, BB, BD, BF) read a 4- or 8-byte memory operand (SDM and AMD APM vol. 4:
-  -- "xmm3/m32", "xmm3/m64"); TCG loads 16 bytes, so an operand ending right before a not-present page
-  -- faults at that page's first byte. Only that #PF is replaced.
-  if i.vex && i.map == 2 && i.pp == 1 && i.isMem && i.byte &&& 0x0F ≥ 9 && i.byte &&& 1 == 1 &&
-     0x99 ≤ i.byte && i.byte ≤ 0xBF && qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then
-    return lo
-  -- (Avx; added by the Avx2 work) VMOVSS/VMOVSD with a memory operand and VEX.vvvv ≠ 1111b are #UD
-  -- (SDM VMOVSS/VMOVSD: "VEX.vvvv ... is reserved and must be 1111b" for the memory forms; AMD APM vol. 4
-  -- VMOVSS); TCG checks VEX.vvvv only after its memory access, so a not-present or inaccessible operand
-  -- raises #PF instead. Only that #PF is replaced by the model's #UD.
-  if i.vex && i.map == 1 && i.pp ≥ 2 && (i.byte == 0x10 || i.byte == 0x11) && i.isMem && i.vvvv != 0 &&
-     qo.vec == 14 && lo.vec == 6 then
-    return lo
-  if i.vex && i.map == 2 && i.pp == 1 && [0x2E, 0x2F, 0x8E].contains i.byte && qo.vec == 14 &&
-     lo.vec == 14 && qo.err == lo.err && qo.cr2 == lo.cr2 && lo.hash == initHash then
-    return { qo with hash := lo.hash }
+  -- (Avx2) TCG loads 16 bytes for the m32/m64 operand of the scalar FMA forms (VFMADD/VFMSUB/VFNMADD/
+  -- VFNMSUB 132/213/231 SS/SD, VEX.66.0F38 99, 9B, 9D, 9F, A9, AB, AD, AF, B9, BB, BD, BF: "xmm3/m32",
+  -- "xmm3/m64" in the SDM and AMD APM vol. 4) and 32 bytes for the m128 count of the VEX.256 shifts by
+  -- an XMM count (VPSLLW/D/Q, VPSRLW/D/Q, VPSRAW/D ymm, ymm, xmm3/m128: VEX.66.0F D1..D3, E1, E2, F1..F3).
+  -- An operand ending right before the next page therefore makes TCG fault at that page's first byte
+  -- (that #PF is replaced by the model's outcome) or set that page's accessed bit (only the A bit of
+  -- its PTE is replaced).
+  let tcgWide := i.vex && i.isMem &&
+    ((i.map == 2 && i.pp == 1 && i.byte &&& 0x0F ≥ 9 && i.byte &&& 1 == 1 && 0x99 ≤ i.byte && i.byte ≤ 0xBF) ||
+     (i.vexL && i.map == 1 && i.pp == 1 && [0xD1, 0xD2, 0xD3, 0xE1, 0xE2, 0xF1, 0xF2, 0xF3].contains i.byte))
+  if tcgWide && qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then return lo
+  if tcgWide && qo.vec == lo.vec then
+    let a (q l : UInt32) : UInt32 := if q ^^^ l == 0x20 then l else q
+    if qo.vec != 14 then return { qo with pte8 := a qo.pte8 lo.pte8, pte9 := a qo.pte9 lo.pte9 }
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo
   if rmwDest i then

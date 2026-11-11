@@ -318,3 +318,7 @@ FAMILIES += [(native_avx2.avx2_ops, ('avx2', 'fma', 'f16c', 'osxsave')), (native
              (native_avx2.f16c, ('f16c', 'osxsave')), (native_avx2.avx2_gather, ('avx2', 'osxsave')),
              (native_avx2.avx2_maskmov, ('avx2', 'osxsave')), (native_avx2.avx2_encoding, ('avx2', 'fma', 'f16c', 'osxsave')),
              (native_avx2.avx2_alignment, ('avx2', 'osxsave'))]
+
+# Long-mode workstream (test/native_longmode.py): instructions that differ in compatibility mode.
+import native_longmode  # noqa: E402
+FAMILIES += native_longmode.FAMILIES

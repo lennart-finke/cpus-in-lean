@@ -43,6 +43,9 @@ lane from the low quadword of each half of the source and is therefore NOT the A
 * VDPPS (VEX.256): two independent dot products; their staged flags (`Sse.dpps`) are merged.
 * VZEROALL/VZEROUPPER: AMD APM vol. 4 lists "VEX.W = 1" as #UD for VZEROALL while its encoding
   table and Intel give "WIG"; the model ignores VEX.W (open doubt, recorded by the native campaign).
+* VMOVSS/VMOVSD loads ignore VEX.vvvv: both manuals require 1111b only for the store form (SDM
+  MOVSS/MOVSD note, APM vol. 4 MOVSS/MOVSD exception table), although APM's encoding table shows 1111b
+  for the load too. The native campaign case `vmovss_ld_vvvv` records Zen 2's behaviour.
 * VEX.W is ignored outside 64-bit mode by VMOVD, VPEXTRD, VPINSRD, VCVTSI2SS/SD, VCVT(T)SS2SI,
   VCVT(T)SD2SI and VPCMPESTRx (AMD APM vol. 4, VPEXTRD/VPINSRD: "x" encodings "only available in
   non-64-bit modes").
@@ -302,7 +305,10 @@ def moves (i : Inst) (b0 : UInt8) (p : Nat) : Option (M Unit) :=
   | 0x10, _ => some do                   -- VMOVSS/SD load, or merge (register form)
     let bits := if p == 2 then 32 else 64
     if i.isMem then
-      start i (noV i)
+      -- VEX.vvvv is ignored by the load: only the store requires 1111b (SDM vol. 2 MOVSS/MOVSD: "For
+      -- memory store form instruction VMOVSS m32, xmm1, VEX.vvvv is reserved and must be 1111b";
+      -- AMD APM vol. 4 MOVSS/MOVSD: "#UD: VEX.vvvv != 1111b (for memory destination encoding only)")
+      start i true
       setX i.reg (← rdVex i (bits / 8).toUInt32).lo
     else
       start i true

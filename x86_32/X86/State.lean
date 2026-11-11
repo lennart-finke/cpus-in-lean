@@ -105,8 +105,48 @@ structure SysState where
 structure SvmState where
   deriving Repr, Inhabited
 
-/-- State of `X86/Ext/LongMode.lean`. -/
+/-- State of `X86/Ext/LongMode.lean` and `X86/Ext/LongModeBase.lean` (long mode; see the module
+documentation of the latter for the 64-bit boundary). -/
 structure LongModeState where
+  /-- Bits 63:32 of RIP and RSP. The model's EIP/ESP are bits 31:0. Outside 64-bit mode (EFER.LMA =
+  0, or CS.L = 0) both are 0: compatibility-mode code only has the 32-bit registers (the model does not
+  keep the high halves of the general registers). They become non-zero only when a control transfer
+  into 64-bit mode (where the model stops) loads a 64-bit RIP or RSP. -/
+  ripHi : UInt32 := 0
+  rspHi : UInt32 := 0
+  /-- R11 after SYSCALL from compatibility mode (the RFLAGS image, AMD APM vol. 3 SYSCALL); the only
+  other register a transfer into 64-bit mode writes. -/
+  r11 : UInt64 := 0
+  /-- FS_BASE / GS_BASE (MSRs C000_0100h, C000_0101h) written by WRMSR: the full 64-bit value and the
+  segment cache it produced. The model's `SegReg.base` holds bits 31:0, which is all that legacy and
+  compatibility-mode addressing uses; bits 63:32 are reported by RDMSR while the cache is unchanged.
+  A segment load clears them (APM vol. 2, 4.5.3: "The base-address bits above the low 32 bits are
+  cleared to 0 as a result of a segment-register load"); the model detects a load as a change of the
+  cache (a reload producing an identical cache is not distinguished: the bits are then kept). -/
+  fsBase : Option (SegReg × UInt64) := none
+  gsBase : Option (SegReg × UInt64) := none
+  /-- KernelGSbase (MSR C000_0102h), swapped with GS.base by SWAPGS in 64-bit mode. -/
+  kernelGsBase : UInt64 := 0
+  /-- How the last transfer into 64-bit mode was made (for the stop report), e.g. "interrupt 0x0e". -/
+  entry : String := ""
+  deriving Repr, Inhabited
+
+/-- State of `X86/Ext/Smp.lean` that belongs to the CPU core (the local APIC itself is
+`Machine.apic`): the topology identity CPUID reports and the INIT/STARTUP state. -/
+structure SmpState where
+  /-- Initial APIC ID (CPUID 1:EBX[31:24], 0xB:EDX, the x2APIC ID): this CPU's index. -/
+  apicId : UInt32 := 0
+  /-- Number of logical processors of the machine (the enabled threads of the package). -/
+  ncpu : UInt32 := 1
+  /-- Local APIC mode, mirrored from APIC_BASE for CPUID 8000_001E:EAX (APM vol. 2, 16.12):
+  0 disabled, 1 xAPIC, 2 x2APIC. -/
+  apicMode : UInt8 := 1
+  /-- In the INIT state, waiting for a STARTUP IPI (APM vol. 2, 16.5): executes nothing and holds
+  every other interrupt pending (`Cpu.halted` is set as well). -/
+  waitSipi : Bool := false
+  /-- MWAIT in progress on this monitored physical line with the contents it had at MONITOR
+  (`Gpr.mwait`): a store by another CPU that changes the line ends the wait (`Smp.mwaitWake`). -/
+  mwait : Option (UInt64 × Array UInt32) := none
   deriving Repr, Inhabited
 
 /-- State of `X86/Ext/Xsave.lean`: the tracking behind XSAVEOPT/XSAVEC/XSAVES (SDM vol. 1, 13.6).
@@ -163,6 +203,7 @@ structure CpuExt where
   svmx : SvmState := {}
   lmx : LongModeState := {}
   xsx : XsaveState := {}
+  smpx : SmpState := {}
   deriving Repr, Inhabited
 
 structure Cpu extends CpuExt where

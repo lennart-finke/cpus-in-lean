@@ -25,7 +25,7 @@ TCG behaviours that are not generated (the system tests check them):
   VCVTPH2PS: "MXCSR.DAZ is ignored and no MXCSR denormal exception is reported"); the data seed is
   chosen without them;
 * VCVTPS2PH with MXCSR.FTZ = 1: TCG flushes tiny results to zero (AMD APM vol. 4 VCVTPS2PH:
-  "MXCSR[FTZ] has no effect on this instruction"); generated with FTZ = 0 (g.mxcsr_clear);
+  "MXCSR[FTZ] has no effect on this instruction"); generated with FTZ = 0 (g.mxcsr_and);
 * VEX.L = 1 of the scalar FMA forms (VFMADD132SS .. VFNMSUB231SD, "VEX.LIG"): TCG keeps bits 255:128
   of the destination instead of zeroing them (SDM VFMADD132SS: "DEST[MAXVL-1:128] <- 0"); generated
   with VEX.L = 0 (G0), the system test checks VEX.L = 1 in its model-only part (avx2m.lig).
@@ -274,7 +274,7 @@ def gen(g):
     if key == (2, 1, 0x8C):
         g.no_paging = True               # VPMASKMOV load: see the module documentation
     if key == (3, 1, 0x1D):
-        g.mxcsr_clear = 0x8000           # VCVTPS2PH: TCG applies MXCSR.FTZ (module documentation)
+        g.mxcsr_and = ~0x8000            # VCVTPS2PH: TCG applies MXCSR.FTZ (module documentation)
     if key == (2, 1, 0x13) and mem is not None:
         # VCVTPH2PS: no binary16 denormal among the converted elements (module documentation)
         rm = None if mem else modrm[0] & 7

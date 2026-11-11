@@ -1,0 +1,4 @@
+MODEL-ONLY
+lmm.pg.csl: vec=0000000d efer=00000100 cr0=00000011
+lmm.cr4.pae.clear: vec=0000000d cr4=00000020
+END

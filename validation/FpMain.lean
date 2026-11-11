@@ -4,7 +4,12 @@ import X86
 followed by 648-byte native records (440-byte GPR/SSE record, 144-byte x87 state,
 64-byte memory patch). Format v2 (bit 63 of the count) appends YMM0..7 bits 255:128
 (128 bytes) to each record and their final values (16 fields) to each output row.
-No native result is an input to this executable. -/
+No native result is an input to this executable.
+
+`x86fp --compat` runs each case as the native oracle really runs it: in compatibility mode under a
+64-bit Linux (EFER.LME/LMA/NXE/SCE set, 4-level paging with the same identity map and test pages,
+CR4.PAE, a 32-bit DPL-3 code segment with L = 0, the user selectors 0x23/0x2B of Linux's
+__USER32_CS/__USER_DS). Without the flag the case runs in legacy protected mode (32-bit paging). -/
 open X86
 
 def rdQ (v : ByteArray) (o : Nat) : UInt64 :=
@@ -23,7 +28,8 @@ def memoryByte (mem : ByteArray) (kind i : Nat) : UInt8 :=
        (32 ≤ i && i < 160 && (i-32)%16 ≥ 10) || (288 ≤ i && i < 464)) then 0
   else mem.get! (0x10000 + i)
 
-def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (List UInt64) := do
+def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) (compat : Bool := false) :
+    Except String (List UInt64) := do
   let len := u8At v o
   if len == 0 || len > 15 then throw "invalid instruction length"
   let mut mem := zeroMem 0x40000
@@ -42,6 +48,17 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
   for k in [0:2] do
     mem := wrBytes mem (0x4040 + k.toUInt32 * 4) 4
       ((0x10000 + k.toUInt32 * 4096) ||| (rdQ v (o + 160 + 8*k)).toUInt32)
+  -- compatibility mode: PML4 0x5000 -> PDPT 0x6000 -> PD 0x7000 -> PT 0x8000 (64-bit entries)
+  if compat then
+    mem := wrBytes mem 0x5000 4 0x6027
+    mem := wrBytes mem 0x6000 4 0x7027
+    mem := wrBytes mem 0x7000 4 0x8027
+    for k in [0:64] do
+      let e : UInt64 := if k == 16 || k == 17 then
+          (0x10000 + (k.toUInt64 - 16) * 4096) ||| rdQ v (o + 160 + 8*(k - 16))
+        else k.toUInt64 * 4096 ||| 0x67
+      mem := wrBytes mem (0x8000 + k.toUInt32 * 8) 4 e.toUInt32
+      mem := wrBytes mem (0x8000 + k.toUInt32 * 8 + 4) 4 (e >>> 32).toUInt32
   let seg : SegReg := { sel := 0x2B, limit := 0xFFFFFFFF, attr := 0xC0F3 }
   let mut c : Cpu := {
     cs := { seg with sel := 0x23, attr := 0xC0FB },
@@ -65,6 +82,9 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
       ({ lo := rdQ v (o + 648 + 16*k), hi := rdQ v (o + 656 + 16*k) } : V128)
     else Array.replicate 8 {}
   c := { c with sse := { xmm := xmm.toArray, mxcsr := (u32At v (o + 432)).toUInt32, ymmh } }
+  if compat then
+    c := { c with cr3 := 0x5000, cr4 := c.cr4 ||| CR4.PAE,
+                  efer := EFER.SCE ||| EFER.LME ||| EFER.LMA ||| EFER.NXE }
   let m : Machine := { cpu := c, mem }
   let (m, vec, err) ← match execInstr m with
     | .ok _ m' => pure (m', (3 : UInt64), (0 : UInt64))
@@ -90,7 +110,8 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) : Except String (Lis
   return fields ++ [hash.toUInt64] ++ pages ++ ymm
 
 def main (args : List String) : IO UInt32 := do
-  let [path] := args | do IO.eprintln "usage: x86fp native.bin"; return 2
+  let (compat, args) := if args.head? == some "--compat" then (true, args.drop 1) else (false, args)
+  let [path] := args | do IO.eprintln "usage: x86fp [--compat] native.bin"; return 2
   let v ← IO.FS.readBinFile path
   let v2 := rdQ v 0 >>> 63 == 1
   let n := (rdQ v 0 &&& 0x7FFFFFFFFFFFFFFF).toNat
@@ -102,7 +123,7 @@ def main (args : List String) : IO UInt32 := do
     "".pushn '0' (16 - s.length) ++ s
   IO.println s!"BEGIN {hx n.toUInt64}"
   for i in [0:n] do
-    match fpVector v (8 + i*size) v2 with
+    match fpVector v (8 + i*size) v2 compat with
     | .error e => IO.eprintln s!"vector {i}: {e}"; return 1
     | .ok fields => IO.println (String.intercalate " " ((i.toUInt64 :: fields).map hx))
   IO.println "END"

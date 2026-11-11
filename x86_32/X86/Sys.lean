@@ -1,4 +1,4 @@
-import X86.Io
+import X86.Ext.LongModeBase
 /-!
 # System architecture
 
@@ -8,6 +8,9 @@ or task gate, task gates in the IDT, IRET with NT), interrupt/exception delivery
 and IRET. Virtual-8086 mode (without the CR4.VME extensions): entry by IRET from CPL 0 or by a task
 switch, interrupts and exceptions to ring-0 handlers, IOPL-sensitive INT n and IRET (PUSHF, POPF,
 CLI and STI are in `Exec`). System-management mode: SMI entry and RSM.
+
+Long mode (EFER.LMA = 1) differs at the places marked `LongMode.` (`X86/Ext/LongModeBase.lean`):
+64-bit IDT and call gates, no task switches, returns to 64-bit code.
 -/
 namespace X86
 
@@ -319,12 +322,12 @@ Returns the CS cache. -/
 def codeForJump (sel : UInt16) (d : Desc) (addr off : UInt32) : M SegReg := do
   let cpl := (← cpu).cpl
   let err := sel.toUInt32 &&& 0xFFFC
-  if !d.isCode then gp err
+  if !d.isCode || LongMode.reservedCode (← cpu) d.hi then gp err
   if d.conforming then
     if d.dpl > cpl then gp err
   else if (sel.toUInt32 &&& 3) > cpl || d.dpl != cpl then gp err
   if !d.present then exc Vec.NP (some err)
-  if off > d.limit then gp 0
+  if !LongMode.limitOk (← cpu) (d.toSeg sel) off then gp 0
   let d ← setAccessed d addr
   return d.toSeg ((sel &&& 0xFFFC) ||| cpl.toUInt16)
 
@@ -396,6 +399,8 @@ def farJump (sel : UInt16) (off : UInt32) (call : Bool) (opsz : Sz) : M Unit := 
       push opsz c.cs.sel.toUInt32
       push opsz c.eip
     modCpu fun c => { c with cs, eip := off }
+    if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 (if call then "far CALL" else "far JMP")
+  else if LongMode.lma c then LongMode.gateLong sel d.lo d.hi addr call
   else
     let t := d.sysType
     let rpl := sel.toUInt32 &&& 3
@@ -430,7 +435,7 @@ def codeForReturn (sel : UInt16) : M SegReg := do
   if err == 0 then gp 0
   if rpl < c.cpl then gp err
   let (d, addr) ← readDesc sel
-  if !d.isCode then gp err
+  if !d.isCode || LongMode.reservedCode c d.hi then gp err
   if d.conforming then
     if d.dpl > rpl then gp err
   else if d.dpl != rpl then gp err
@@ -452,19 +457,20 @@ def farRet (opsz : Sz) (imm : UInt32) : M Unit := do
     let cs ← codeForReturn csel
     let rpl := csel.toUInt32 &&& 3
     if rpl == c.cpl then
-      if ip > cs.limit then gp 0
+      if !LongMode.limitOk c cs ip then gp 0
       addSp (2 * opsz.toUInt32 + imm)
       modCpu fun c => { c with cs, eip := ip }
     else
       let o := 2 * opsz.toUInt32 + imm
       let nsp ← peek opsz o
       let nss := (← peek opsz (o + opsz.toUInt32)).toUInt16
-      let ss ← segFor SegN.SS nss rpl
-      if ip > cs.limit then gp 0
+      let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
+      if !LongMode.limitOk c cs ip then gp 0
       -- a 16-bit outer stack receives only SP: ESP[31:16] keep their value, as for IRET
       modCpu fun c => { c with cs, eip := ip, ss,
                                esp := if ss.big then nsp + imm else (c.esp &&& 0xFFFF0000) ||| ((nsp + imm) &&& 0xFFFF) }
       nullInaccessible rpl
+    if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "far RET"
 
 /-! ## Interrupts and exceptions -/
 
@@ -473,6 +479,7 @@ def farRet (opsz : Sz) (imm : UInt32) : M Unit := do
 the return address. -/
 def deliver (vec : UInt8) (err : Option UInt32) (soft ext : Bool) : M Unit := do
   let c ← cpu
+  if LongMode.lma c then return ← LongMode.deliverLong vec err soft ext
   let v := vec.toUInt32
   if !c.pe then
     let ent := c.idtBase + v * 4
@@ -579,6 +586,8 @@ def iret (opsz : Sz) : M Unit := do
                              eflags := ((c.eflags &&& ~~~mask) ||| (fl &&& mask)) ||| 2 }
     return
   if c.eflags &&& Flag.NT != 0 then
+    -- no task switches in long mode (APM vol. 3 IRET: #GP(0))
+    if LongMode.lma c then gp 0
     -- return to the task in the previous-task link of the current TSS
     let link := (← sysRd c.tr.base 2).toUInt16
     let lerr := link.toUInt32 &&& 0xFFFC
@@ -590,7 +599,7 @@ def iret (opsz : Sz) : M Unit := do
   let ip ← peek opsz 0
   let csel := (← peek opsz opsz.toUInt32).toUInt16
   let fl ← peek opsz (2 * opsz.toUInt32)
-  if opsz == 4 && fl &&& Flag.VM != 0 && c.cpl == 0 then
+  if opsz == 4 && fl &&& Flag.VM != 0 && c.cpl == 0 && !LongMode.lma c then
     -- return to virtual-8086 mode: the frame also holds ESP, SS, ES, DS, FS, GS
     let mut v : Array UInt32 := #[]
     for k in [3:9] do v := v.push (← peek 4 (4 * k.toUInt32))
@@ -609,17 +618,18 @@ def iret (opsz : Sz) : M Unit := do
   if cpl ≤ c.iopl then mask := mask ||| Flag.IF
   if cpl == 0 then mask := mask ||| Flag.IOPL
   let newFlags := (c.eflags &&& ~~~mask) ||| (fl &&& mask)
-  if ip > cs.limit then gp 0
+  if !LongMode.limitOk c cs ip then gp 0
   if rpl == cpl then
     addSp (3 * opsz.toUInt32)
     modCpu fun c => { c with cs, eip := ip, eflags := newFlags }
   else
     let nsp ← peek opsz (3 * opsz.toUInt32)
     let nss := (← peek opsz (4 * opsz.toUInt32)).toUInt16
-    let ss ← segFor SegN.SS nss rpl
+    let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
     modCpu fun c => { c with cs, eip := ip, eflags := newFlags, ss,
                              esp := if ss.big then nsp else (c.esp &&& 0xFFFF0000) ||| (nsp &&& 0xFFFF) }
     nullInaccessible rpl
+  if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "IRET"
 
 /-! ## System-management mode
 
@@ -640,6 +650,8 @@ def smmRevision : UInt32 := 0x00020000
 /-- Enter SMM: save the state and load the SMM execution environment. -/
 def smmEnter : M Unit := do
   let c ← cpu
+  -- the AMD64 SMRAM state-save format of long mode (with EFER) is not modelled
+  if LongMode.lma c then unsupported "SMM entry in long mode"
   let sb := c.smbase + 0x8000
   let w := fun (o v : UInt32) => physWr (sb + o).toUInt64 4 v
   w 0x7FFC c.cr0
@@ -690,9 +702,11 @@ def rsm : M Unit := do
   let cr0 := ((← r 0x7FFC) &&& 0xE005003F) ||| CR0.ET
   let cr4 ← r 0x7F14
   if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
+  -- the 32-bit save map has no EFER: returning to paging with EFER.LME = 1 would need EFER.LMA from it
+  if cr0 &&& CR0.PG != 0 && c.efer &&& EFER.LME != 0 then unsupported "RSM to paging with EFER.LME = 1"
   -- the CR4 bits MOV CR4 accepts besides VME/PVI and OSXMMEXCPT/OSFXSR (as before), plus system A's UMIP,
   -- SMEP and SMAP: an SMI taken while they are set must be able to return
-  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
+  if cr4 &&& ~~~(0x01FC ||| CR4.UMIP ||| CR4.SMEP ||| CR4.SMAP ||| CR4.FSGSBASE : UInt32) != 0 then throw (.shutdown "RSM: invalid saved CR4")
   let cr3 ← r 0x7FF8
   let efl ← r 0x7FF4
   let eip ← r 0x7FF0

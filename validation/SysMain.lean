@@ -1,14 +1,16 @@
 import X86
+import LongStub
 /-!
 # x86sys — runner for the system-level test kernel
 
-    x86sys [--max N] [--mem MB] [--cmdline STR] systest.elf
+    x86sys [--max N] [--mem MB] [--smp N] [--cmdline STR] systest.elf
 
 Loads the multiboot ELF built by `test/sys/build.sh` (one PT_LOAD segment) and starts it in the
 state a multiboot loader leaves: flat 32-bit protected mode, paging off, interrupts disabled,
 `EAX = 0x2BADB002`, `EBX` pointing at a (zeroed) multiboot information block. COM1 output goes to
 stdout; the run ends when the kernel prints `END`, on a fatal stop, or at the instruction limit.
-`test/sys/run.sh` runs the same kernel under QEMU and compares the two transcripts.
+`test/sys/run.sh` runs the same kernel under QEMU and compares the two transcripts. With `--smp N`
+the machine has N CPUs (`X86.MpMachine`); the application processors wait for a STARTUP IPI.
 -/
 open X86
 
@@ -42,39 +44,51 @@ def loadElf (img : ByteArray) (memSize : Nat) (cmdline : String := "") : Except 
                      smbase := 0xA0000 }
   return { cpu, mem }
 
-partial def parse (maxI : UInt64) (mem : Nat) (cl : String) : List String → UInt64 × Nat × String × List String
-  | "--max" :: n :: r => parse n.toNat!.toUInt64 mem cl r
-  | "--mem" :: n :: r => parse maxI n.toNat! cl r
-  | "--cmdline" :: c :: r => parse maxI mem c r
-  | f :: r => let (a, b, c, d) := parse maxI mem cl r; (a, b, c, f :: d)
-  | [] => (maxI, mem, cl, [])
+structure SysOpts where
+  maxI : UInt64 := 20000000000
+  mem : Nat := 64
+  cmdline : String := ""
+  smp : Nat := 1
+  files : List String := []
+
+partial def parse (o : SysOpts) : List String → SysOpts
+  | "--max" :: n :: r => parse { o with maxI := n.toNat!.toUInt64 } r
+  | "--mem" :: n :: r => parse { o with mem := n.toNat! } r
+  | "--smp" :: n :: r => parse { o with smp := n.toNat! } r
+  | "--cmdline" :: c :: r => parse { o with cmdline := c } r
+  | f :: r => parse { o with files := o.files ++ [f] } r
+  | [] => o
 
 def main (args : List String) : IO UInt32 := do
-  let (maxI, memMB, cmdline, files) := parse 20000000000 64 "" args
-  let [path] := files | do IO.eprintln "usage: x86sys [--max N] [--mem MB] [--cmdline STR] systest.elf"; return 2
+  let o := parse {} args
+  let maxI := o.maxI
+  let [path] := o.files | do IO.eprintln "usage: x86sys [--max N] [--mem MB] [--smp N] [--cmdline STR] systest.elf"; return 2
   let img ← IO.FS.readBinFile path
-  let mut m ← match loadElf img (memMB * 1024 * 1024) cmdline with
+  let m0 ← match loadElf img (o.mem * 1024 * 1024) o.cmdline with
     | .ok m => pure m
     | .error e => do IO.eprintln e; return 2
+  let mut s := MpMachine.ofMachine m0 o.smp
   let stdout ← IO.getStdout
   let mut out : String := ""
   let mut done := false
   while !done do
-    m := m.runUntil (min maxI (m.icount + 100000))
-    let tx := m.uart.tx
+    s := s.runUntil (min maxI (s.m.icount + 100000))
+    -- the long-mode test's 64-bit stubs (test infrastructure, `LongStub.lean`)
+    if let some m' := X86.LongStub.resume s.m then s := { s with m := m' }; continue
+    let tx := s.m.uart.tx
     if tx.size > 0 then
       stdout.write tx
       stdout.flush
       out := out ++ String.fromUTF8! (ByteArray.mk (tx.data.filter (· < 128)))
-      m := { m with uart := { m.uart with tx := .empty } }
+      s := { s with m := { s.m with uart := { s.m.uart with tx := .empty } } }
     if (out.splitOn "END\n").length > 1 then done := true
-    else if let some f := m.fatal then
-      IO.println s!"FATAL: {repr f} at eip={m.cpu.eip}"
+    else if let some f := s.m.fatal then
+      IO.println s!"FATAL: {repr f} at eip={s.m.cpu.eip} cpu={s.m.cur}"
       done := true
-    else if m.icount ≥ maxI then
+    else if s.m.icount ≥ maxI then
       IO.println "FATAL: instruction limit"
       done := true
-    else if m.idle then
+    else if s.idle then
       IO.println "FATAL: idle"
       done := true
   return 0

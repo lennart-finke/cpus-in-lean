@@ -8,6 +8,11 @@ defaultTargets = ["x86run", "x86test", "x86sys", "x86litmus"]
 name = "x86"
 path = "../x86_32"
 
+# The x86-64 model, used only by the long-mode bridge (`x86bridge`, BridgeMain.lean).
+[[require]]
+name = "x86_64"
+path = "../x86_64"
+
 [[lean_exe]]
 name = "x86run"
 root = "Main"
@@ -29,3 +34,12 @@ root = "SysMain"
 [[lean_exe]]
 name = "x86fp"
 root = "FpMain"
+
+# Emulation of the 64-bit stubs of the long-mode system test (test/sys/t_long.c), used by x86sys.
+[[lean_lib]]
+name = "LongStub"
+
+# Hands the IA-32 model's stops in 64-bit mode to the x86-64 model (long mode, BridgeMain.lean).
+[[lean_exe]]
+name = "x86bridge"
+root = "BridgeMain"
