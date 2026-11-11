@@ -359,6 +359,10 @@ def gen(g):
         g.patches.append((addr - DATA, 0x1F80 | random.getrandbits(16) & 0xE07F))   # VLDMXCSR
     if map_ == 2 and op in (0x2C, 0x2D):
         g.no_paging = True               # VMASKMOVPS/PD load: see the module documentation
+    if map_ == 1 and op in (0x5D, 0x5F):
+        # (added by the Avx2 work) VMINPx/VMAXPx/SS/SD with MXCSR.DAZ: TCG returns the unflushed denormal
+        # operand (as for the legacy forms, t_simd.c NODAZ); generated with DAZ = 0
+        g.mxcsr_clear = 0x40
     nan = 'nf' in fl or 'nd' in fl or 'n0' in fl
     if nan and mem is not None:
         double = 'nd' in fl or (map_ == 3 and op == 0x41)

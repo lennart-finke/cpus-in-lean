@@ -184,6 +184,13 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- masked-out elements, AMD APM vol. 4 VPMASKMOVD calls the details implementation dependent).
   -- Accepted only when both raise the same #PF and the model left memory unchanged; only the memory
   -- hash is replaced.
+  -- (Avx; added by the Avx2 work) VMOVSS/VMOVSD with a memory operand and VEX.vvvv ≠ 1111b are #UD
+  -- (SDM VMOVSS/VMOVSD: "VEX.vvvv ... is reserved and must be 1111b" for the memory forms; AMD APM vol. 4
+  -- VMOVSS); TCG checks VEX.vvvv only after its memory access, so a not-present or inaccessible operand
+  -- raises #PF instead. Only that #PF is replaced by the model's #UD.
+  if i.vex && i.map == 1 && i.pp ≥ 2 && (i.byte == 0x10 || i.byte == 0x11) && i.isMem && i.vvvv != 0 &&
+     qo.vec == 14 && lo.vec == 6 then
+    return lo
   if i.vex && i.map == 2 && i.pp == 1 && [0x2E, 0x2F, 0x8E].contains i.byte && qo.vec == 14 &&
      lo.vec == 14 && qo.err == lo.err && qo.cr2 == lo.cr2 && lo.hash == initHash then
     return { qo with hash := lo.hash }
