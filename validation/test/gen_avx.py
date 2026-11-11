@@ -313,7 +313,7 @@ def gen(g):
     pre = b''
     if random.random() < 0.08:
         pre += bytes([random.choice([0x26, 0x36, 0x3E, 0x64, 0x65])])
-    a16 = mem and random.random() < 0.08 and key != (1, 1, 0xF7)
+    a16 = mem and random.random() < 0.08 and key not in ((1, 1, 0xF7), (1, 0, 0xAE))
     if a16:
         pre += b'\x67'
     body = pre + vex_bytes(map_, pp, L, W, vvvv, two) + bytes([op])

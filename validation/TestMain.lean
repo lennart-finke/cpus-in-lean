@@ -161,9 +161,15 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
   if !i.vex && i.pp != 0 && ((0x2C8 ≤ i.op && i.op ≤ 0x2CD) || i.op == 0x3CC) && lo.vec == 6 then
     return lo
-  -- (Avx) VEX encodings TCG executes although they are #UD (only QEMU's completion or fault is
-  -- replaced by the model's #UD; see `tcgVexUd`)
-  if lo.vec == 6 && qo.vec != 6 && tcgVexUd i then return lo
+  -- (Avx) VEX encodings TCG executes although they are #UD (QEMU's completion or fault, or the
+  -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
+  -- `tcgVexUd`)
+  if lo.vec == 6 && tcgVexUd i then return lo
+  -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
+  -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
+  -- not-present page faults at that page's first byte. Only that #PF is replaced.
+  if i.vex && i.vexL && i.isMem && i.map == 1 && ((i.pp == 2 && i.byte == 0xE6) || (i.pp == 0 && i.byte == 0x5A)) &&
+     qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then return lo
   -- (Avx) VEX-encoded scalar instructions with F3/F2 (VSQRTSS .. VMAXSD, VCMPSS/SD,
   -- VCVTSS2SD/VCVTSD2SS) ignore VEX.L ("VEX.LIG", SDM vol. 2 instruction pages; AMD APM vol. 4
   -- encodings "X.src.X.10"); TCG raises #UD for VEX.L = 1 (its X86_VEX_REPScalar rule). Only that #UD
