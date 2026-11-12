@@ -5,7 +5,8 @@
    The QEMU part covers what TCG implements as the APM describes; the MODEL-ONLY part (test_svm_model)
    what TCG lacks or does differently (NRIPS, decode assists, PAUSE filter, TSC ratio, VM_CR/SVM_KEY,
    SKINIT, several consistency checks, EV of event injection, ...), checked against
-   model-only.expected and, for the tables, test/sys/svmref.py. */
+   model-only.expected and, for the tables, test/sys/svmref.py; test_svm_smp the smp=2 pass (a guest
+   on the AP). */
 #include "sys.h"
 #include "smp.h"
 
@@ -226,14 +227,6 @@ static void t_cpl3(void) {
 		int v = run_user(c[k], (u32)vmcb, 0);
 		kprintf("svm.cpl3.%s: vec=%x err=%x\n", nm[k], v, v == 0x40 ? 0 : last.err);
 	}
-}
-
-static void devcpuid(void) {
-	u32 r[4];
-	cpuid(0x8000000A, 0, r);
-	kprintf("DEV cpuid8000000a: %x %x %x %x\n", r[0], r[1], r[2], r[3]);
-	cpuid(0x80000001, 0, r);
-	kprintf("DEV cpuid80000001: %x %x %x %x\n", r[0], r[1], r[2], r[3]);
 }
 
 /* ---------------- a first guest ---------------- */
@@ -1393,6 +1386,124 @@ static void m_npx(void) {
 		}
 	}
 	kprintf("svmm.npx: %d cases, %d differ from svmref.py\n", n, bad);
+}
+
+/* ---------------- two CPUs (smp=2) ---------------- */
+
+/* The application processor runs a guest (its own VMCB, its own SVM state) while the boot processor
+   sends it IPIs: a fixed interrupt (the AP's INTR intercept: #VMEXIT 60h, taken by the AP's host
+   after STGI), an NMI (61h) and an INIT (the INIT intercept, 63h, INIT pending until STGI, then the
+   AP resets and waits for STARTUP). The guest counts in shared memory, so the BSP knows it runs; only
+   the BSP prints. The AP starts from its own trampoline at 7000h. */
+#define SAP_TRAMP 0x7000
+__asm__(
+	".code16\n.globl sap_tramp\nsap_tramp:\n"
+	" cli\n movw %cs, %ax\n movw %ax, %ds\n"
+	" lgdtl sap_gdtr - sap_tramp\n"
+	" movl %cr0, %eax\n orl $1, %eax\n movl %eax, %cr0\n"
+	" ljmpl $0x08, $sap_entry32\n"
+	" .p2align 2\n.globl sap_gdtr\nsap_gdtr: .word 0\n .long 0\n"
+	".globl sap_tramp_end\nsap_tramp_end:\n"
+	".code32\nsap_entry32:\n"
+	" movl $0x10, %eax\n movl %eax, %ds\n movl %eax, %es\n movl %eax, %fs\n movl %eax, %gs\n movl %eax, %ss\n"
+	" movl sap_stack_top, %esp\n call svm_ap_main\n"
+	"1: cli\n hlt\n jmp 1b\n");
+extern char sap_tramp[], sap_tramp_end[], sap_gdtr[];
+static u8 sap_stack[8192] __attribute__((aligned(16)));
+u32 sap_stack_top;
+static volatile u32 sap_started, sap_phase, sap_code[4], sap_intr, sap_nmi;
+static u8 *ap_vmcb, *ap_hsave, *ap_gcode, *ap_gstack;
+static volatile u32 *gcount;
+
+static int sap_hook(struct frame *f) {
+	if (f->vec == 0x58) { sap_intr++; LR(0xB0) = 0; return 1; }
+	if (f->vec == 2) { sap_nmi++; return 1; }
+	return 0;
+}
+
+/* AP guest: inc dword [ecx]; pause; jmp back */
+static void ap_guest_vmcb(void) {
+	u8 *v = ap_vmcb;
+	memset(v, 0, 4096);
+	*(u32 *)(v + C_I3) = (1u << I_INTR) | (1u << I_NMI) | (1u << I_INIT);
+	*(u32 *)(v + C_I4) = 3;
+	*(u32 *)(v + C_ASID) = 2;
+	*(u64 *)(v + C_IOPM) = (u32)iopm; *(u64 *)(v + C_MSRPM) = (u32)msrpm;
+	*(u32 *)(v + C_VINT) = 1 << 24;   /* V_INTR_MASKING: the host's IF masks physical interrupts */
+	u16 attr[4] = { 0xC93, 0xC9B, 0xC93, 0xC93 };
+	u16 sel[4] = { KDATA, KCODE, KDATA, KDATA };
+	for (int k = 0; k < 4; k++) {
+		*(u16 *)(v + S_ES + 16 * k) = sel[k]; *(u16 *)(v + S_ES + 16 * k + 2) = attr[k];
+		*(u32 *)(v + S_ES + 16 * k + 4) = 0xFFFFFFFF;
+	}
+	*(u32 *)(v + S_GDTR + 4) = sizeof gdt - 1; *(u64 *)(v + S_GDTR + 8) = (u32)gdt;
+	*(u32 *)(v + S_IDTR + 4) = 0x7FF; *(u64 *)(v + S_IDTR + 8) = (u32)gidt;
+	*(u64 *)(v + S_EFER) = SVME; *(u64 *)(v + S_CR0) = 0x11;
+	*(u64 *)(v + S_DR7) = 0x400; *(u64 *)(v + S_DR6) = 0xFFFF0FF0; *(u64 *)(v + S_RFLAGS) = 2;
+	*(u64 *)(v + S_RIP) = (u32)ap_gcode; *(u64 *)(v + S_RSP) = (u32)ap_gstack + 4080;
+}
+
+static void ap_vmrun(void) {
+	__asm__ volatile("pushal\n movl %0, %%ecx\n movl %1, %%eax\n .byte 0x0f,0x01,0xd8\n popal"
+	                 :: "m"(gcount), "m"(ap_vmcb) : "memory");
+}
+
+void svm_ap_main(void) {
+	struct { u16 lim; u32 base; } __attribute__((packed)) id = { sizeof idt - 1, (u32)idt };
+	__asm__ volatile("lidt %0" :: "m"(id));
+	LR(0xF0) = 0x1FF; LR(0x80) = 0;
+	wrmsr(EFER_MSR, rdmsr(EFER_MSR) | SVME);
+	wrmsr(VM_HSAVE, (u32)ap_hsave);
+	sap_started = 1;
+	for (int k = 0; k < 3; k++) {
+		ap_guest_vmcb();
+		__asm__ volatile(".byte 0x0f,0x01,0xdd\n sti" ::: "memory");   /* CLGI; host IF = 1 */
+		sap_phase = k + 1;
+		ap_vmrun();
+		sap_code[k] = *(u32 *)(ap_vmcb + C_CODE);
+		__asm__ volatile(".byte 0x0f,0x01,0xdc" ::: "memory");   /* STGI: the pending event is taken here */
+		for (volatile int d = 0; d < 200; d++) {}
+		__asm__ volatile("cli");
+		sap_phase = 10 + k;
+	}
+}
+
+static void sap_wait(volatile u32 *p, u32 v) { for (u32 k = 0; k < 20000000 && *p != v; k++) cpu_relax(); }
+
+void test_svm_smp(void) {
+	if (!has_feature(0x80000001, 0, 2, 2)) { kputs("svm: not available\n"); return; }
+	svm_setup();
+	ap_vmcb = page_alloc(1); ap_hsave = page_alloc(1); ap_gcode = page_alloc(1); ap_gstack = page_alloc(1);
+	gcount = (volatile u32 *)page_alloc(1);
+	static const u8 gc[] = { 0xff, 0x01, 0xf3, 0x90, 0xeb, 0xfa };   /* 1: inc dword [ecx]; pause; jmp 1b */
+	for (u32 k = 0; k < sizeof gc; k++) ap_gcode[k] = gc[k];
+	trap_hook = sap_hook;
+	sap_stack_top = (u32)sap_stack + sizeof sap_stack;
+	memcpy((void *)SAP_TRAMP, sap_tramp, sap_tramp_end - sap_tramp);
+	*(volatile u16 *)(SAP_TRAMP + (sap_gdtr - sap_tramp)) = sizeof gdt - 1;
+	*(volatile u32 *)(SAP_TRAMP + (sap_gdtr - sap_tramp) + 2) = (u32)gdt;
+	LR(0xF0) = 0x1FF;
+	ipi(1, 0xC500); for (volatile int d = 0; d < 1000; d++) {}
+	ipi(1, 0x8500); for (volatile int d = 0; d < 1000; d++) {}
+	ipi(1, 0x600 | (SAP_TRAMP >> 12));
+	sap_wait(&sap_started, 1);
+	static const u32 ev[3] = { 0x4058, 0x4400, 0x4500 };   /* fixed vector 58h, NMI, INIT */
+	for (int k = 0; k < 3; k++) {
+		sap_wait(&sap_phase, k + 1);
+		*gcount = 0;
+		sap_wait(gcount, 1);   /* the guest runs (its counter moves) */
+		for (u32 n = 0; n < 20000000 && *gcount < 50; n++) cpu_relax();
+		ipi(1, ev[k]);
+		if (k < 2) sap_wait(&sap_phase, 10 + k);
+		else for (volatile int d = 0; d < 200000; d++) {}
+	}
+	kprintf("svm.smp: started=%d intr_exit=%x nmi_exit=%x init_exit=%x ap_intr=%d ap_nmi=%d phase=%d\n", sap_started,
+	        sap_code[0], sap_code[1], sap_code[2], sap_intr, sap_nmi, sap_phase);
+	/* the INIT was taken after the AP's STGI: it waits for STARTUP; hand it back to t_smp.c's
+	   trampoline (8000h), whose AP loop the model-only SMP tests use */
+	trap_hook = 0;
+	ipi(1, 0x600 | 0x08);
+	for (volatile int d = 0; d < 200000; d++) {}
 }
 
 /* ---------------- model-only: what TCG lacks ---------------- */

@@ -588,17 +588,18 @@ def mxcsrMask : UInt32 := if implemented .misalignSse then 0x2FFFF else 0xFFFF
 same layout (`X86/Ext/Xsave.lean`). -/
 
 /-- Bytes 0..23 of the FXSAVE image: FCW, FSW, abridged FTW (byte 5 written as 0), FOP, FIP, FCS,
-FDP, FDS (the upper halves of FCS and FDS written as 0). With `ptrs = false`, FOP, FIP, FCS, FDP and
-FDS are written as zeros (XSAVE with no x87 exception pending on processors with
-CPUID Fn8000_0008_EBX[XSaveErPtr], AMD APM vol. 2, 11.5.10). -/
-def fxsaveEnv (c : Cpu) (lin : UInt32) (ptrs : Bool := true) : M Unit := do
+FDP, FDS (the upper halves of FCS and FDS written as 0). The error pointers (FOP, FIP, FCS, FDP, FDS)
+are always written, by FXSAVE and the XSAVE family alike: the 7742 reports CPUID
+Fn8000_0008_EBX[2] XSaveErPtr ("FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save error pointers";
+AMD APM vol. 3, appendix E, CPUID Fn8000_0008_EBX). -/
+def fxsaveEnv (c : Cpu) (lin : UInt32) : M Unit := do
   let u ← isUser
   linWr lin 4 (c.fcw.toUInt32 ||| (c.fsw.toUInt32 <<< 16)) u
-  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| (if ptrs then (c.fop.toUInt32 &&& 0x7FF) <<< 16 else 0)) u
-  linWr (lin + 8) 4 (if ptrs then c.fip else 0) u
-  linWr (lin + 12) 4 (if ptrs then c.fcs.toUInt32 else 0) u
-  linWr (lin + 16) 4 (if ptrs then c.fdp else 0) u
-  linWr (lin + 20) 4 (if ptrs then c.fds.toUInt32 else 0) u
+  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| ((c.fop.toUInt32 &&& 0x7FF) <<< 16)) u
+  linWr (lin + 8) 4 c.fip u
+  linWr (lin + 12) 4 c.fcs.toUInt32 u
+  linWr (lin + 16) 4 c.fdp u
+  linWr (lin + 20) 4 c.fds.toUInt32 u
 
 /-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots (bytes 10..15 of a
 slot are not written). -/

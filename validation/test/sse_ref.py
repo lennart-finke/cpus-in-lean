@@ -185,6 +185,28 @@ def dp(width, a, b, imm, mx):
     return join([t4 if imm >> k & 1 else 0 for k in range(n)], width), flags
 
 
+def hop(width, sub, a, b, mx):
+    """HADDPS/HADDPD/HSUBPS/HSUBPD (SDM vol. 2 and AMD APM vol. 4 instruction pages): the pairs of
+    adjacent elements of a, then of b. HADD: element 2j+1 + element 2j, in the order both manuals
+    write it (SDM HADDPS "DEST[31:0] := SRC1[63:32] + SRC1[31:0]", HADDPD "SRC1[127:64] +
+    SRC1[63:0]"; APM "Adds the packed single-precision values in bits [63:32] and bits [31:0]");
+    HSUB: element 2j - element 2j+1 (SDM HSUBPS "DEST[31:0] := SRC1[31:0] - SRC1[63:32]"). With two
+    NaN operands the first operand's NaN is returned (SDM vol. 1, table 4-7). Returns (bits, flags)."""
+    f = Fmt(width)
+    out, flags = [], 0
+    for src in (a, b):
+        ls = lanes(src, width)
+        for j in range(0, len(ls), 2):
+            if sub:
+                nb = ls[j + 1] ^ (1 << (width - 1)) if not f.isnan(ls[j + 1]) else ls[j + 1]
+                r, fl = arith(f, 'add', ls[j], nb, mx)
+            else:
+                r, fl = arith(f, 'add', ls[j + 1], ls[j], mx)
+            out.append(r)
+            flags |= fl
+    return join(out, width), flags
+
+
 def round_lane(f, b, imm, mx):
     """ROUND* of one lane, APM vol. 4 ROUNDPS: imm[1:0] RC unless imm[2] (MXCSR.RC); imm[3]
     suppresses PE; SNaN -> QNaN with IE; DAZ zeroes denormals; no DE."""
@@ -399,6 +421,25 @@ def check_line(line):
             hi = x['x1'] >> 64
             exp = {'x0': (x['x0'] & ~((1 << 64) - 1)) | insertq(lo(x['x0']), lo(x['x1']), hi & 63, (hi >> 8) & 63)}
         return [(k, v, hx(after[k])) for k, v in exp.items() if hx(after[k]) != v]
+    if w[0] in ('ssem.hnanps:', 'ssem.hnanpd:'):
+        # mx=M a=X b=Y then (name=vec r=R mxo=M) for haddps, hsubps, haddpd, hsubpd; all masked
+        mx = hx(w[1].split('=')[1])
+        a, b = hx(w[2].split('=')[1]), hx(w[3].split('=')[1])
+        bad = []
+        k = 4
+        while k + 2 < len(w):
+            name, vec = w[k].split('=')
+            r, mxo = hx(w[k + 1].split('=')[1]), hx(w[k + 2].split('=')[1])
+            width = 32 if name.endswith('ps') else 64
+            er, fl = hop(width, name.startswith('hsub'), a, b, mx)
+            if hx(vec) != 0xFFFF:
+                bad.append((name + ' vec', 0xFFFF, hx(vec)))
+            if er != r:
+                bad.append((name, er, r))
+            if mx | fl != mxo:
+                bad.append((name + ' mxcsr', mx | fl, mxo))
+            k += 3
+        return bad
     if w[0] == 'fisttp':
         kv = dict(x.split('=') for x in w[2:] if '=' in x)
         size = int(kv['size'])

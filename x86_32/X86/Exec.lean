@@ -708,6 +708,26 @@ def loadFarPtr (s : UInt8) (i : Inst) : M Unit := do
   wrReg i.opsz i.reg o
   if s == SegN.SS then modCpu fun c => { c with shadow := true }
 
+/-- INT n (CD ib) without the virtual-8086 extensions: IOPL-sensitive in virtual-8086 mode (INT3
+and INTO are not), otherwise a software interrupt through the IDT (or IVT). -/
+def intPlain (n : UInt8) : M Unit := do
+  let c ← cpu
+  if c.vm86 && c.iopl < 3 then gp 0
+  -- SVM: a #VMEXIT during the delivery records INT n in EXITINTINFO (type 4, 15.7.2)
+  Svm.deliverAs (Svm.intInfo n 4 none) (deliver n none true false)
+
+/-- INT n (CD ib). Only in virtual-8086 mode with CR4.VME = 1 does it read the interrupt
+redirection bitmap in the TSS (`Sys.vmeRedirected`, AMD APM vol. 2, 8.10.1 and table 8-11; vol. 3
+INT): a clear bit redirects it to the 8086 handler (`Sys.vmeInt`). In every other mode the TSS is
+not accessed (`Proofs/ExtSysB.lean`, `intN_noVme`). The redirection test is a nested `if`: a
+nested `(← vmeRedirected n)` in a `&&` condition would be lifted out of the condition by `do`
+notation and run for every INT n. -/
+def intN (n : UInt8) : M Unit := do
+  let c ← cpu
+  if c.vm86 && c.cr4 &&& CR4.VME != 0 then
+    if (← vmeRedirected n) then return ← vmeInt n
+  intPlain n
+
 /-- Opcodes defined by ranges. -/
 def execRange (op : Nat) : Inst → M Unit :=
   if 0x40 ≤ op && op ≤ 0x47 then fun i => do
@@ -931,22 +951,14 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
     wrReg i.opsz 5 (← pop i.opsz)
   | 0xCA => fun i => farRet i.opsz i.imm
   | 0xCB => fun i => farRet i.opsz 0
+
   -- SVM (AMD APM vol. 2, 15.7.2, 15.12): INT3/INTO raise #BP/#OF, checked for their exception
   -- intercept; INT n checks the software-interrupt intercept before any exception; IDT delivery on
   -- their behalf records the event for EXITINTINFO (`Svm.deliverAs`)
   | 0xCC => fun _ => do
     Svm.excInstr Vec.BP
     Svm.deliverAs (Svm.intInfo Vec.BP 3 none) (deliver Vec.BP none true false)
-  | 0xCD => fun i => do
-    -- INT n is IOPL-sensitive in virtual-8086 mode (INT3 and INTO are not); with CR4.VME it may be
-    -- redirected to the 8086 handler (`Sys.vmeInt`)
-    let n := i.imm.toUInt8
-    Svm.swint n
-    let c ← cpu
-    if c.vm86 && c.cr4 &&& CR4.VME != 0 && (← vmeRedirected n) then vmeInt n
-    else
-      if c.vm86 && c.iopl < 3 then gp 0
-      Svm.deliverAs (Svm.intInfo n 4 none) (deliver n none true false)
+  | 0xCD => fun i => do Svm.swint i.imm.toUInt8; intN i.imm.toUInt8
   | 0xCE => fun _ => do
     if (← flag OF) then
       Svm.excInstr Vec.OF

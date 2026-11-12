@@ -8,7 +8,8 @@ registers). Under these conditions everything the cases observe is defined by th
   * bytes 5, 14..15, 22..23 (reserved), 28..31 (MXCSR_MASK, an implementation value), bytes 10..15
     of each x87 register slot and 288..463 (XMM8..15/reserved in compatibility mode) of the legacy
     region, which memory kind 4 leaves out of the hashes (FpMain.lean, signal_oracle.c);
-  * which AMD revision the XSaveErPtr rule describes: the pointers in the frame are 0 anyway.
+  * the error pointers: XSaveErPtr (always saved and restored) cannot be told apart from the rule of
+    older AMD processors (saved only with FSW.ES = 1) here: the pointers in the frame are 0 anyway.
 Masks stay within XCR0 = 7, so a host with more XCR0 bits (AVX-512, PKRU) gives the same images;
 only XGETBV with ECX = 0 reports the host's XCR0.
 

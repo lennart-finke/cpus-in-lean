@@ -151,9 +151,11 @@ def tcgVexUd (i : Inst) : Bool :=
   pushes in order, keeps completed pushes and faults at the first failing push.
 * SYSRET with EFER.SCE = 0 at CPL 3 (system A): the APM checks SCE first (#UD), then protected mode
   and CPL (#GP(0)) (AMD APM vol. 3, SYSRET, SYSRET_START); TCG checks the CPL first and raises #GP(0).
-`qemuAsHardware i qo lo init` rewrites exactly those fields of QEMU's outcome `qo` to the model's
-`lo` when they show the TCG signature; every other field is still compared. -/
-def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome := Id.run do
+`qemuAsHardware i qo lo init ea` rewrites exactly those fields of QEMU's outcome `qo` to the model's
+`lo` when they show the TCG signature; every other field is still compared. `init` is the hash of the
+initial memory, `ea` the linear address of the memory operand (computed before the instruction). -/
+def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option UInt32 := none) :
+    Outcome := Id.run do
   if i.op == 0x107 && !i.vex && qo.vec == 13 && qo.err == 0 && lo.vec == 6 then
     return { qo with vec := 6, err := lo.err }
   -- (Crypto) SHA1NEXTE..SHA256MSG2 (0F 38 C8..CD) and SHA1RNDS4 (0F 3A CC) are "NP" instructions:
@@ -171,16 +173,24 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- before writing any); TCG stores the selected elements one by one and faults in the middle. With
   -- the same #PF on both sides, only QEMU's data-area hash and the accessed/dirty bits its stores set
   -- are replaced.
-  if i.vex && qo.vec == 14 && lo.vec == 14 && qo.cr2 == lo.cr2 && qo.err == lo.err &&
+  -- The model's memory must be the initial memory (nothing stored), or the rule would hide a model
+  -- that stores some elements before faulting.
+  if i.vex && qo.vec == 14 && lo.vec == 14 && qo.cr2 == lo.cr2 && qo.err == lo.err && lo.hash == initHash &&
      ((i.map == 2 && i.pp == 1 && (i.byte == 0x2E || i.byte == 0x2F || i.byte == 0x8E)) ||
       (i.map == 1 && i.pp == 1 && i.byte == 0xF7)) then
     let ad (q l : UInt32) : UInt32 := if (q ^^^ l) &&& ~~~0x60 == 0 then l else q
     return { qo with hash := lo.hash, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
   -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
   -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
-  -- not-present page faults at that page's first byte. Only that #PF is replaced.
+  -- not-present page faults at that page's first byte. Only that #PF is replaced, and only when the
+  -- architectural operand (EA, 16 bytes) ends at or before that page and TCG's 32 bytes reach it.
+  -- `wideOk ea arch tcg cr2`: arch-size operand at `ea` ends at or before `cr2` (page aligned), the
+  -- TCG-size access covers `cr2`.
+  let wideOk (archSz tcgSz : Nat) : Bool := match ea with
+    | some a => qo.cr2 &&& 0xFFF == 0 && a.toNat + archSz ≤ qo.cr2.toNat && qo.cr2.toNat < a.toNat + tcgSz
+    | none => false
   if i.vex && i.vexL && i.isMem && i.map == 1 && ((i.pp == 2 && i.byte == 0xE6) || (i.pp == 0 && i.byte == 0x5A)) &&
-     qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then return lo
+     qo.vec == 14 && wideOk 16 32 && lo.vec != 14 then return lo
   -- (Avx) VEX-encoded scalar instructions with F3/F2 (VSQRTSS .. VMAXSD, VCMPSS/SD,
   -- VCVTSS2SD/VCVTSD2SS) ignore VEX.L ("VEX.LIG", SDM vol. 2 instruction pages; AMD APM vol. 4
   -- encodings "X.src.X.10"); TCG raises #UD for VEX.L = 1 (its X86_VEX_REPScalar rule). Only that #UD
@@ -195,10 +205,13 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) : Outcome :=
   -- An operand ending right before the next page therefore makes TCG fault at that page's first byte
   -- (that #PF is replaced by the model's outcome) or set that page's accessed bit (only the A bit of
   -- its PTE is replaced).
+  let fmaScalar := i.map == 2 && i.pp == 1 && i.byte &&& 0x0F ≥ 9 && i.byte &&& 1 == 1 && 0x99 ≤ i.byte && i.byte ≤ 0xBF
   let tcgWide := i.vex && i.isMem &&
-    ((i.map == 2 && i.pp == 1 && i.byte &&& 0x0F ≥ 9 && i.byte &&& 1 == 1 && 0x99 ≤ i.byte && i.byte ≤ 0xBF) ||
-     (i.vexL && i.map == 1 && i.pp == 1 && [0xD1, 0xD2, 0xD3, 0xE1, 0xE2, 0xF1, 0xF2, 0xF3].contains i.byte))
-  if tcgWide && qo.vec == 14 && qo.cr2 &&& 0xFFF == 0 && lo.vec != 14 then return lo
+    (fmaScalar || (i.vexL && i.map == 1 && i.pp == 1 && [0xD1, 0xD2, 0xD3, 0xE1, 0xE2, 0xF1, 0xF2, 0xF3].contains i.byte))
+  -- the architectural operand: m32 (VEX.W0) / m64 (W1) of the scalar FMA forms (TCG 16 bytes), m128
+  -- of the shift count (TCG 32 bytes)
+  let (archSz, tcgSz) := if fmaScalar then (if i.vexW then 8 else 4, 16) else (16, 32)
+  if tcgWide && qo.vec == 14 && wideOk archSz tcgSz && lo.vec != 14 then return lo
   if tcgWide && qo.vec == lo.vec then
     let a (q l : UInt32) : UInt32 := if q ^^^ l == 0x20 then l else q
     if qo.vec != 14 then return { qo with pte8 := a qo.pte8 lo.pte8, pte9 := a qo.pte9 lo.pte9 }
@@ -271,11 +284,18 @@ def vectorMachine (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 :
   return m
 
 def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 : Bool := false) :
-    Except String (Outcome × Option Inst × UInt32) := do
+    Except String (Outcome × Option Inst × UInt32 × Option UInt32) := do
   let mut m ← vectorMachine v o nativeMemory v2
   let start := m.cpu.eip
   let inst := match decode m with | .ok i _ => some i | .error _ _ => none
   let initHash := fnv m.mem
+  -- the linear address of the memory operand, before the instruction (for `qemuAsHardware`)
+  let ea : Option UInt32 := match inst with
+    | some i => if !i.isMem then none else
+        match eaOff i m with
+        | .ok off _ => some ((m.cpu.getSeg i.seg).base + off)
+        | .error _ _ => none
+    | none => none
   let tf := m.cpu.eflags &&& Flag.TF != 0
   let mut res : Option Fault := none
   let mut trapped := false
@@ -310,7 +330,7 @@ def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 : Boo
               let ymm := (u32At v (o + 92)).toUInt32 &&& 1 != 0
               [fc.mxcsr] ++ (fc.xmm.toList.map v128Words).flatten ++
               (if ymm then (fc.ymmh.toList.map v128Words).flatten else List.replicate 32 0) },
-          inst, initHash)
+          inst, initHash, ea)
 
 def parseHex (s : String) : UInt32 :=
   s.foldl (fun a ch => a * 16 + (if ch.isDigit then ch.toNat - 48 else ch.toLower.toNat - 87).toUInt32) 0
@@ -359,7 +379,7 @@ def main (args : List String) : IO UInt32 := do
     for idx in [0:v.size / 88] do
       match runVector v (idx * 88) nativeMemory with
       | .error e => IO.eprintln s!"vector {idx}: {e}"; return 1
-      | .ok (o, _, _) =>
+      | .ok (o, _, _, _) =>
         if o.vec >= 0xFFFE then IO.eprintln s!"vector {idx}: unsupported model outcome"; return 1
         let fields := [idx.toUInt32, o.vec, o.err, o.eip] ++ o.regs.toList ++
           [o.eflags] ++ o.segs.toList ++ [o.hash, o.cr2, o.pte8, o.pte9] ++ o.pageHashes
@@ -401,7 +421,7 @@ def main (args : List String) : IO UInt32 := do
     if len16 then lenRule := lenRule + 1
     match runVector v (hdr + idx * rsz) (v2 := v2) with
     | .error e => IO.println s!"#{idx} {desc}: {e}"; bad := bad + 1
-    | .ok (lo, inst, initHash) =>
+    | .ok (lo, inst, initHash, ea) =>
       -- the instruction completed (INT3 terminator or single-step trap): undefined flags masked
       let mask := if qo.vec == 3 || qo.vec == 1 then fm else 0xFFFEFFFF
       -- CMPS reads two memory operands in an unspecified order: CR2 is not compared
@@ -413,7 +433,7 @@ def main (args : List String) : IO UInt32 := do
                                                 pte8 := if cmps && flt then x.pte8 &&& ~~~0x20 else x.pte8,
                                                 pte9 := if cmps && flt then x.pte9 &&& ~~~0x20 else x.pte9 }
       checked := checked + 1
-      let qh := match inst with | some i => qemuAsHardware i qo lo initHash | none => qo
+      let qh := match inst with | some i => qemuAsHardware i qo lo initHash ea | none => qo
       if norm lo != norm qo && norm lo == norm qh then
         tcg := tcg + 1
       else if norm lo != norm qo then

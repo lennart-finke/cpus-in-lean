@@ -164,3 +164,39 @@ def avx_alignment(rng, count):
             for flags in (0x40202, 0x202):
                 yield (fp_cases.record(code, flags=flags, address=0x10000 + off, mem=mem),
                        fp_cases.meta('avx_alignment', name, code, offset=off, ac=flags >> 18 & 1))
+
+
+def avx_observe(rng, count):
+    """avx_observe (policy 'observe'; no rng, so the other families' streams are unchanged):
+    * VDPPS ymm with an unmasked exception in one lane's multiplies and a later-stage exception in the
+      other lane: the model takes the stages across both lanes (an unmasked IE in the low lane's
+      multiplies suppresses the PE of the high lane's last addition; Avx.lean VDPPS), the SDM says only
+      "in the order of their execution";
+    * VHADDPS/VHADDPD/VHSUBPS ymm with two-NaN pairs in both orders in both lanes (which NaN is returned;
+      model: HADD the higher element's, HSUB the lower's, Sse.hop)."""
+    one = 0x3F800000
+    words = lambda ws: sum(w << (32 * k) for k, w in enumerate(ws))
+    dps = [
+        ('snan_lo_pe_hi', [0x7F800001] + [one] * 7, [one] * 5 + [0, 0x33800000, 0]),
+        ('snan_hi_pe_lo', [one, one, one, one, 0x7F800001, one, one, one], [one, 0, 0x33800000, 0] + [one] * 4),
+        ('inf0_lo_oe_hi', [0x7F800000, one, one, one, 0x7F000000, 0x7F000000, 0, 0], [0, one, one, one, 0x7F000000, one, 0, 0]),
+    ]
+    for name, a, b in dps:
+        xmm, ymmh = regs256([0, words(a), words(b), 0])
+        for mx in (0x1f00, 0x1d80, 0x1f80, 0x1780):     # IE, OE (ZE masked) unmasked; all masked; PE unmasked
+            code = vex(3, 1, 1, 0, 1, two=False) + bytes([0x40, 0xC2, 0xF1])
+            yield (fp_cases.record(code, xmm=xmm, ymmh=ymmh, mxcsr=mx),
+                   fp_cases.meta('avx_observe', 'vdpps256_' + name, code, policy='observe',
+                                 reason='VDPPS ymm: exception stages across the two lanes are not specified'))
+    q = [0x7FC00001, 0x7FC00002, 0x7F800003, 0x7FC00004, 0xFFC00005, 0x7F800006, 0x7F800007, 0x7FC00008]
+    a, b = words(q), words(q[::-1])
+    qd = [0x7FF8000000000001, 0x7FF8000000000002, 0x7FF0000000000003, 0x7FF8000000000004]
+    ad, bd = sum(w << (64 * k) for k, w in enumerate(qd)), sum(w << (64 * k) for k, w in enumerate(qd[::-1]))
+    for name, pp, op, x, y in (('vhaddps', 3, 0x7C, a, b), ('vhsubps', 3, 0x7D, a, b),
+                               ('vhaddpd', 1, 0x7C, ad, bd), ('vhsubpd', 1, 0x7D, ad, bd)):
+        xmm, ymmh = regs256([0, x, y, 0])
+        for L in (0, 1):
+            code = vex(1, pp, L, 0, 1) + bytes([op, 0xC2])
+            yield (fp_cases.record(code, xmm=xmm, ymmh=ymmh, mxcsr=0x1f80),
+                   fp_cases.meta('avx_observe', '%s_nan_l%d' % (name, L), code, L=L, policy='observe',
+                                 reason='two NaN operands of one horizontal add/subtract: which one is returned'))

@@ -421,11 +421,36 @@ UD_0F = [0x04, 0x0A, 0x0C, 0x0E, 0x0F, 0x24, 0x25, 0x26, 0x27, 0x36, 0x39, 0x3B,
          0x3F, 0x78, 0x79, 0x7A, 0x7B, 0xA6, 0xA7, 0xB8]
 MODRM_0F = {0x78, 0x79, 0xB8}
 
+# 'vexnb' kind of the 'ud' family: the undefined neighbours of the implemented VEX forms (isa_forms
+# `vex_neighbours`: an opcode byte with a VEX row, under a mandatory prefix and VEX.L for which no row
+# exists), emitted in turn so that a run covers them independently of chance. The pinned ones come
+# first in every run: forms where a model dispatch on the opcode byte fell into a default arm for an
+# undefined prefix (VEX.256.NP.0F 70 executed as VPSHUFLW, review finding); every eighth 'vexnb'
+# vector is a pinned one (with VEX.vvvv = 1111b).
+VEXNB_PINNED = [(1, 0, 0x70, 1), (1, 0, 0x70, 0)]
+_vexnb = {'list': None, 'next': 0, 'n': 0}
+
+def vexnb_next():
+    """The next neighbour and whether it is a pinned one."""
+    if _vexnb['list'] is None:
+        rest = [t for t in isa_forms.vex_neighbours() if t not in VEXNB_PINNED and t != (1, 0, 0xC4, 0)
+                and t != (1, 0, 0xC4, 1)]
+        random.shuffle(rest)
+        _vexnb['list'] = rest
+    n = _vexnb['n']
+    _vexnb['n'] += 1
+    if n % 8 == 0:
+        return VEXNB_PINNED[(n // 8) % len(VEXNB_PINNED)], True
+    lst = _vexnb['list']
+    t = lst[_vexnb['next'] % len(lst)]
+    _vexnb['next'] += 1
+    return t, False
+
 def ud_form(g, a16, force=None):
     """An encoding that is #UD on Zen 2 and in the model, as (bytes, kind); the bytes include the
     mandatory or legacy prefix the form needs. With `force`, the ModRM byte (and an imm8) is that
     value (a register form): used by the length tests, whose last byte is the INT3 filler."""
-    kinds = ['map2', 'map3', 'vex', 'vex', 'vexpfx', 'vexmap', 'evex', 'xop', '0f']
+    kinds = ['map2', 'map3', 'vex', 'vex', 'vexpfx', 'vexmap', 'evex', 'xop', '0f', 'vexnb', 'vexnb']
     if force is not None:
         kinds = ['map2', 'map3', 'vex', '0f']
     kind = random.choice(kinds)
@@ -451,11 +476,18 @@ def ud_form(g, a16, force=None):
         if op in MODRM_0F:
             return body + modrm(), kind
         return (None if force is not None else body), kind
-    if kind in ('vex', 'vexpfx', 'vexmap'):
+    if kind in ('vex', 'vexpfx', 'vexmap', 'vexnb'):
+        nb, pinned = vexnb_next() if kind == 'vexnb' else (None, False)
         while True:
             m = random.choice([1, 2, 3]) if kind != 'vexmap' else random.choice([0] + list(range(4, 32)))
             pp, op = random.randint(0, 3), random.getrandbits(8)
             L, W, vvvv = random.getrandbits(1), random.getrandbits(1), random.getrandbits(4)
+            if nb is not None:
+                # mostly VEX.vvvv = 1111b (register 0), so that the undefined prefix/L is the only
+                # reason for the #UD of a form that takes no VEX.vvvv operand
+                m, pp, op, L = nb
+                if pinned or random.random() < 0.75:
+                    vvvv = 0
             # (Avx) the ModRM kind and reg field are chosen first, so that forms defined only for some
             # VEX.L/VEX.W/mod/reg (isa_forms rows) have their undefined neighbours tested as #UD
             lay = vex_layout(m, op, pp) if kind != 'vexmap' else None
@@ -467,9 +499,10 @@ def ud_form(g, a16, force=None):
             if kind != 'vexmap' and m == 1 and pp == 0 and op == 0xC4:
                 continue
             # after a 66/F2/F3/LOCK prefix every VEX form is #UD; an unknown map too
-            if kind != 'vex' or not isa_forms.defined('vex', m, pp, op, mod, mreg if mod is not None else None,
-                                                       L=L, W=W):
+            if kind not in ('vex', 'vexnb') or not isa_forms.defined('vex', m, pp, op, mod,
+                                                                    mreg if mod is not None else None, L=L, W=W):
                 break
+            assert nb is None, nb   # a neighbour is undefined for every W, mod and reg
         # C5: bit 6 of its byte is inverted vvvv[3], which must be 1 (vvvv < 8) in 32-bit mode
         two = m == 1 and W == 0 and vvvv < 8 and random.random() < 0.5
         pre = bytes([random.choice([0x66, 0xF2, 0xF3, 0xF0])]) if kind == 'vexpfx' else b''

@@ -233,6 +233,15 @@ def defined(encoding, map_, pp, op, mod=None, reg=None, rm=None, L=None, W=None)
         any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in IMPLEMENTED)
 
 
+def vex_neighbours():
+    """The undefined neighbours of the VEX forms: (map, pp, opcode, L) for every opcode byte that has a
+    VEX row (IMPLEMENTED or NOT_YET_IMPLEMENTED) and every mandatory prefix and VEX.L under which the
+    opcode is not defined for any VEX.W, ModRM.mod or ModRM.reg (#UD on Zen 2), in a fixed order."""
+    ops = sorted({(f.map, op) for f in IMPLEMENTED + NOT_YET_IMPLEMENTED if f.encoding == 'vex' for op in f.ops})
+    return [(m, pp, op, L) for (m, op) in ops for pp in range(4) for L in range(2)
+            if not defined('vex', m, pp, op, None, None, None, L, None)]
+
+
 def model_has(feature):
     """The model implements `feature` (no NOT_YET_IMPLEMENTED row carries it)."""
     return all(f.feature != feature for f in NOT_YET_IMPLEMENTED)

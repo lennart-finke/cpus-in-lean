@@ -339,6 +339,30 @@ void test_sse_model(void) {
 	cr4sse(1);
 	ldmx(0x1F80);
 	kprintf("ssem.haddps.ie: vec=%x mxcsr=%x", h1, mh); px("x0", x0); kprintf(" noxmmexcpt=%x\n", h2);
+	/* HADDPx/HSUBPx with two NaN operands of one operation: the first operand's NaN is returned; for
+	   HADD the manuals write the higher element first (SDM "SRC1[63:32] + SRC1[31:0]", AMD APM vol. 4
+	   "bits [63:32] and bits [31:0]"), for HSUB the lower (Sse.lean). TCG returns the NaN with the
+	   larger significand. Checked by test/sse_ref.py. */
+	{
+		static const u32 hn[16] = { 0x7FC00001, 0x7FC00002, 0x7F800003, 0x7FC00004,
+		                            0xFFC00005, 0x3F800000, 0x7F800006, 0x7F800007,
+		                            /* binary64: QNaN, QNaN | SNaN, 1.0 */
+		                            0x00000001, 0x7FF80000, 0x00000002, 0x7FF80000,
+		                            0x00000003, 0x7FF00000, 0x00000000, 0x3FF00000 };
+		static const u8 hops[4][4] = { { 0xF2, 0x0F, 0x7C, 0xC1 }, { 0xF2, 0x0F, 0x7D, 0xC1 },
+		                               { 0x66, 0x0F, 0x7C, 0xC1 }, { 0x66, 0x0F, 0x7D, 0xC1 } };
+		static const char *hname[4] = { "haddps", "hsubps", "haddpd", "hsubpd" };
+		for (int k = 0; k < 4; k++) {
+			const u32 *in = hn + (k < 2 ? 0 : 8);
+			if (k == 0 || k == 2) { kprintf("ssem.hnan%s: mx=1f80", k ? "pd" : "ps"); px("a", in); px("b", in + 4); }
+			for (int j = 0; j < 8; j++) QSV[j] = in[j];
+			ldmx(0x1F80);
+			int v = runx(4, hops[k], QSM);
+			kprintf(" %s=%x", hname[k], v); px("r", QSW); kprintf(" mxo=%x", QSMX);
+			if (k == 1 || k == 3) kputc('\n');
+		}
+		ldmx(0x1F80);
+	}
 
 	/* FISTTP with an empty ST(0): stack underflow, masked response stores the integer indefinite */
 	QFOUT = 0x5555555555555555ULL;

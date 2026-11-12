@@ -35,12 +35,13 @@ written as zero together with their fields, as FXSAVE does; bytes 10..15 of each
 and 288..463 are not written), the header beyond XSTATE_BV (XSAVE, XSAVEOPT) or XCOMP_BV (XSAVEC,
 XSAVES), and the areas of components that are not saved.
 
-**Error pointers** (AMD APM vol. 2, 11.5.10; vol. 4 XSAVE/XRSTOR): the 7742 reports
-CPUID Fn8000_0008_EBX[2] (XSaveErPtr), so XRSTOR/XRSTORS always load FOP, FIP, FCS, FDP, FDS from
-the area, and XSAVE/XSAVEOPT/XSAVEC/XSAVES write them as zeros unless an x87 exception is pending
-(FSW.ES = 1), in which case they write their values. (The manual names "the error pointer fields"
-and "the error pointer offset registers"; the model treats FOP and the selectors FCS/FDS like the
-offsets. FXSAVE is unchanged.)
+**Error pointers**: the 7742 reports CPUID Fn8000_0008_EBX[2] XSaveErPtr, whose definition is
+"FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save error pointers and FXRSTOR, XRSTOR, XRSTORS
+always restore error pointers" (AMD APM vol. 3, appendix E, CPUID Fn8000_0008_EBX; the Linux commit
+"x86/cpufeatures: Make X86_BUG_FXSAVE_LEAK detectable in CPUID on AMD" quotes it). So XSAVE,
+XSAVEOPT, XSAVEC and XSAVES write FOP, FIP, FCS, FDP and FDS like FXSAVE, whether or not an x87
+exception is pending, and XRSTOR/XRSTORS always load them. (Writing them only with FSW.ES = 1 is the
+behaviour of AMD processors without XSaveErPtr, the "FXSAVE leak" of families before 17h.)
 
 ## Tracking: init and modified optimizations (SDM vol. 1, 13.6, 13.8.3)
 
@@ -150,10 +151,10 @@ def area (i : Inst) (n : UInt32) (write : Bool) : M UInt32 := do
 def rd64 (lin : UInt32) : M UInt64 := do return (← rdLin lin 8).lo
 def wr64 (lin : UInt32) (v : UInt64) : M Unit := wrLin lin 8 { lo := v }
 
-/-- The x87 component (legacy region bytes 0..23 without MXCSR, ST0..ST7): the error pointers only
-with an x87 exception pending (XSaveErPtr). -/
+/-- The x87 component (legacy region bytes 0..23 without MXCSR, ST0..ST7), with the error pointers
+(XSaveErPtr: always saved). -/
 def saveX87 (c : Cpu) (lin : UInt32) : M Unit := do
-  fxsaveEnv c lin (ptrs := c.fsw &&& 0x80 != 0)
+  fxsaveEnv c lin
   fxsaveRegs c lin
 
 /-- MXCSR and MXCSR_MASK (bytes 24..31). -/
@@ -296,7 +297,10 @@ def xrstor (i : Inst) (sup : Bool) : M Unit := do
   let compacted := comp >>> 63 != 0
   if !compacted then
     if sup then gp 0
-    if comp != 0 || (← rd64 (lin + 528)) != 0 || bv &&& ~~~c.xcr0 != 0 then gp 0
+    -- header bytes 16..23 must be zero; read unconditionally (the area was probed by `area`, so the
+    -- read cannot fault, and XRSTOR reads the whole header anyway)
+    let rsv ← rd64 (lin + 528)
+    if comp != 0 || rsv != 0 || bv &&& ~~~c.xcr0 != 0 then gp 0
   else
     if !implemented .xsavec then gp 0
     for k in [2:8] do
