@@ -71,7 +71,9 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) (compat : Bool := fa
     -- state loaded from the signal frame by XRSTOR with XSTATE_BV[2:0] = 111b (XINUSE = 7)
     cr4 := 0x40600, xcr0 := 7, xsx := { inuse := 7 },
     eflags := (rdQ v (o + 144)).toUInt32,
-    fcw := (u16At v (o + 440)).toUInt16, fsw := (u16At v (o + 442)).toUInt16,
+    -- the oracle loads the x87 state from the signal frame with XRSTOR, which sets B = ES (`fswLoad`)
+    fcw := (u16At v (o + 440)).toUInt16,
+    fsw := fswLoad (u16At v (o + 442)).toUInt16 (u16At v (o + 440)).toUInt16,
     fempty := ~~~(u16At v (o + 444)).toUInt8 }
   for k in [0:8] do
     c := c.setReg k.toUInt8 (rdQ v (o + 16 + 8*k)).toUInt32

@@ -658,10 +658,9 @@ def Cpu.loadFxX87 (c : Cpu) (env : UInt32 × UInt32 × UInt32 × UInt32 × UInt3
   let fsw := (w0 >>> 16).toUInt16
   let top := ((fsw >>> 11) &&& 7).toNat
   let fpr := (List.range 8).foldl (fun fpr k => fpr.set! ((top + k) % 8) regs[k]!) c.fpr
-  let c := { c with fcw := fcwLoad w0, fsw, fempty := ~~~(w1.toUInt8), fpr,
-                    fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
-                    fdp, fds := fds.toUInt16 }
-  if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then { c with fsw := c.fsw &&& 0x7F7F } else c
+  { c with fcw := fcwLoad w0, fsw := fswLoad fsw (fcwLoad w0), fempty := ~~~(w1.toUInt8), fpr,
+           fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
+           fdp, fds := fds.toUInt16 }
 
 def fxsave (i : Inst) : M Unit := do
   let c ← cpu

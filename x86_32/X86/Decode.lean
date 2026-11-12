@@ -76,6 +76,10 @@ structure Inst where
   vexL : Bool := false
   /-- VEX.W (always 0 with the two-byte prefix). -/
   vexW : Bool := false
+  /-- Bit 3 of VEX.vvvv (decoded, i.e. set when the encoded bit is 0). Outside 64-bit mode it does not
+  select a register (`vvvv` keeps bits 2:0), but the EPYC 7742 requires it to be 0 where VEX.vvvv
+  must be 1111b (`Vex.noV`). -/
+  vvvv3 : Bool := false
   deriving Repr, Inhabited
 
 namespace Inst
@@ -229,7 +233,7 @@ def decodeRaw : M (Inst × UInt32) := do
   let mut i : Inst := { op, opsz, adsz, segOvr, rep, p66, lock, pp }
   if vx != 0 then
     i := { i with vex := true, vexL := vx &&& 4 != 0, vvvv := (((~~~vx) >>> 3) &&& 7).toUInt8,
-                  vexW := vx &&& 0x8080 == 0x8080 }
+                  vexW := vx &&& 0x8080 == 0x8080, vvvv3 := vx &&& 0x40 == 0 }
   if info &&& 1 != 0 then
     let modrm := (← if pre < 0x100 then pure pre else do
       let v ← fetch8 (eip0 + n)

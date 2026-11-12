@@ -115,13 +115,14 @@ static void t_ud(void) {
 	int w1 = Y(AM, 0xC4, 0xE1, 0xF9, 0x6E, 0xC0);             /* vmovd xmm0, eax (W1) */
 	kprintf(" pextrd=%x eax=%x movd=%x", w0, g, w1); px("x0", YO);
 	kputc('\n');
-	/* VEX.vvvv: 1111b required by single-source forms; the inverted vvvv[3] of C4 is ignored */
+	/* VEX.vvvv: 1111b required by single-source forms, all four bits on the EPYC 7742 (C4 with vvvv[3] alone
+	   wrong: #UD); as a register number, vvvv[3] is ignored */
 	kprintf("avx.vvvv: movaps=%x zeroupper=%x movd=%x ptest=%x c4bit3=%x", Y(AM, 0xC5, 0xF0, 0x28, 0xC1), Y(AM, 0xC5, 0xF0, 0x77),
 		Y(AM, 0xC5, 0xF1, 0x6E, 0xC0), Y(AM, 0xC4, 0xE2, 0x71, 0x17, 0xC1), Y(AM, 0xC4, 0xE1, 0x38, 0x28, 0xC1));
 	py("y0", YO);
 	kprintf(" vaddbit3=%x", Y(AM, 0xC4, 0xE1, 0x3C, 0x58, 0xC2));   /* vaddps ymm0, ymm8 (= ymm0), ymm2 */
 	py("y0", YO); 
-	/* VMOVSS/SD: the load ignores VEX.vvvv, the store needs 1111b */
+	/* VMOVSS/SD: load and store need VEX.vvvv = 1111b on the EPYC 7742 (the manuals name only the store) */
 	kprintf(" movss_ld=%x", Y(AM, 0xC5, 0xE2, 0x10, 0x06)); py("y0", YO);
 	kprintf(" movsd_ld=%x movss_st=%x\n", Y(AM, 0xC4, 0xE1, 0x43, 0x10, 0x06), Y(AM, 0xC5, 0xE2, 0x11, 0x06));
 	/* ModRM.mod: memory-only and register-only forms */

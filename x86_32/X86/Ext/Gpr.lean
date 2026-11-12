@@ -86,9 +86,11 @@ Every hook returns `none` for a form whose feature is not `implemented`, so that
   (`SysB.hwcrBits`/`hwcrWrite`); writes to its other bits are ignored.
 * **MCOMMIT** needs EFER.MCOMMIT (bit 17, else #UD); the model has no memory with delayed error
   reporting, so it always sets CF = 1 and clears OF, SF, ZF, AF, PF (APM MCOMMIT).
-* **RDPRU** returns MPERF (ECX = 0) or APERF (ECX = 1) with CF = 1, and 0 with CF = 0 for any other
-  ECX (APM: "Any unsupported ECX values return zero"; the APM marks CF as modified without saying
-  how, so its value is UNCONFIRMED); OF, SF, ZF, AF, PF = 0. #UD at CPL > 0 with CR4.TSD.
+* **RDPRU** returns MPERF (ECX = 0) or APERF (ECX = 1) with CF = 1 and OF, SF, ZF, AF, PF = 0 (CF on
+  success is UNCONFIRMED: the native campaign did not observe it); any other ECX returns 0 and leaves
+  every flag unchanged, as the EPYC 7742 does (native `gpr_rdpru`: ECX = 2, 3, 16, FFFFFFFFh; the APM
+  says "Any unsupported ECX values return zero" and marks CF as modified). #UD at CPL > 0 with
+  CR4.TSD.
 
 ## Hooks (called by `X86/Dispatch.lean`; `none` = not handled here, see `EXTENDING.md`)
 
@@ -329,7 +331,8 @@ def rdpru : M Unit := do
     else if c.ecx == 1 then (t + c.gprx.aperfOff, true) else (0, false)
   setReg 0 v.toUInt32
   setReg 2 (v >>> 32).toUInt32
-  setArith (if ok then CF else 0)
+  -- an unsupported ECX leaves every flag unchanged (EPYC 7742, native `gpr_rdpru`, open question G6)
+  if ok then setArith CF
 
 /-- RDRAND/RDSEED r16/r32: the next SplitMix64 output; CF = 1, OF = SF = ZF = AF = PF = 0. -/
 def rdrand (i : Inst) : M Unit := do

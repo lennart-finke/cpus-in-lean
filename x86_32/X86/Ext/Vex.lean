@@ -20,7 +20,10 @@ In 16- and 32-bit code: VEX.R and VEX.X (inverted) are 1 by construction (otherw
 LES/LDS), VEX.B is ignored, and so is the inverted VEX.vvvv[3] of the three-byte form: "In 32-bit and
 16-bit modes bit 6 must be 1 (if bit 6 is not 1, the 2-byte VEX version will generate LDS instruction
 and the 3-byte VEX version will ignore this bit)" (SDM vol. 2A, 2.3.5.6). So `Inst.vvvv` is the
-register number 0..7 and "VEX.vvvv = 1111b" is `Inst.vvvv = 0` (`noV`). The VEX prefix is valid in
+register number 0..7. But "VEX.vvvv = 1111b" (`noV`) checks all four bits (`Inst.vvvv3` too): the
+EPYC 7742 raises #UD for VMOVAPS and VCVTPS2PH whose vvvv[3] alone is wrong (native campaign
+families `avx_encoding`, `avx2_encoding`); where vvvv names a register, bit 3 is ignored (VADDPS with
+vvvv = 1001b uses XMM1 on the 7742). The VEX prefix is valid in
 16-bit protected-mode code segments too (SDM vol. 2A, 2.3: #UD only in real and virtual-8086 mode);
 the decoder accepts it there, and the operand size (66) does not exist for VEX instructions.
 
@@ -139,8 +142,10 @@ end V256
 
 /-! ## Encoding predicates -/
 
-/-- VEX.vvvv = 1111b (no register): see the module documentation for 32-bit mode. -/
-@[inline] def noV (i : Inst) : Bool := i.vvvv == 0
+/-- VEX.vvvv = 1111b (no register), all four bits: the EPYC 7742 raises #UD for VMOVAPS and VCVTPS2PH
+with only vvvv[3] wrong in 32-bit mode (native campaign families `avx_encoding`, `avx2_encoding`),
+although vvvv[3] selects no register there. -/
+@[inline] def noV (i : Inst) : Bool := i.vvvv == 0 && !i.vvvv3
 /-- VEX.L = 0. -/
 @[inline] def l0 (i : Inst) : Bool := !i.vexL
 /-- VEX.W = 0. -/

@@ -43,12 +43,14 @@ lane from the low quadword of each half of the source and is therefore NOT the A
 * VDPPS (VEX.256): two independent dot products; their staged flags (`Sse.dpps`) are merged.
 * VZEROALL/VZEROUPPER: AMD APM vol. 4 lists "VEX.W = 1" as #UD for VZEROALL while its encoding
   table and Intel give "WIG"; the model ignores VEX.W (open doubt, recorded by the native campaign).
-* VMOVSS/VMOVSD loads ignore VEX.vvvv: both manuals require 1111b only for the store form (SDM
-  MOVSS/MOVSD note, APM vol. 4 MOVSS/MOVSD exception table), although APM's encoding table shows 1111b
-  for the load too. The native campaign case `vmovss_ld_vvvv` records Zen 2's behaviour.
-* VEX.W is ignored outside 64-bit mode by VMOVD, VPEXTRD, VPINSRD, VCVTSI2SS/SD, VCVT(T)SS2SI,
-  VCVT(T)SD2SI and VPCMPESTRx (AMD APM vol. 4, VPEXTRD/VPINSRD: "x" encodings "only available in
-  non-64-bit modes").
+* VMOVSS/VMOVSD loads with VEX.vvvv ≠ 1111b are #UD, as the APM's encoding table shows and the EPYC
+  7742 does (native campaign family `avx_encoding`, `vmovss_ld_vvvv`/`vmovsd_ld_vvvv`, 4 cases), although
+  both manuals' exception notes require 1111b only for the store form.
+* VEX.W is ignored outside 64-bit mode by VMOVD, VCVTSI2SS/SD, VCVT(T)SS2SI, VCVT(T)SD2SI and
+  VPCMPESTRx (the EPYC 7742 executes VMOVD and VCVTSI2SS/VCVTSS2SI with W = 1). VPEXTRD and VPINSRD
+  with VEX.W = 1 (VPEXTRQ/VPINSRQ, 64-bit mode only) are #UD on the EPYC 7742 (native `avx_encoding`,
+  `vpextrd_w1`/`vpinsrd_w1`, 4 cases), although AMD APM vol. 4 lists their "x" encodings as "only
+  available in non-64-bit modes".
 -/
 namespace X86
 namespace Avx
@@ -305,10 +307,8 @@ def moves (i : Inst) (b0 : UInt8) (p : Nat) : Option (M Unit) :=
   | 0x10, _ => some do                   -- VMOVSS/SD load, or merge (register form)
     let bits := if p == 2 then 32 else 64
     if i.isMem then
-      -- VEX.vvvv is ignored by the load: only the store requires 1111b (SDM vol. 2 MOVSS/MOVSD: "For
-      -- memory store form instruction VMOVSS m32, xmm1, VEX.vvvv is reserved and must be 1111b";
-      -- AMD APM vol. 4 MOVSS/MOVSD: "#UD: VEX.vvvv != 1111b (for memory destination encoding only)")
-      start i true
+      -- VEX.vvvv ≠ 1111b: #UD for the load too (EPYC 7742; the manuals' notes name only the store)
+      start i (noV i)
       setX i.reg (← rdVex i (bits / 8).toUInt32).lo
     else
       start i true
@@ -626,7 +626,8 @@ def map3 (i : Inst) : Option (M Unit) :=
   | 0x0E => only128 i (op3 i true (Sse.blend 16 imm))
   | 0x0F => only128 i (op3 i true fun a b => Sse.palignr 128 a b imm)
   | 0x14 | 0x15 | 0x16 | 0x17 => some do                      -- VPEXTRB/W/D, VEXTRACTPS r/m
-    start i (!L && noV i)
+    -- VPEXTRD with VEX.W = 1 (VPEXTRQ): #UD (EPYC 7742)
+    start i (!L && noV i && (b0 != 0x16 || w0 i))
     let s := (← getY i.reg).lo
     let (bits, k) := match b0 with
       | 0x14 => (8, imm % 16) | 0x15 => (16, imm % 8) | _ => (32, imm % 4)
@@ -651,7 +652,7 @@ def map3 (i : Inst) : Option (M Unit) :=
     let s ← if i.isMem then pure (← rdVex i 4).lo.lo else pure ((← getY i.rm).lo.lane 32 (imm >>> 6))
     setX i.reg (Sse.insertps (← src1 i).lo s imm)
   | 0x22 => some do                                           -- VPINSRD xmm, xmm, r/m32
-    start i (!L)
+    start i (!L && w0 i)                                      -- W = 1 (VPINSRQ): #UD (EPYC 7742)
     let v ← rdGE i 4
     setX i.reg ((← src1 i).lo.setLane 32 (imm % 4) v.toUInt64)
   | 0x40 => some do                                           -- VDPPS (both lengths)

@@ -74,8 +74,9 @@ IMPLEMENTED = [
     F('avx', 'Avx', 'vex', 3, 1, [0x04, 0x05, 0x4A, 0x4B], None, None, 0),   # VPERMILPS/PD imm, VBLENDVPS/PD
     F('avx', 'Avx', 'vex', 3, 1, [0x06, 0x18, 0x19], None, 1, 0),   # VPERM2F128, VINSERTF128, VEXTRACTF128
     F('avx', 'Avx', 'vex', 3, 1, [0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x40]),
-    F('avx', 'Avx', 'vex', 3, 1, [0x0E, 0x0F, 0x14, 0x15, 0x16, 0x17, 0x20, 0x21, 0x22, 0x41, 0x42, 0x44, 0x60,
+    F('avx', 'Avx', 'vex', 3, 1, [0x0E, 0x0F, 0x14, 0x15, 0x17, 0x20, 0x21, 0x41, 0x42, 0x44, 0x60,
       0x61, 0x62, 0x63, 0xDF], None, 0),
+    F('avx', 'Avx', 'vex', 3, 1, [0x16, 0x22], None, 0, 0),        # VPEXTRD, VPINSRD: W1 #UD (EPYC 7742)
     F('avx', 'Avx', 'vex', 3, 1, [0x4C], None, 0, 0),               # VPBLENDVB
     # --- Avx2 (x86_32/X86/Ext/Avx2.lean; generator: gen_avx2.py) --- exactly the AVX2, FMA3 and F16C
     # forms of Zen 2 (VEX.L, VEX.W, ModRM.mod/reg), so the 'ud' family tests their neighbours as #UD
@@ -104,7 +105,7 @@ IMPLEMENTED = [
     F('fma', 'Avx2', 'vex', 2, 1, rng(0x96, 0x9F) + rng(0xA6, 0xAF) + rng(0xB6, 0xBF)),   # FMA3
     F('f16c', 'Avx2', 'vex', 2, 1, [0x13], None, None, 0),           # VCVTPH2PS
     F('f16c', 'Avx2', 'vex', 3, 1, [0x1D], None, None, 0),           # VCVTPS2PH
-    F('avx2', 'Avx2', 'vex', 3, 1, [0x00, 0x01], None, 1, 1),        # VPERMQ, VPERMPD
+    F('avx2', 'Avx2', 'vex', 3, 1, [0x00, 0x01], None, 1),           # VPERMQ, VPERMPD (W ignored: EPYC 7742)
     F('avx2', 'Avx2', 'vex', 3, 1, [0x02], None, None, 0),           # VPBLENDD
     F('avx2', 'Avx2', 'vex', 3, 1, [0x0E, 0x0F, 0x42], None, 1),     # VPBLENDW, VPALIGNR, VMPSADBW ymm
     F('avx2', 'Avx2', 'vex', 3, 1, [0x4C], None, 1, 0),              # VPBLENDVB ymm

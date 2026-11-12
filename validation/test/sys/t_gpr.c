@@ -176,7 +176,8 @@ void test_gpr_model(void) {
 	twr(0xC0000080, 0);
 	kprintf(" efer=%x\n", (u32)rdmsr(0xC0000080));
 
-	/* RDPRU: MPERF (0) and APERF (1), CF = 1; other ECX 0 with CF = 0; #UD at CPL 3 with CR4.TSD */
+	/* RDPRU: MPERF (0) and APERF (1), CF = 1; other ECX 0 with the flags unchanged (EPYC 7742; gin presets
+	   them all); #UD at CPL 3 with CR4.TSD */
 	twr(0xE7, 0x100000000ull);
 	twr(0xE8, 5);
 	gin(0, 0, 0, 0);

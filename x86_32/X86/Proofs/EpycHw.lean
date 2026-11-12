@@ -113,6 +113,22 @@ theorem fcwLoad_observed : fcwLoad 0x1F80 = 0x1F40 ∧ fcwLoad 0x001F = 0x005F �
 #guard F80.prem { sig := 0x7FFFFFFFFFFFFFFF, se := 0 } (F80.inf false) false 0x36F ==
   (({ sig := 0xFFFFFFFFFFFFFFFE, se := 0x6000 }, 0, true), FPF.DE ||| FPF.UE)
 
+-- the status word loaded by XRSTOR (the oracle's signal frame), FXRSTOR, FLDENV, FRSTOR: B mirrors ES
+theorem fswLoad_observed : fswLoad 0x3881 0x37E = 0xB881 ∧ fswLoad 0x3881 0x37F = 0x3801 := by decide
+-- FADD m32 with an SNaN operand and a QNaN ST(0): ST(0)'s QNaN with IE (native `x87_snan_memory`)
+#guard F80.arith .add { sig := 0xC000000000000001, se := 0x7FFF }
+  (F80.ofIeee 0x7FBFFFFF 23 8 (quietSNaN := false)).1 64 0x37F == ({ sig := 0xC000000000000001, se := 0x7FFF }, FPF.IE)
+
+/-! ## Integer and SIMD rules from the resumed run (campaigns 035–065) -/
+
+-- 16-bit SHLD/SHRD with a count of 17..31: the 32-bit concatenation, AF set (native `open_questions`)
+#guard shiftDouble true 2 0x5678 0 20 == some (0, Flag.ZF ||| Flag.PF ||| Flag.AF)
+#guard shiftDouble false 2 0x5678 0 31 == some (0, Flag.ZF ||| Flag.PF ||| Flag.AF)
+-- HADDPS with two QNaNs in a pair returns the lower element's (native `sse3_hadd_nan`)
+#guard (Sse.hop false false { lo := 0x7FC000027FC00001, hi := 0x7FC000027FC00001 }
+  { lo := 0x7FC000017FC00002, hi := 0x7FC000017FC00002 } 0x1F80).1 ==
+  { lo := 0x7FC000017FC00001, hi := 0x7FC000027FC00002 }
+
 /-! ## SHA (`X86/Ext/Crypto.lean`) -/
 
 /-- The "NP" SHA instructions with a 66/F2/F3 prefix are #UD before anything else (EPYC 7742, native

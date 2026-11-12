@@ -77,17 +77,19 @@ theorem setXmm_ymmh (r : UInt8) (v : V128) (m : Machine) :
 
 /-! ## VZEROUPPER, VZEROALL -/
 
-/-- An instruction VEX.0F 77 with VEX.pp = 00 and VEX.vvvv = 1111b. -/
+/-- An instruction VEX.0F 77 with VEX.pp = 00 and VEX.vvvv = 1111b (all four bits: `Inst.vvvv3` is the
+decoded bit 3, which the EPYC 7742 checks too). -/
 structure IsVzero (i : Inst) : Prop where
   op : i.op = 0x177
   pp : i.pp = 0
   v : i.vvvv = 0
+  v3 : i.vvvv3 = false
 
 theorem map1_vzero {i : Inst} (h : IsVzero i) :
     Avx.map1 i = some (do start i true; modCpu fun c => { c with sse := { c.sse with
       ymmh := Array.replicate 8 {}, xmm := if i.vexL then Array.replicate 8 {} else c.sse.xmm } }) := by
   have hb : i.byte = 0x77 := by simp [Inst.byte, h.op]; decide
-  simp [Avx.map1, Avx.vzero, hb, h.pp, noV, h.v]
+  simp [Avx.map1, Avx.vzero, hb, h.pp, noV, h.v, h.v3]
 
 theorem vex?_vzero {i : Inst} (h : IsVzero i) :
     Avx.vex? i = Avx.map1 i := by

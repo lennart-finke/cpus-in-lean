@@ -66,6 +66,15 @@ and 13..15 read as 0 and bit 6 reads as 1, as the reset value 0040h has it (AMD 
 (the 287's infinity control) is kept. -/
 @[inline] def fcwLoad (v : UInt32) : UInt16 := ((v &&& 0x1F3F) ||| 0x40).toUInt16
 
+/-- The status word as loaded by FLDENV, FRSTOR, FXRSTOR and XRSTOR: ES (bit 7) and B are cleared when
+no unmasked exception flag is set (otherwise ES is loaded as stored), and B (bit 15) mirrors ES ("for
+8087 compatibility only; it reflects the contents of the ES flag", SDM vol. 1, 8.1.3.1). The EPYC
+7742 shows B set after its XRSTOR of a signal frame whose status word had ES = 1 and B = 0 (native
+`xsave_save`, `xsave_compacted`, 36 cases). -/
+@[inline] def fswLoad (sw cw : UInt16) : UInt16 :=
+  if sw.toUInt32 &&& ~~~cw.toUInt32 &&& 0x3F == 0 then sw &&& 0x7F7F
+  else (sw &&& 0x7FFF) ||| (if sw &&& 0x80 != 0 then 0x8000 else 0)
+
 /-- FERR# asserts IRQ13 (the slave PIC's input 5) while an unmasked exception is pending. -/
 def setFerr (on : Bool) : M Unit := modM fun m => { m with pic1 := m.pic1.setLine 5 on }.syncIntr
 
@@ -208,10 +217,12 @@ def fpWrite (s : UInt8) (off : UInt32) (n : Nat) (v : Nat) : M Unit := do
 def fpMemOperand (i : Inst) : M (F80 × UInt32) := do
   let off ← fpEa i
   match i.op with
-  -- a binary32/64 SNaN operand is converted (quieted, IE) before the NaN rules of the operation apply,
-  -- as QEMU and Bochs do (the SDM does not say which comes first)
-  | 0xD8 => return F80.ofIeee (← fpRead i.seg off 4).toUInt64 23 8
-  | 0xDC => return F80.ofIeee (← fpRead i.seg off 8).toUInt64 52 11
+  -- a binary32/64 SNaN operand stays an SNaN for the NaN rules of the operation (an SNaN and a QNaN
+  -- give the QNaN, with IE): the EPYC 7742 returns ST(0)'s QNaN for FADD/FMUL with an SNaN m32/m64
+  -- (native campaign family open_questions, `x87_snan_memory`, 3 cases; open question F1). QEMU and
+  -- Bochs quiet it first (and then pick the larger significand).
+  | 0xD8 => return F80.ofIeee (← fpRead i.seg off 4).toUInt64 23 8 (quietSNaN := false)
+  | 0xDC => return F80.ofIeee (← fpRead i.seg off 8).toUInt64 52 11 (quietSNaN := false)
   | 0xDA => return (F80.ofInt (sext' 32 (← fpRead i.seg off 4)), 0)
   | _ => return (F80.ofInt (sext' 16 (← fpRead i.seg off 2)), 0)
 
@@ -254,13 +265,10 @@ def fpLoadEnv (opsz : Sz) (real : Bool) (s : UInt8) (off : UInt32) : M Unit := d
       (f 3 + (f 4 / 4096 % hi) * 65536, 0, f 4 % 2048, f 5 + (f 6 / 4096 % hi) * 65536, 0)
     else if opsz == 4 then (f 3, f 4 % 65536, (f 4 / 65536) % 2048, f 5, f 6 % 65536)
     else (f 3, f 4, 0, f 5, f 6)
-  modCpu fun c => { c with fcw := fcwLoad (f 0).toUInt32, fsw := (f 1).toUInt16, fempty := empty,
-                           fip := ip.toUInt32, fcs := cs.toUInt16, fop := op.toUInt16,
+  -- a pending unmasked exception in the loaded status word sets ES and B (`fswLoad`)
+  modCpu fun c => { c with fcw := fcwLoad (f 0).toUInt32, fsw := fswLoad (f 1).toUInt16 (fcwLoad (f 0).toUInt32),
+                           fempty := empty, fip := ip.toUInt32, fcs := cs.toUInt16, fop := op.toUInt16,
                            fdp := dp.toUInt32, fds := ds.toUInt16 }
-  -- a pending unmasked exception in the loaded status word asserts ES/FERR#
-  let c ← cpu
-  if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then
-    modCpu fun c => { c with fsw := c.fsw &&& 0x7F7F }
 
 def fninit : M Unit := do
   modCpu fun c => { c with fcw := 0x37F, fsw := 0, fempty := 0xFF, fip := 0, fcs := 0, fop := 0,

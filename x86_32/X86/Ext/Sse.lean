@@ -63,20 +63,20 @@ memory operand, and for 66 0F 78 with ModRM.reg ≠ 0: APM vol. 3 table A-7, gro
 
 ## Choices where the manuals leave the result undefined
 
-* EXTRQ/INSERTQ (APM vol. 4): bits 127:64 of the destination are "undefined"; the model leaves them
-  unchanged (as QEMU and Bochs do; real Zen 2 behaviour unknown, recorded by the native campaign
-  family `sse4a`). A field length of 0 means 64. If index + length > 64 the result is undefined; the
+* EXTRQ/INSERTQ (APM vol. 4): bits 127:64 of the destination are "undefined"; the EPYC 7742
+  clears them (native campaign family `sse4a`: 288 cases, every form, all lengths and indices), and
+  so does the model (QEMU and Bochs leave them unchanged; the system tests rewrite TCG's lines). A field length of 0 means 64. If index + length > 64 the result is undefined; the
   model computes it with the bits above bit 63 as zeros (EXTRQ: `(v >>> idx) &&& mask`; INSERTQ:
   the mask shifted left, truncated at bit 63), as QEMU and Bochs do.
-* HADDPx with two NaN operands of one addition: the higher-indexed element is the first operand
-  (its NaN is returned; SDM vol. 1, table 4-7 and AMD APM vol. 1, table 4-7: the first source
-  operand's NaN), as both manuals write the addition: SDM HADDPS "DEST[31:0] := SRC1[63:32] +
-  SRC1[31:0]", HADDPD "DEST[63:0] := SRC1[127:64] + SRC1[63:0]"; AMD APM vol. 4 HADDPS "Adds the
-  packed single-precision values in bits [63:32] and bits [31:0] of the first source", HADDPD "in bits
-  [127:64] and bits [63:0]". (Older SDM editions wrote `xmm1[0..31] + xmm1[32..63]`.) The order on
-  real hardware is not documented beyond this and is recorded by the native campaign family
-  `sse3_hadd_nan`. HSUBPx subtracts the higher element from the lower (`x[2j] - x[2j+1]`), so its
-  first operand is the lower element.
+* HADDPx with two NaN operands of one addition: the lower-indexed element is the first operand (its
+  NaN is returned, quieted; SDM vol. 1, table 4-7 and AMD APM vol. 1, table 4-7: the first source
+  operand's NaN), as the EPYC 7742 does (native campaign families `sse3_hadd_nan`, `sse3_arith`,
+  `avx_observe`, `avx_ops`: 72 cases, HADDPS/HADDPD/VHADDPS/VHADDPD, every lane and both lengths; an
+  SNaN in the higher element loses to a QNaN in the lower). The manuals write the addition with the
+  higher element first (SDM HADDPS "DEST[31:0] := SRC1[63:32] + SRC1[31:0]", AMD APM vol. 4 "bits
+  [63:32] and bits [31:0]"), which the model followed until the hardware run; older SDM editions wrote
+  `xmm1[0..31] + xmm1[32..63]`, the hardware's order. HSUBPx subtracts the higher element from the
+  lower (`x[2j] - x[2j+1]`), so its first operand is the lower element too (hardware: identical).
 * DPPS/DPPD: the masked-out products are +0.0 and raise nothing; exceptions are detected per stage
   (multiplies, then the additions in their order, SDM DPPS "Exceptions are determined separately
   for each add and multiply operation, in the order of their execution"), see `statusStaged`.
@@ -101,8 +101,8 @@ def addsub (double : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
     FP.binary (fmt double) (if k % 2 == 0 then .sub else .add) (a.lane bits k) (b.lane bits k) mx)
 
 /-- HADDPx/HSUBPx: the pairs of adjacent lanes of `a`, then of `b`: HSUB `x[2j] - x[2j+1]`, HADD
-`x[2j+1] + x[2j]` (the operand order of the manuals, see the module documentation; it matters only for
-which of two NaN operands is returned). -/
+`x[2j] + x[2j+1]` (the lower element is the first operand, as on the EPYC 7742, see the module
+documentation; it matters only for which of two NaN operands is returned). -/
 def hop (double sub : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
   let bits := if double then 64 else 32
   let n := 128 / bits
@@ -111,7 +111,7 @@ def hop (double sub : Bool) (a b : V128) (mx : UInt64) : V128 × UInt64 :=
     let src := if k < half then a else b
     let j := 2 * (k % half)
     if sub then FP.binary (fmt double) .sub (src.lane bits j) (src.lane bits (j + 1)) mx
-    else FP.binary (fmt double) .add (src.lane bits (j + 1)) (src.lane bits j) mx)
+    else FP.binary (fmt double) .add (src.lane bits j) (src.lane bits (j + 1)) mx)
 
 def movsldup (s : V128) : V128 := V128.ofLanes 32 #[s.lane 32 0, s.lane 32 0, s.lane 32 2, s.lane 32 2]
 def movshdup (s : V128) : V128 := V128.ofLanes 32 #[s.lane 32 1, s.lane 32 1, s.lane 32 3, s.lane 32 3]
@@ -571,25 +571,25 @@ def op0F? (i : Inst) : Option (M Unit) :=
     needReg i
     if i.reg != 0 then ud
     let v ← getXmm i.rm
-    setXmm i.rm { v with lo := extrq v.lo (i.imm &&& 0x3F).toNat (i.imm2 &&& 0x3F).toNat }
+    setXmm i.rm { lo := extrq v.lo (i.imm &&& 0x3F).toNat (i.imm2 &&& 0x3F).toNat, hi := 0 }
   | 0x78, 3 => some do                                          -- INSERTQ xmm, xmm, imm8, imm8
     sseCheck
     needReg i
     let d ← getXmm i.reg
     let s ← getXmm i.rm
-    setXmm i.reg { d with lo := insertq d.lo s.lo (i.imm &&& 0x3F).toNat (i.imm2 &&& 0x3F).toNat }
+    setXmm i.reg { lo := insertq d.lo s.lo (i.imm &&& 0x3F).toNat (i.imm2 &&& 0x3F).toNat, hi := 0 }
   | 0x79, 1 => some do                                          -- EXTRQ xmm, xmm
     sseCheck
     needReg i
     let d ← getXmm i.reg
     let c ← getXmm i.rm
-    setXmm i.reg { d with lo := extrq d.lo (c.lo &&& 0x3F).toNat ((c.lo >>> 8) &&& 0x3F).toNat }
+    setXmm i.reg { lo := extrq d.lo (c.lo &&& 0x3F).toNat ((c.lo >>> 8) &&& 0x3F).toNat, hi := 0 }
   | 0x79, 3 => some do                                          -- INSERTQ xmm, xmm
     sseCheck
     needReg i
     let d ← getXmm i.reg
     let s ← getXmm i.rm
-    setXmm i.reg { d with lo := insertq d.lo s.lo (s.hi &&& 0x3F).toNat ((s.hi >>> 8) &&& 0x3F).toNat }
+    setXmm i.reg { lo := insertq d.lo s.lo (s.hi &&& 0x3F).toNat ((s.hi >>> 8) &&& 0x3F).toNat, hi := 0 }
   | _, _ => none
 
 end Sse
