@@ -69,7 +69,7 @@ grep "^BRIDGE stop" "$TMP/bridge.log" | sed 's/^/   x86-64 model differs (known 
 
 echo "== 7. unit tests (python3 -m unittest discover -s test)"
 python3 -m unittest discover -s test -p 'test_*.py' > "$TMP/unit.log" 2>&1 || fail "unit tests" "$TMP/unit.log"
-echo "   $(grep -E '^Ran ' "$TMP/unit.log"), $(tail -1 "$TMP/unit.log")"
+echo "   $(grep -E '^Ran ' "$TMP/unit.log"), $(grep -E '^(OK|FAILED)' "$TMP/unit.log" | tail -1)"
 
 echo "== 8. boot Linux on the model and run a shell session"
 LOG="$TMP/boot.log"
