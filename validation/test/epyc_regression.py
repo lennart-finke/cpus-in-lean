@@ -1,11 +1,14 @@
 """Replay saved AMD EPYC 7742 observations of the IA-32 native campaign against the current model.
 
 `fixtures/native_epyc_fixes.json` holds a sample (up to 12 per root cause) of the cases of the first hardware
-run of the native bundle (`ia32-epyc-linux`, campaigns 000-034) whose model results differed from the
+run of the native bundle (`ia32-epyc-linux`, campaigns 000-034, and its resumed run, 035-065) whose model results differed from the
 hardware: FCOM/FCOMI results with unmasked exceptions, FLD ST(i) stack-fault precedence, FXTRACT, FSCALE
 massive overflow, FPREM underflow, FST of denormals, F2XM1/FYL2X/FYL2XP1 domain and precision flags,
 the x87 control word and environment images, FXSAVE padding and #AC, MASKMOVDQU #AC, misaligned SHA
-operands, RORX with VEX.vvvv != 1111b, and the undefined flags of LZCNT/TZCNT/BEXTR. Each case is the
+operands, RORX with VEX.vvvv != 1111b, the undefined flags of LZCNT/TZCNT/BEXTR; and from the resumed run
+(campaigns 035-065): EXTRQ/INSERTQ's upper half, HADD's two-NaN order, FSW.B after XRSTOR, #AC of
+VPMASKMOV and gathers, VEX encodings (vvvv[3], VMOVSS/SD loads, VPEXTRD/VPINSRD W1, VPERMQ W0), RDPRU's
+flags, 16-bit SHLD/SHRD counts above 16 and SNaN memory operands of x87 arithmetic. Each case is the
 776-byte input record (bundle format v2) and the hardware's raw output row; the expected state is the hardware's, never
 the model's.
 
