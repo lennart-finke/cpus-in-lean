@@ -3,7 +3,9 @@
 family of fp_cases.FAMILIES, run them on the model with `x86fp --compat` (compatibility mode under
 long mode, as the native oracle runs them) and with `x86fp` (legacy protected mode), check that both
 outputs are complete and well formed, and that the two configurations agree for every case outside the
-`longmode` family (whose instructions are defined to differ there; native_longmode.py).
+`longmode` family (whose instructions are defined to differ there; native_longmode.py). It also checks
+that the oracle could observe every model result (native_fp.model_problems: an exception vector with a
+Linux signal the oracle handles, the instruction pointer inside its code page).
 
   fp_model_check.py [--smoke] [--seed S] [--count N]
 
@@ -21,7 +23,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from fp_cases import cases  # noqa: E402
-from native_fp import rows, KINDS, KIND, SIZE  # noqa: E402
+from native_fp import rows, KINDS, KIND, SIZE, model_problems  # noqa: E402
 
 X86FP = HERE.parent / '.lake' / 'build' / 'bin' / 'x86fp'
 BATCH = 5000
@@ -44,6 +46,7 @@ def main():
     seen = collections.Counter()
     families = collections.Counter()
     differ = collections.Counter()
+    problems = []
     batch, meta = [], []
     total = 0
 
@@ -56,6 +59,7 @@ def main():
             f.flush()
             compat = run(f.name, True, len(batch))
             legacy = run(f.name, False, len(batch))
+        problems.extend(model_problems(meta, compat))
         for m, c, l in zip(meta, compat, legacy):
             families[m['family']] += 1
             if c != l and m['family'] != 'longmode':
@@ -82,6 +86,10 @@ def main():
           f'({families["longmode"]} longmode cases); {time.monotonic() - started:.0f} s')
     for f, n in sorted(differ.items()):
         print(f'  {f}: {n} differ')
+    for p in problems:
+        print(f'  not observable natively: {p["family"]} {p["instruction"]} {p["code"]}: {p["problem"]}')
+    if problems:
+        return 1
     return 1 if bad else 0
 
 
