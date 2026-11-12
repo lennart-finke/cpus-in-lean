@@ -128,8 +128,106 @@ structure SysBState where
   testHooks : Bool := false
   deriving Repr, Inhabited
 
-/-- State of `X86/Ext/Svm.lean` (VM_HSAVE_PA, GIF, ...). -/
+/-- The host's TLB context (ASID 0), held while a guest runs (`SvmState.hostTlb`): the fields of
+`Machine` that form the TLB (`tlbTag`, `tlbVal`, `tlbLarge`, `tlbLargeRegions`, `tlbGlobal`). -/
+structure SvmTlb where
+  tag : Array UInt32 := #[]
+  val : Array UInt64 := #[]
+  large : Bool := false
+  regions : Array UInt32 := #[]
+  global : Bool := false
+  deriving Repr, Inhabited
+
+/-- The host state VMRUN saves and #VMEXIT restores (AMD APM vol. 3 VMRUN: ES/CS/SS/DS, GDTR, IDTR,
+EFER, CR0, CR3, CR4, RFLAGS, RIP, RSP, RAX; "processor implementations may store only part or none
+of host state in the memory area pointed to by VM_HSAVE_PA MSR and may store some or all host state
+in hidden on-chip memory", 15.5.1): the model keeps all of it here, with the segment caches, DR6/DR7
+and the host SPEC_CTRL (`Svm.lean`). -/
+structure SvmHost where
+  es : SegReg := {}
+  cs : SegReg := {}
+  ss : SegReg := {}
+  ds : SegReg := {}
+  gdtBase : UInt32 := 0
+  gdtLimit : UInt32 := 0
+  idtBase : UInt32 := 0
+  idtLimit : UInt32 := 0
+  efer : UInt32 := 0
+  cr0 : UInt32 := 0
+  cr3 : UInt32 := 0
+  cr4 : UInt32 := 0
+  eflags : UInt32 := 2
+  eip : UInt32 := 0
+  esp : UInt32 := 0
+  eax : UInt32 := 0
+  dr6 : UInt32 := 0
+  dr7 : UInt32 := 0
+  specCtrl : UInt64 := 0
+  deriving Repr, Inhabited, BEq
+
+/-- State of `X86/Ext/Svm.lean` and `X86/Ext/SvmBase.lean` (AMD APM vol. 2, chapter 15). Part of
+`Cpu`, so every CPU of `MpMachine` has its own.
+
+* MSRs: VM_CR (C001_0114h; `vmCr`), VM_HSAVE_PA (C001_0117h), SVM_KEY (C001_0118h, write-only),
+  TSC_RATIO (C000_0104h, reset 1.0 = 1 << 32).
+* `gif`: the global interrupt flag (reset 1). `guest`: the CPU is in guest mode (between VMRUN and
+  #VMEXIT); `vmcb` the guest's VMCB physical address.
+* The control area as loaded by VMRUN: the intercept vectors (`icr` 000h, `idr` 004h, `iexc` 008h,
+  `i3` 00Ch, `i4` 010h, `i5` 014h), IOPM/MSRPM base, TSC_OFFSET, ASID, the virtual-interrupt
+  controls of 060h (`vTpr` .. `vVec`), NP_ENABLE with nCR3 and the host paging mode for the nested
+  tables (`nMode`: 0 32-bit, 1 32-bit with PSE, 2 PAE, 3 4-level; `nNxe` host EFER.NXE), the
+  PAUSE filter count/threshold and the internal pause counter, VMSAVE/VMLOAD virtualization enable.
+  #VMEXIT clears them (the intercepts read as zero in host mode).
+* `hostIf`: host EFLAGS.IF at VMRUN, which masks physical interrupts in a guest with
+  V_INTR_MASKING (15.21.1).
+* `host`: the saved host state; `hostTlb`: the host's TLB entries while a guest runs (VMRUN sets
+  them aside, #VMEXIT reinstates them; a guest always starts with an empty TLB). -/
 structure SvmState where
+  vmCr : UInt64 := 0
+  hsavePa : UInt64 := 0
+  svmKey : UInt64 := 0
+  tscRatio : UInt64 := 0x100000000
+  gif : Bool := true
+  guest : Bool := false
+  vmcb : UInt64 := 0
+  icr : UInt32 := 0
+  idr : UInt32 := 0
+  iexc : UInt32 := 0
+  i3 : UInt32 := 0
+  i4 : UInt32 := 0
+  i5 : UInt32 := 0
+  iopm : UInt64 := 0
+  msrpm : UInt64 := 0
+  tscOffset : UInt64 := 0
+  asid : UInt32 := 0
+  vTpr : UInt32 := 0
+  vIrq : Bool := false
+  vGif : Bool := false
+  vPrio : UInt32 := 0
+  vIgnTpr : Bool := false
+  vIntrMasking : Bool := false
+  vGifEn : Bool := false
+  vVec : UInt32 := 0
+  hostIf : Bool := false
+  np : Bool := false
+  ncr3 : UInt64 := 0
+  nMode : UInt8 := 0
+  nNxe : Bool := false
+  vmsaveVirt : Bool := false
+  pauseCount : UInt32 := 0
+  pauseFilter : UInt32 := 0
+  pauseThresh : UInt32 := 0
+  lastPause : UInt64 := 0
+  host : SvmHost := {}
+  hostTlb : SvmTlb := {}
+  /-- The host's PAT while a nested-paging guest runs with gPAT in the PAT register (15.25.4). -/
+  hostPat : UInt64 := 0
+  /-- EVENTINJ as loaded by VMRUN, taken before the first guest instruction (`Step`); `injNrip` the
+  VMCB nRIP, the return address of an injected software interrupt (15.20). -/
+  inject : UInt64 := 0
+  injNrip : UInt32 := 0
+  /-- IGNNE MSR (C001_0115h) bit 0. -/
+  ignne : UInt64 := 0
   deriving Repr, Inhabited
 
 /-- State of `X86/Ext/LongMode.lean` and `X86/Ext/LongModeBase.lean` (long mode; see the module
@@ -368,6 +466,17 @@ def AC : UInt8 := 17
 def XM : UInt8 := 19
 end Vec
 
+/-- A #VMEXIT raised in guest mode (AMD APM vol. 2, 15.6, 15.7; `X86/Ext/Svm.lean`): EXITCODE,
+EXITINFO1, EXITINFO2, the next sequential RIP (0 where the APM does not save one, 15.7.1) and
+EXITINTINFO (the event the guest was delivering through the IDT, 15.7.2; 0 if none). -/
+structure VmExit where
+  code : UInt64
+  info1 : UInt64 := 0
+  info2 : UInt64 := 0
+  nrip : UInt64 := 0
+  intInfo : UInt64 := 0
+  deriving Repr, Inhabited, BEq
+
 /-- Abnormal termination of an instruction. -/
 inductive Fault where
   /-- A processor exception; `err` is the pushed error code, if any; `addr` is the CR2 value for #PF. -/
@@ -376,6 +485,9 @@ inductive Fault where
   | shutdown (why : String)
   /-- Behaviour outside the scope of this model; stops the simulation. -/
   | unsupported (what : String)
+  /-- An intercept in guest mode: the instruction (or event delivery) ends with a #VMEXIT to the host
+  (`Svm.vmexit`); the guest state is the one before the instruction, as for a fault. -/
+  | vmexit (e : VmExit)
   deriving Repr, Inhabited
 
 end X86

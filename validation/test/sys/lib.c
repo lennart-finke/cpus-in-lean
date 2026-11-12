@@ -167,8 +167,15 @@ void sys_main(void) {
 	}
 	if (param("smp", 0)) {   /* the SMP transcript (second run of run.sh) */
 		test_smp();
+		test_svm_smp();   /* SVM: a guest on the AP while the BSP sends it IPIs (t_svm.c) */
 		kputs("MODEL-ONLY\n");
 		test_smp_model();
+		sys_exit();
+	}
+	if (param("svm", 0)) {   /* SVM workstream: only the SVM tests (development runs) */
+		test_svm();
+		kputs("MODEL-ONLY\n");
+		test_svm_model();
 		sys_exit();
 	}
 	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
@@ -208,6 +215,7 @@ void sys_main(void) {
 	test_x2apic();
 	test_avx2();
 	test_review();
+	test_svm();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -230,5 +238,6 @@ void sys_main(void) {
 	test_x2apic_model();
 	test_avx2_model();
 	test_review_model();
+	test_svm_model();
 	sys_exit();
 }

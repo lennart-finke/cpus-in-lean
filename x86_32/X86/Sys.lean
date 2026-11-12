@@ -1,4 +1,5 @@
 import X86.Ext.LongModeBase
+import X86.Ext.SvmBase
 /-!
 # System architecture
 
@@ -183,7 +184,8 @@ def tsLoadSeg (s : UInt8) (sel : UInt16) (cpl ext : UInt32) : M Unit := do
 /-- Switch to the task whose (non-busy for JMP/CALL/INT, busy for IRET) TSS descriptor `d` at
 linear address `daddr` is selected by `sel`. EIP must hold the old task's resume address. `ext`
 is the EXT bit for error codes of faults raised by the switch. -/
-def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext : UInt32 := 0) : M Unit := do
+def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext : UInt32 := 0)
+    (errc : Option UInt32 := none) : M Unit := do
   let c ← cpu
   let err := (sel.toUInt32 &&& 0xFFFC) ||| ext
   let t32 := d.sysType &&& 8 != 0
@@ -193,6 +195,9 @@ def taskSwitch (sel : UInt16) (d : Desc) (daddr : UInt32) (src : TaskSrc) (ext :
   let o32 := otr.typ &&& 8 != 0
   if otr.limit < (if o32 then 0x67 else 0x2B) then
     exc Vec.TS (some ((otr.sel.toUInt32 &&& 0xFFFC) ||| ext))
+  -- SVM task-switch intercept: after the incoming TSS (and task gate) checks, before the switch
+  -- (AMD APM vol. 2, 15.14.1); `errc` the error code the new task would get
+  Svm.taskSwitch sel (src == .iret) (src == .jmp) errc
   -- the new task's state: read once before modifying anything (so that its faults leave the old task
   -- intact) and again after the old state has been saved (SDM 7.3 steps 8 and 12: an IRET to the
   -- current task itself loads the state it has just saved)
@@ -520,7 +525,7 @@ def deliver (vec : UInt8) (err : Option UInt32) (soft ext : Bool) : M Unit := do
   if gtype == 0x05 then
     -- task gate: switch tasks (nesting), then push the error code on the new task's stack
     let (tsel, td, taddr) ← taskGateTss { lo, hi } extB
-    taskSwitch tsel td taddr .int extB
+    taskSwitch tsel td taddr .int extB err
     if let some e := err then push (if td.sysType &&& 8 != 0 then 4 else 2) e
     return
   let g32 := gtype &&& 8 != 0
@@ -754,8 +759,9 @@ FE90h, EFER FED0h, revision FEFCh, SMBASE FF00h, CR4 FF48h, CR3 FF50h, CR0 FF58h
 FF68h, RFLAGS FF70h, RIP FF78h, R15..R8 FF80h..FFB8h, RDI, RSI, RBP, RSP, RBX, RDX, RCX, RAX FFC0h..FFF8h.
 The attribute word holds descriptor bits 47:40 and 55:52 as `SegReg.attr` (the APM does not define
 its layout; QEMU's AMD64 map uses this one). Not saved (10.2): CR2, CR8, DR0–DR3, x87/SSE state,
-MSRs. The I/O-restart fields, the auto-halt restart byte and the SVM fields are written as 0 (the
-model's SMIs come from an OUT that has completed, and HLT is not restarted). The model keeps no
+MSRs. The I/O-restart fields and the auto-halt restart byte are written as 0 (the model's SMIs come
+from an OUT that has completed, and HLT is not restarted); the SVM fields (SVM Guest, VMCB address,
+virtual interrupt, guest PAT, host EFER/CR4/CR0, nCR3) as `Svm.smmSave` says. The model keeps no
 high halves of the general registers in compatibility mode: RAX..R15 are saved zero-extended, except
 R11 (`LongModeState.r11`) and RIP/RSP (`ripHi`, `rspHi`). QEMU's qemu-system-i386, which has no long
 mode, uses Intel's 32-bit map instead; `qemu-system-x86_64` with a long-mode CPU uses the AMD64 map
@@ -797,8 +803,8 @@ def smmEnter : M Unit := do
   -- I/O restart RIP/RCX/RSI/RDI, I/O restart dword and bytes, auto-halt: none
   for k in [0:12] do w (0x7EA0 + 4 * k.toUInt32) 0
   w8 0x7ED0 c.efer.toUInt64
-  -- SVM guest fields (no guest is interrupted)
-  for k in [0:8] do w (0x7ED8 + 4 * k.toUInt32) 0
+  -- SVM fields: guest mode, VMCB, virtual interrupt, nested-paging context (`Svm.smmSave`, 15.22)
+  for (o, v) in Svm.smmSave c do w8 o v
   w 0x7EFC smmRevision
   w 0x7F00 c.smbase
   w8 0x7F48 c.cr4.toUInt64
@@ -821,8 +827,10 @@ def smmEnter : M Unit := do
     sysbx := { c.sysbx with smmNmiBlocked := c.sysbx.nmiBlocked, nmiBlocked := true },
     eflags := 2, eip := 0x8000,
     cr0 := c.cr0 &&& ~~~(CR0.PE ||| CR0.EM ||| CR0.TS ||| CR0.PG), cr4 := 0, dr7 := 0x400, bpOn := false,
-    -- EFER = 0 (table 10-3), so LMA = 0: SMM code runs in legacy real or protected mode
-    efer := 0,
+    -- EFER = 0 (table 10-3), so LMA = 0: SMM code runs in legacy real or protected mode; SVME is kept,
+    -- as RSM cannot change it (vol. 3 RSM: "RSM cannot modify EFER.SVME"): the interrupted host (or
+    -- guest, 15.22) gets its SVME back
+    efer := c.efer &&& EFER.SVME,
     cs := flat (c.smbase >>> 4).toUInt16 c.smbase,
     ds := flat 0 0, es := flat 0 0, ss := flat 0 0, fs := flat 0 0, gs := flat 0 0,
     lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none } }

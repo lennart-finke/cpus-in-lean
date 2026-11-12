@@ -38,8 +38,7 @@ NOT_YET_IMPLEMENTED = [
     # --- Crypto ---
     # --- Xsave ---
     # --- Avx2 --- (all implemented: see IMPLEMENTED)
-    # --- Svm ---
-    F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3)),
+    # --- Svm --- (all implemented: see IMPLEMENTED)
 ]
 
 # Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
@@ -122,6 +121,11 @@ IMPLEMENTED = [
     F('avx2', 'Avx2', 'vex', 3, 1, [0x0E, 0x0F, 0x42], None, 1),     # VPBLENDW, VPALIGNR, VMPSADBW ymm
     F('avx2', 'Avx2', 'vex', 3, 1, [0x4C], None, 1, 0),              # VPBLENDVB ymm
     F('avx2', 'Avx2', 'vex', 3, 1, [0x38, 0x39, 0x46], None, 1, 0),  # VINSERTI128, VEXTRACTI128, VPERM2I128
+    # --- Svm (generator: test/gen_svm.py): 0F 01 D8..DF, VMRUN, VMMCALL, VMLOAD, VMSAVE, STGI, CLGI,
+    # SKINIT, INVLPGA (any mandatory prefix: none changes them on Zen 2 outside an SEV-ES guest)
+    F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3, (0, 1, 2, 3, 4, 5))),
+    F('skinit', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3, (6,))),
+    F('svm', 'Svm', 'legacy', 1, None, [0x01], ('reg', 3, (7,))),
     # --- Sys (generator: test/gen_sys.py) ---
     F('syscall', 'Sys', 'legacy', 1, None, [0x05, 0x07]),
     F('sep', 'Sys', 'legacy', 1, None, [0x34, 0x35]),

@@ -314,6 +314,7 @@ def runVector (v : ByteArray) (o : Nat) (nativeMemory : Bool := false) (v2 : Boo
     | some (.exc vv e a) => (vv.toUInt32, e.getD 0, if vv == Vec.PF then a else 0)
     | some (.shutdown _) => (0xFFFF, 0, 0)
     | some (.unsupported _) => (0xFFFE, 0, 0)
+    | some (.vmexit _) => (0xFFFD, 0, 0)   -- SVM: never outside guest mode (the harness runs none)
   let mut pageHashes : List UInt32 := []
   if nativeMemory then
     for page in [0:2] do

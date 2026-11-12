@@ -117,12 +117,19 @@ writes set TPR to `v << 4`, which is how CR8 and the APIC's TPR alias (QEMU does
 def movCr8 (i : Inst) : M Unit := do
   if i.reg != 0 then ud
   cplIs0
+  -- SVM (AMD APM vol. 2, 15.21.2): the CR8 intercepts after the exception checks; in a guest with
+  -- V_INTR_MASKING reads return V_TPR and writes set only V_TPR, without it writes set both
   if i.op == 0x120 then
-    setReg i.rm (((← getM).apic.tpr >>> 4) &&& 0xF)
+    Svm.crRead 8 (Svm.movCrInfo i.rm)
+    let c ← cpu
+    if Svm.vTprOn c then setReg i.rm c.svmx.vTpr
+    else setReg i.rm (((← getM).apic.tpr >>> 4) &&& 0xF)
   else
     let v ← getReg i.rm
     if v &&& ~~~(0xF : UInt32) != 0 then gp 0
-    modM fun m => m.apicWrite 0x80 (v <<< 4)
+    Svm.crWrite 8 (Svm.movCrInfo i.rm)
+    if !Svm.vTprOn (← cpu) then modM fun m => m.apicWrite 0x80 (v <<< 4)
+    Svm.setVTpr v
 
 def op0F? (i : Inst) : Option (M Unit) :=
   match i.op with

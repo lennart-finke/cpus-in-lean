@@ -67,7 +67,7 @@ inductive Feature where
   | clzero | irPerf | xsaveErPtr | rdpru | mcommit | wbnoinvd | ibpb | ibrs | stibp | stibpAlwaysOn | ppin
   | ssbd | ext8Misc
   -- CPUID 8000_000A (SVM revision and features) and 8000_001F (memory encryption)
-  | svmFeatures | memEncrypt
+  | svmFeatures | svmUnimpl | memEncrypt
   deriving DecidableEq, Repr, Inhabited
 
 namespace Feature
@@ -87,7 +87,7 @@ def all : List Feature := [
   syscall, nx, mmxext, ffxsr, page1gb, rdtscp, lm,
   invariantTsc, powerMgmt, mcaRecovery,
   clzero, irPerf, xsaveErPtr, rdpru, mcommit, wbnoinvd, ibpb, ibrs, stibp, stibpAlwaysOn, ppin, ssbd, ext8Misc,
-  svmFeatures, memEncrypt]
+  svmFeatures, svmUnimpl, memEncrypt]
 
 /-- Where CPUID reports the feature: leaf, subleaf, register (0 EAX, 1 EBX, 2 ECX, 3 EDX), bits. -/
 def loc : Feature → UInt32 × UInt32 × Nat × UInt32
@@ -145,9 +145,13 @@ def loc : Feature → UInt32 × UInt32 × Nat × UInt32
   -- IbrsPreferred, 19 IbrsSameMode (APM vol. 3 rev. 3.33, E.4.7); 6 and 10 are reserved there
   -- (UNCONFIRMED)
   | ext8Misc => (0x80000008, 0, 1, 0x000C2440)
-  -- SVM feature identifiers 8000_000A:EDX (NP, LbrVirt, SVML, NRIPS, TscRateMsr, VmcbClean,
-  -- FlushByAsid, DecodeAssists, PauseFilter, ... as in the dump); the whole leaf is gated by `svm`
-  | svmFeatures => (0x8000000A, 0, 3, 0x0013BCFF)
+  -- SVM feature identifiers 8000_000A:EDX of the dump (0x0013BCFF; APM vol. 3, E.4.9); the whole
+  -- leaf is gated by `svm`. Implemented (X86/Ext/Svm.lean): NP 0, SVML 2, NRIPS 3, TscRateMsr 4,
+  -- VmcbClean 5, FlushByAsid 6, DecodeAssists 7, PauseFilter 10, PauseFilterThreshold 12,
+  -- VMSAVEvirt 15, VGIF 16, SpecCtrl 20
+  | svmFeatures => (0x8000000A, 0, 3, 0x001194FD)
+  -- not implemented: LbrVirt 1, bit 11 (reserved in the APM), AVIC 13, GMET 17
+  | svmUnimpl => (0x8000000A, 0, 3, 0x00022802)
   -- SME/SEV capabilities 8000_001F:EAX; the whole leaf is gated by `memEncrypt`
   | memEncrypt => (0x8000001F, 0, 0, 0x0001000F)
 
@@ -274,9 +278,10 @@ def implemented : Feature → Bool
   | .topoExt => true
   | .extApicSpace => true
   -- X86/Ext/Svm.lean
-  | .svm => false
-  | .svmFeatures => false
-  | .skinit => false
+  | .svm => true
+  | .svmFeatures => true
+  | .svmUnimpl => false
+  | .skinit => true
   -- integration (no new semantics needed; MMX extensions are part of X86/Simd.lean)
   | .mmxext => false
   -- not planned (Zen 2 has them; outside the model's scope)

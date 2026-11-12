@@ -72,7 +72,8 @@ theorem bind_ok_last {α β : Type} {x : M α} {f : α → M β} {s s' : Machine
 
 /-- After MOV CR0 (when it completes) the invariant holds, whatever the state before: the processor
 sets EFER.LMA from LME and the new PG. -/
-theorem movToCr0_lma {v : UInt32} {m m' : Machine} (h : movToCr 0 v m = .ok () m') : lmaInv m'.cpu := by
+theorem movToCr0_lma {v : UInt32} {g : UInt8} {m m' : Machine} (h : movToCr 0 v g m = .ok () m') :
+    lmaInv m'.cpu := by
   simp only [movToCr] at h
   obtain ⟨_, _, h⟩ := bind_ok_last h
   obtain ⟨_, _, h⟩ := bind_ok_last h
@@ -175,13 +176,15 @@ theorem walkLong_check {lin : UInt64} {w u f i : Bool} {m : Machine} {r : UInt64
     · rename_i hc
       exact ⟨e4, e3, e2, e1, by simpa using hc⟩
 
-/-- With CR4.PAE and EFER.LMA, the page walk is the 4-level walk. -/
+/-- With CR4.PAE and EFER.LMA (and outside an SVM guest with nested paging, whose walk is the guest
+walk through the nested tables, `gWalk`), the page walk is the 4-level walk. -/
 theorem walk_long {lin : UInt32} {w u f i : Bool} {m : Machine} (hp : m.cpu.cr4 &&& CR4.PAE ≠ 0)
-    (hl : m.cpu.efer &&& EFER.LMA ≠ 0) : walk lin w u f i m = walkLongTlb lin w u f i m := by
+    (hl : m.cpu.efer &&& EFER.LMA ≠ 0) (hn : m.cpu.npOn = false) :
+    walk lin w u f i m = walkLongTlb lin w u f i m := by
   have h1 : (m.cpu.cr4 &&& CR4.PAE != 0) = true := by simpa using hp
   have h2 : (m.cpu.efer &&& EFER.LMA != 0) = true := by simpa using hl
   unfold walk
-  rw [if_pos h1, if_pos h2]
+  rw [if_neg (by simp [hn]), if_pos h1, if_pos h2]
 
 /-! ## The 64-bit boundary -/
 

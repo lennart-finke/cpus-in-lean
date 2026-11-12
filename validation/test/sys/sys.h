@@ -157,5 +157,9 @@ void test_avx2_model(void);
 /* regression tests for review findings (t_review.c) */
 void test_review(void);
 void test_review_model(void);
+/* SVM (t_svm.c) */
+void test_svm(void);
+void test_svm_model(void);
+void test_svm_smp(void);
 
 #endif

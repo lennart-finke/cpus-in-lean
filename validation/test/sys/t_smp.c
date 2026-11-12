@@ -262,6 +262,19 @@ static void start_b2b(const char *name, int kind) {
 	kprintf("smp.b2b.%s: started=%d ready=%d esr=%x\n", name, ap_gen == gen, ap_ready, LR(0x280));
 }
 
+/* Start the AP into ap_main again and wait until it is ready: for a test that borrowed the AP and left
+   it in the INIT state or elsewhere (t_svm.c's test_svm_smp). */
+void smp_restart_ap(void) {
+	u32 gen = ap_gen + 1;
+	ap_ready = 0;
+	ipi(1, 0xC500);
+	ipi(1, 0x8500);
+	ipi(1, 0x600 | AP_VEC);
+	wait_until(&ap_gen, gen);
+	wait_until(&ap_ready, 1);
+	LR(0x280) = 0;
+}
+
 void test_smp(void) {
 	trap_hook = smp_hook;
 	outb(0x21, 0xFF); outb(0xA1, 0xFF);
@@ -497,7 +510,7 @@ void test_smp_model(void) {
 	LR(0x80) = 0x80;
 	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0x8F);
 	ipi(0x03, 0x900 | 0x95);
-	spin(20000);
+	wait_ap_n(1);   /* the AP accepts (not a fixed spin: the AP may not run within it at a large quantum) */
 	logs("smpm.lowpri.subclass");
 	LR(0x80) = 0;
 	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0);

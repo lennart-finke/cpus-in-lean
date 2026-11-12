@@ -54,15 +54,79 @@ def raiseExcF : Nat → Machine → UInt8 → Option UInt32 → Bool → Bool �
         | .shutdown => { m with fatal := some (.shutdown s!"triple fault ({repr f})") }
       | f => { m with fatal := some f }
 
-/-- Deliver an exception (`intr = false`) or an external interrupt or NMI (`intr = true`). -/
+/-! ## SVM guest mode: exceptions, intercepts and EXITINTINFO (owner: the SVM workstream)
+
+AMD APM vol. 2, 15.7.2, 15.7.3, 15.12, 15.14.3. In guest mode (`Cpu.svmOn`) an event the guest
+delivers through its IDT goes through `raiseG` instead of `raiseExcF`: an exception (type 3) is
+first checked for its exception intercept (unless the caller has done so, `chk = false`); a #VMEXIT
+during the delivery records the event in EXITINTINFO (vector, type: 0 INTR, 2 NMI, 3 exception, 4
+software interrupt, the error code); an exception raised by the delivery is checked for its intercept
+before it is combined with the event (#VMEXIT with this event in EXITINTINFO), then combined as by
+`SysB.onSecond`; a resulting #DF is checked for the #DF intercept, a triple fault for the shutdown
+intercept (#VMEXIT(SHUTDOWN), 7Fh). `soft = some r`: an injected software interrupt or INT3/INTO-like
+exception, delivered with return address `r` and the gate DPL check. -/
+def raiseG : Nat → Machine → UInt8 → Option UInt32 → Bool → UInt64 → Bool → Option UInt32 → Machine
+  | 0, m, vec, _, _, _, _, _ =>
+    if Svm.bit m.cpu.svmx.i3 31 then Svm.vmexitM m { code := 0x7F }
+    else { m with fatal := some (.shutdown s!"exception loop delivering vector {vec}") }
+  | fuel + 1, m, vec, err, ext, ty, chk, soft =>
+    if chk && ty == 3 && Svm.excIntercepted m.cpu vec then
+      Svm.vmexitM m { code := 0x40 + vec.toUInt64, info1 := (err.getD 0).toUInt64 }
+    else
+    let m := if vec == Vec.DB && ty == 3 then { m with cpu := { m.cpu with dr7 := m.cpu.dr7 &&& ~~~0x2000 } } else m
+    let info := Svm.intInfo vec ty err
+    let saved := m.cpu
+    let m' := match soft with
+      | some r => { m with keepCpu := false, cpu := { m.cpu with eip := r } }
+      | none => { m with keepCpu := false }
+    match deliver vec err soft.isSome ext m' with
+    | .ok _ m => { m with keepCpu := false }
+    | .error f m =>
+      let keep := m.keepCpu
+      let m := if keep then { m with keepCpu := false } else { m with keepCpu := false, cpu := saved }
+      match f with
+      | .vmexit e =>
+        Svm.vmexitM m (if e.intInfo &&& 0x80000000 != 0 then e else { e with intInfo := info })
+      | .exc v e a =>
+        if Svm.excIntercepted m.cpu v then
+          Svm.vmexitM m { code := 0x40 + v.toUInt64, info1 := (e.getD 0).toUInt64,
+                          info2 := if v == Vec.PF then a.toUInt64 else 0, intInfo := info }
+        else
+        match SysB.onSecond (if ty == 3 then SysB.excClass vec else .benign) v with
+        | .serial => raiseG fuel (faultState m v a) v e true 3 false none
+        | .doubleFault =>
+          let m := if v == Vec.PF then { m with cpu := { m.cpu with cr2 := a } } else m
+          if Svm.excIntercepted m.cpu Vec.DF then Svm.vmexitM m { code := 0x48, intInfo := info }
+          else raiseG fuel m Vec.DF (some 0) true 3 false none
+        | .shutdown =>
+          if Svm.bit m.cpu.svmx.i3 31 then Svm.vmexitM m { code := 0x7F, intInfo := info }
+          else { m with fatal := some (.shutdown s!"triple fault ({repr f})") }
+      | f => { m with fatal := some f }
+
+/-- Deliver an exception (`intr = false`) or an external interrupt or NMI (`intr = true`). In SVM
+guest mode through `raiseG` (exceptions checked for their intercept). -/
 @[inline] def raiseExc (m : Machine) (vec : UInt8) (err : Option UInt32) (ext : Bool) (intr : Bool := false) : Machine :=
-  raiseExcF 4 m vec err ext intr
+  if m.cpu.svmOn then raiseG 4 m vec err ext (if !intr then 3 else if vec == Vec.NMI then 2 else 0) (!intr) none
+  else raiseExcF 4 m vec err ext intr
+
+/-- The fault of a guest instruction (SVM): the exception intercept before the exception writes
+any state except DR6 for #DB (15.12.2: "both #DB faults and traps are permitted to write DR6 and
+DR7 before the intercept"; #PF: "tested before CR2 is written"; EXITINFO1 the error code,
+EXITINFO2 the #PF address), then `raiseG`. -/
+def handleFaultG (m : Machine) (vec : UInt8) (err : Option UInt32) (addr : UInt32) : Machine :=
+  if Svm.excIntercepted m.cpu vec then
+    let m := if vec == Vec.DB then { m with cpu := { m.cpu with dr6 := m.cpu.dr6 ||| addr } } else m
+    Svm.vmexitM m { code := 0x40 + vec.toUInt64, info1 := (err.getD 0).toUInt64,
+                    info2 := if vec == Vec.PF then addr.toUInt64 else 0 }
+  else raiseG 4 (faultState m vec addr) vec err true 3 false none
 
 /-- Deliver the fault of an instruction (see `faultState`); faults are external to the program for
-the EXT bit of nested faults. -/
+the EXT bit of nested faults. An intercept of an SVM guest (`Fault.vmexit`) is the #VMEXIT. -/
 def handleFault (m : Machine) (f : Fault) : Machine :=
   match f with
-  | .exc vec err addr => raiseExc (faultState m vec addr) vec err true
+  | .exc vec err addr =>
+    if m.cpu.svmOn then handleFaultG m vec err addr else raiseExc (faultState m vec addr) vec err true
+  | .vmexit e => Svm.vmexitM m e
   | f => { m with fatal := some f }
 
 /-- LOCK is only permitted on read-modify-write instructions with a memory destination (and, with
@@ -144,7 +208,10 @@ def execInstr : M Inst := fun m =>
 is entered with TF clear) and MOV/POP SS (the trap is deferred past the next instruction). -/
 def noStepTrap (i : Inst) : Bool :=
   i.op == 0xCC || i.op == 0xCD || i.op == 0xCE || i.op == 0xF1 ||
-  i.op == 0x17 || (i.op == 0x8E && i.reg == SegN.SS)
+  i.op == 0x17 || (i.op == 0x8E && i.reg == SegN.SS) ||
+  -- VMRUN: the host's trace trap follows the #VMEXIT (`Svm.exitToHost`); SKINIT honours no trace
+  -- trap (AMD APM vol. 2, 15.5.1, 15.27.6)
+  (i.op == 0x101 && !i.vex && (i.modrm == 0xD8 || i.modrm == 0xDE))
 
 /-- Debug trap: #DB with the given DR6 status bits (B0..B3 replace the previous breakpoint bits). -/
 def dbTrap (m : Machine) (bits : UInt32) : Machine :=
@@ -206,8 +273,13 @@ it follows:
 | DR0–DR3, DR6, DR7 | 0, FFFF_0FF0h, 400h (breakpoints off: `bpOn`) | DR0–DR3, DR6, DR7 |
 | TSC (`sysx.tscOff`) | not modified | Time-Stamp Counter |
 | performance counters (`gprx.perfCtr`/`perfEvtSel`, MPERF/APERF, IRPerf `sysbx.irBase`/`notRetired`) | not modified | Performance-Monitor Resources |
-| MTRRs, PAT, MCA banks, SYSCFG and the other MSRs (`msrs`), SYSENTER/STAR/LSTAR/CSTAR/SFMASK (`sysx`), TSC_AUX, HWCR bits (`gprx`, `sysbx.hwcr`), KernelGSbase (`lmx.kernelGsBase`), SVM MSRs (`svmx`), PATCH_LEVEL | not modified | Memory-Type Range Registers, Machine-Check Registers, Other Model-Specific Registers |
+| MTRRs, PAT, MCA banks, SYSCFG and the other MSRs (`msrs`), SYSENTER/STAR/LSTAR/CSTAR/SFMASK (`sysx`), TSC_AUX, HWCR bits (`gprx`, `sysbx.hwcr`), KernelGSbase (`lmx.kernelGsBase`), VM_HSAVE_PA, SVM_KEY, TSC_RATIO, IGNNE (`svmx`), PATCH_LEVEL | not modified | Memory-Type Range Registers, Machine-Check Registers, Other Model-Specific Registers |
 | SMBASE (`smbase`) | not modified | SMBASE |
+| EFER.SVME | 0 (with EFER) | EFER |
+| VM_CR (`svmx.vmCr`) | SVMDIS cleared when LOCK = 0, the other bits (LOCK, R_INIT, DIS_A20M, DPD) not modified | APM vol. 2, 15.30.1 ("cleared by INIT when LOCK is cleared to 0") |
+| GIF (`svmx.gif`) | 1 | no row (open): the model sets it as at RESET, so the started CPU takes interrupts; QEMU's `do_cpu_init` likewise sets GIF |
+| guest mode, the cached VMCB controls, host save area, pending injection, nested-paging state, host TLB stash (`svmx`) | ended / discarded (`SvmState.afterInit`): the CPU restarts at the reset vector as the host | no row: INIT in a guest is taken only when not intercepted (15.13.4, table 15-12); without the INIT intercept it resets the CPU, so no guest state survives |
+| INIT itself with VM_CR.R_INIT = 1 | not an INIT: #SX (vector 30, error code 1) instead (`initEvent`) | APM vol. 2, 15.28 |
 | local APIC | reset except base, AE, EXTD and ID (`Apic.reset` in `Machine.initCpu`) | APIC "Enabled, see Table 16-2"; §16.10 |
 | TLB (`Machine.tlb*`) and PAE PDPTE registers (`pdpte`) | not modified (the table: caches and TLBs not modified by INIT; with CR0.PG = 0 neither is used, and enabling paging reloads them) | Instruction and Data TLBs |
 | halted, waiting for STARTUP (`halted`, `smpx.waitSipi`) | an application processor waits for STARTUP, the BSP runs | §16.5 |
@@ -230,7 +302,7 @@ def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
     gdtBase := 0, gdtLimit := 0xFFFF, idtBase := 0, idtLimit := 0xFFFF,
     cr0 := 0x10 ||| (c.cr0 &&& (CR0.CD ||| CR0.NW)), cr2 := 0, cr3 := 0, cr4 := 0,
     dr0 := 0, dr1 := 0, dr2 := 0, dr3 := 0, dr6 := 0xFFFF0FF0, dr7 := 0x400, bpOn := false,
-    efer := 0, halted := !bsp, shadow := false,
+    efer := 0, halted := !bsp, shadow := false, svmx := c.svmx.afterInit,
     -- long mode: RIP/RSP bits 63:32 = 0, R8–R15 = 0 (R11 is the one the model keeps), FS/GS base
     -- 63:32 = 0 (the segment loads clear the 64-bit bases); KernelGSbase (an MSR) is not modified
     lmx := { c.lmx with ripHi := 0, rspHi := 0, r11 := 0, fsBase := none, gsBase := none, entry := "" },
@@ -266,10 +338,21 @@ def Machine.startCpu (m : Machine) (v : UInt32) : Machine :=
 @[inline] def Machine.takeNmi (m : Machine) : Machine :=
   if m.apic.nmi then { m with apic := { m.apic with nmi := false }, cpu := m.cpu.latchNmi }.syncXev else m
 
-/-- The slow path of `smpEvent?`. -/
+/-- INIT taken at an instruction boundary with GIF = 1 (AMD APM vol. 2, table 15-12): in a guest
+with the INIT intercept a #VMEXIT(INIT) (63h) that leaves INIT pending (GIF is 0 after it); otherwise
+with VM_CR.R_INIT the INIT is redirected to #SX (vector 30, error code 1; 15.28) and is no longer
+pending; else the INIT itself. -/
+def initEvent (m : Machine) : Machine :=
+  if m.cpu.svmOn && Svm.bit m.cpu.svmx.i3 3 then Svm.vmexitM m { code := 0x63 }
+  else if m.cpu.svmx.vmCr &&& 2 != 0 then
+    let m := { m with apic := { m.apic with init := false }, cpu := { m.cpu with halted := false } }.syncXev
+    pendHits (raiseExc m Vec.SX (some 1) true)
+  else m.initCpu
+
+/-- The slow path of `smpEvent?`. INIT is held pending while GIF = 0 (table 15-10). -/
 def smpEventSlow (m : Machine) : Option Machine :=
   let a := m.apic
-  if a.init && !m.cpu.smm then some m.initCpu
+  if a.init && !m.cpu.smm && m.cpu.svmx.gif then some (initEvent m)
   else if m.cpu.smpx.waitSipi then
     match a.sipi with
     | some v => some (m.startCpu v)
@@ -326,12 +409,17 @@ POP SS are held past the next instruction (it executes in the interrupt shadow).
     match execInstr m with
     | .ok i m =>
       let m := if m.icount == ic then { m with icount := m.icount + 1 } else retireLong ic c.eip i m
+      let m := if m.dbHit != 0 && !m.cpu.svmx.gif then { m with dbHit := 0 } else m
       let bits := m.dbHit ||| (if tf && !noStepTrap i then DR6.BS else 0)
       if bits == 0 && m.dbPend == 0 then m
       else if m.cpu.shadow && i.op != 0xFB then { m with dbPend := m.dbPend ||| bits, dbHit := 0 }
       else dbTrap m (bits ||| m.dbPend)
     | .error f m =>
       let m := addNotRetired { m with icount := m.icount + 1, dbHit := 0 } (m.icount + 1 - ic)
+      -- an intercepted guest instruction: the interrupt shadow it started in is saved (15.21.5)
+      let m := match f with
+        | .vmexit _ => { m with cpu := { m.cpu with shadow := c.shadow } }
+        | _ => m
       pendHits (handleFault m f)
 
 /-- The event a step takes at an instruction boundary (`nextEvent`). -/
@@ -392,18 +480,105 @@ def stepAt (m : Machine) : Machine :=
     stepInstr { m with cpu := { c with sysbx := { c.sysbx with nmiDelay := c.sysbx.nmiDelay - 1 } } }
   | .instr => stepInstr m
 
+/-! ## SVM: events in guest mode and with GIF = 0 (owner: the SVM workstream)
+
+AMD APM vol. 2, 15.13, 15.17 (table 15-10), 15.20, 15.21, 15.22. While the CPU is in guest mode or
+GIF = 0, `stepAtSvm` replaces `stepAt` (`step`); otherwise nothing changes. In order:
+
+1. an event injected by VMRUN (EVENTINJ), taken unconditionally before the first guest instruction
+   (`injectEvent`; not subject to intercepts, its secondary exceptions are);
+2. SMI (GIF = 1, outside SMM and the interrupt shadow): #VMEXIT(SMI) (62h, EXITINFO1 bit 0 = 1, an
+   external SMI, still pending) with the SMI intercept, else SMM entry in the guest's context, which
+   flushes the TLB entries of all ASIDs (15.16.1); SMIs are held while GIF = 0;
+3. debug traps: breakpoint matches (DR6.B0-B3) are discarded while GIF = 0, trace traps are taken;
+4. NMI (GIF = 1): #VMEXIT(NMI) (61h, still latched) with the NMI intercept, else delivered;
+5. physical INTR (GIF = 1; masked by EFLAGS.IF, or by the host's IF at VMRUN in a guest with
+   V_INTR_MASKING, 15.21.1): #VMEXIT(INTR) (60h, not acknowledged) with the INTR intercept, else
+   delivered through the guest's IDT;
+6. a virtual interrupt (V_IRQ with V_INTR_PRIO > V_TPR or V_IGN_TPR, guest EFLAGS.IF, the virtual
+   GIF, not in a shadow; 15.21.4): #VMEXIT(VINTR) (64h, V_IRQ stays set) with the VINTR intercept,
+   else V_IRQ is cleared and V_INTR_VECTOR delivered as an external interrupt;
+7. the instruction (`stepInstr`). -/
+
+/-- The event injected by VMRUN (15.20): INTR (type 0) and NMI (type 2; an injected NMI does not
+block NMIs) as external events, exceptions (type 3) with their error code when EV = 1 (never in real
+mode), software interrupts (type 4) and the INT3/INTO-like exceptions (type 3, vectors 3 and 4) with
+the gate DPL check and the VMCB's nRIP as return address. -/
+def injectEvent (m : Machine) : Machine :=
+  let c := m.cpu
+  let e := c.svmx.inject
+  let m := { m with cpu := { c with halted := false, svmx := { c.svmx with inject := 0 } } }
+  let ty := (e >>> 8) &&& 7
+  let vec := (e &&& 0xFF).toUInt8
+  let err := if e &&& 0x800 != 0 && c.pe then some (e >>> 32).toUInt32 else none
+  if ty == 2 then pendHits (raiseG 4 m Vec.NMI none true 2 false none)
+  else if ty == 0 then pendHits (raiseG 4 m vec none true 0 false none)
+  else if ty == 4 || (vec == Vec.BP || vec == Vec.OF) then
+    pendHits (raiseG 4 m vec (if ty == 3 then err else none) false ty false (some c.svmx.injNrip))
+  else pendHits (raiseG 4 m vec err true 3 false none)
+
+/-- One step at an instruction boundary in guest mode or with GIF = 0 (see above). -/
+def stepAtSvm (m : Machine) : Machine :=
+  let c := m.cpu
+  let s := c.svmx
+  if s.inject &&& 0x80000000 != 0 then injectEvent m else
+  let g := c.svmOn
+  if s.gif && m.smiPending && !c.smm && !c.shadow then
+    if g && Svm.bit s.i3 2 then Svm.vmexitM m { code := 0x62, info1 := 1 }
+    else
+      let m := if g then { m with cpu := { c with svmx := { s with hostTlb := {} } } } else m
+      match smmEnter { m with smiPending := false } with
+      | .ok _ m => m
+      | .error f m => { m with fatal := some f }
+  else
+  let dp := if s.gif then m.dbPend else m.dbPend &&& ~~~0xF
+  let m := if dp == m.dbPend then m else { m with dbPend := dp }
+  if dp != 0 && !c.shadow then dbTrap { m with cpu := { m.cpu with halted := false } } dp
+  else
+  let n := c.sysbx
+  if s.gif && n.nmiPending && n.nmiDelay == 0 && !n.nmiBlocked && !c.shadow then
+    if g && Svm.bit s.i3 1 then Svm.vmexitM m { code := 0x61 } else deliverNmi m
+  else if s.gif && m.intr && c.physIntrOk && !c.shadow then
+    if g && Svm.bit s.i3 0 then Svm.vmexitM m { code := 0x60 }
+    else
+      let m := { m with cpu := { m.cpu with halted := false } }
+      let (vec, m) := m.intAck
+      pendHits (raiseExc m vec none true true)
+  else if c.vintrReady then
+    if Svm.bit s.i3 4 then Svm.vmexitM m { code := 0x64 }
+    else
+      let m := { m with cpu := { c with halted := false, svmx := { s with vIrq := false } } }
+      pendHits (raiseG 4 m s.vVec.toUInt8 none true 0 false none)
+  else if n.nmiPending && n.nmiDelay != 0 then
+    stepInstr { m with cpu := { m.cpu with sysbx := { n with nmiDelay := n.nmiDelay - 1 } } }
+  else stepInstr m
+
 /-- One architectural step: timer events due; INIT, STARTUP and the INIT state (`smpEvent?`: INIT is
 above SMI in AMD's table 8-9, and a CPU waiting for STARTUP holds every other event pending); then the
 APIC's NMI message enters the NMI latch (`Machine.takeNmi`) and `stepAt` takes the event `nextEvent`
-selects. -/
+selects (`stepAtSvm` in SVM guest mode or with GIF = 0). -/
 def step (m : Machine) : Machine :=
   let m := if m.icount ≥ m.timerAt then m.timerFire else m
   match smpEvent? m with
   | some m => m
-  | none => stepAt (if m.xev then m.takeNmi else m)
+  | none =>
+    let m := if m.xev then m.takeNmi else m
+    if m.cpu.svmx.guest || !m.cpu.svmx.gif then stepAtSvm m else stepAt m
+
+/-- `Machine.idle` in SVM guest mode or with GIF = 0 (the events of `stepAtSvm`). -/
+def Machine.svmIdle (m : Machine) : Bool :=
+  let c := m.cpu
+  let s := c.svmx
+  let n := c.sysbx
+  c.halted && s.inject == 0 && (if s.gif then m.dbPend else m.dbPend &&& ~~~0xF) == 0 &&
+    !(s.gif && m.smiPending && !c.smm) && m.timerAt == maxU64 &&
+    !(s.gif && m.intr && c.physIntrOk) && !c.vintrReady &&
+    !(s.gif && (n.nmiPending || m.apic.nmi) && (!n.nmiBlocked || n.nmiDelay != 0)) &&
+    !(s.gif && m.apic.init && !c.smm)
 
 /-- `true` if the machine can make no progress without external input. -/
 def Machine.idle (m : Machine) : Bool :=
+  if m.cpu.svmx.guest || !m.cpu.svmx.gif then m.svmIdle else
   m.cpu.halted && m.dbPend == 0 && !m.smiPending && m.timerAt == maxU64 &&
     !(m.intr && m.cpu.eflags &&& Flag.IF != 0) &&
     !((m.cpu.sysbx.nmiPending || m.apic.nmi) && (!m.cpu.sysbx.nmiBlocked || m.cpu.sysbx.nmiDelay != 0))
