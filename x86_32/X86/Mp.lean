@@ -103,12 +103,12 @@ def runnableState (c : Cpu) (a : Apic) (smi : Bool) (dbPend : UInt32) (intr : Bo
   -- SVM guest mode or GIF = 0 (`Step.stepAtSvm`, `Machine.svmIdle`)
   else if c.svmx.guest || !c.svmx.gif then
     let s := c.svmx
-    !c.halted || s.inject != 0 || (s.gif && a.init && !c.smm) || a.sipi.isSome ||
+    !c.halted || s.inject &&& 0x80000000 != 0 || (s.gif && a.init && !c.smm) || a.sipi.isSome ||
     (s.gif && (a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) ||
-    (s.gif && smi && !c.smm) || (if s.gif then dbPend else dbPend &&& ~~~0xF) != 0 ||
+    (s.gif && smi && !c.smiHeld) || (if s.gif then dbPend else dbPend &&& ~~~0xF) != 0 ||
     (s.gif && intr && c.physIntrOk) || c.vintrReady
   else !c.halted || (a.init && !c.smm) || a.sipi.isSome ||
-    ((a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) || (smi && !c.smm) ||
+    ((a.nmi || c.sysbx.nmiPending) && (!c.sysbx.nmiBlocked || c.sysbx.nmiDelay != 0)) || (smi && !c.smiHeld) ||
     dbPend != 0 || (intr && c.eflags &&& Flag.IF != 0)
 
 /-- CPU `k` is runnable. -/

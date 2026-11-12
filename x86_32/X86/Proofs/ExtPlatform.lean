@@ -48,7 +48,8 @@ theorem syncApic_sipi (m : Machine) : m.syncApic.apic.sipi = m.apic.sipi := by
 
 /-- INIT keeps a STARTUP the APIC accepted while the INIT was pending. -/
 theorem initCpu_sipi (m : Machine) : m.initCpu.apic.sipi = m.apic.sipi := by
-  simp [Machine.initCpu, syncApic_sipi, Machine.syncTimer, Apic.afterInit_sipi]
+  unfold Machine.initCpu
+  split <;> simp [syncApic_sipi, Machine.syncTimer, Apic.afterInit_sipi]
 
 theorem afterInit_r11 (c : Cpu) (sig : UInt32) (bsp : Bool) : (c.afterInit sig bsp).lmx.r11 = 0 := rfl
 theorem afterInit_ripHi (c : Cpu) (sig : UInt32) (bsp : Bool) :

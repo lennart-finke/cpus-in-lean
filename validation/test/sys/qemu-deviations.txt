@@ -109,11 +109,11 @@
 ^svm\.exc\.bp: code=00000081 i1=00000000 rip=[0-9a-f]+ dr6=ffff0ff0$	svm.exc.bp: code=00000043 i1=00000000 rip=00000000 dr6=ffff0ff0	# (Svm) the #BP intercept applies to the trap raised by INT3, with the rIP of the INT3 (APM vol. 2, 15.12.4); TCG treats INT3 as a software interrupt and delivers it.
 ^svm\.exc\.of: code=00000081 i1=00000000 rip=[0-9a-f]+ dr6=ffff0ff0$	svm.exc.of: code=00000044 i1=00000000 rip=00000004 dr6=ffff0ff0	# (Svm) the #OF intercept applies to the trap raised by INTO (APM vol. 2, 15.12.5); TCG delivers it.
 ^svm\.exc\.gp\.cr4: code=ffffffff	svm.exc.gp.cr4: code=0000004d	# (Svm) MOV CR4 setting a reserved bit raises #GP(0) (APM vol. 3, MOV CRn), which the #GP intercept catches; TCG ends the guest with VMEXIT_INVALID.
-^svm\.df\.0: code=0000007f i1=00000000 ii=00000000:80000306$	svm.df.0: code=00000048 i1=00000000 ii=00000033:80000b0d	# (Svm) a double fault from combining exceptions is checked for the #DF intercept before delivery, EXITINTINFO holding the #GP being delivered (APM vol. 2, 15.7.3, 15.12); TCG shuts down (and exits for shutdown although it is not intercepted).
 ^(svm\.df\.1: code=0000004d i1=000000)32	\g<1>33	# (Svm) the EXT bit of a #GP raised while delivering an exception (APM vol. 2, 8.4.1), here in EXITINFO1; TCG never sets EXT.
 ^svm\.prio\.invd: code=00000076	svm.prio.invd: code=0000004d	# (Svm) INVD checks its exceptions (#GP at CPL > 0) before the intercept (APM vol. 2, table 15-7); TCG checks the intercept first.
-^(svm\.vmsave: .* tr=00000028/)00000089/	\g<1>0000008b/	# (Svm) VMSAVE stores the TR attributes with the busy TSS type that LTR set (APM vol. 3, LTR; vol. 2, 15.5.1 "Segment State in the VMCB"); TCG's TR cache keeps the type the descriptor had before LTR.
-^(svm\.vmsave: .* ldtr=00000000/)00000082/	\g<1>00000000/	# (Svm) VMSAVE stores a null LDTR (after LLDT with a null selector) with P = 0 (APM vol. 2, 15.5.1 "Segment State in the VMCB"); TCG's LDTR keeps the attributes it had.
+^(svm\.vmsave: .* tr=00000028/)00000089(/.* ldtr=00000000/)(?:00000082|00000000) 	\g<1>0000008b\g<2>00000000 	# (Svm) VMSAVE stores the TR attributes with the busy TSS type that LTR set (APM vol. 3, LTR; vol. 2, 15.5.1 "Segment State in the VMCB") and a null LDTR with P = 0; TCG's TR cache keeps the type the descriptor had before LTR and its LDTR the attributes it had (the LDTR alone: the next rule).
+^(svm\.vmsave: .* ldtr=00000000/)00000082 	\g<1>00000000 	# (Svm) VMSAVE stores a null LDTR (after LLDT with a null selector) with P = 0 (APM vol. 2, 15.5.1 "Segment State in the VMCB"); TCG's LDTR keeps the attributes it had.
+^(svf \d+ \S+ cpl=\d: code=00000081 .* fl=000)1(\w{4} )	\g<1>0\g<2>	# (Svm) RFLAGS.RF is cleared when an instruction completes (AMD APM vol. 2, 13.1.4 "Resume Flag"), so the VMMCALL after the fuzzed instruction exits with RF = 0; TCG clears RF only at the end of a translation block, and the VMMCALL in the same block exits with the RF the guest started with.
 ^svm\.vm86\.intn: code=0000004d i1=00000000 	svm.vm86.intn: code=00000075 i1=00000010 	# (Svm) the INTn intercept occurs before any exception is checked (APM vol. 2, table 15-7), here the IOPL #GP of INT n in virtual-8086 mode; TCG raises the #GP first. EXITINFO1 is the vector (decode assist, 15.8.2).
 ^(svm\.np\.\S+\.rd\.rsvd: code=00000400 i1=00000001:0000000)c	\g<1>d	# (Svm) a nested page fault for a reserved bit in a present nested entry has EXITINFO1 bit 0 (P) = 1 (APM vol. 2, 15.25.6: "cleared to 0 if the nested page was not present, 1 otherwise"), as reserved-bit #PFs have P = 1; TCG reports P = 0.
 ^(npf \d+ .*: code=00000400 i1=0000000[12]:000000[01])c	\g<1>d	# (Svm) (same, in the nested-paging fuzzer: RSV set, P = 1)
@@ -122,5 +122,4 @@
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)a	\g<1>b	# (same)
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)c	\g<1>d	# (same)
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)e	\g<1>f	# (same)
-^(svm\.smp: .* init_exit=)00000000	\g<1>00000063	# (Svm) an INIT that arrives in a guest with the INIT intercept is a #VMEXIT(INIT) and stays pending until GIF = 1 (AMD APM vol. 2, 15.13.4, table 15-12); TCG resets the CPU in guest mode.
 # --- end Svm ---

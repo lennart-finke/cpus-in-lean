@@ -161,5 +161,7 @@ void test_review_model(void);
 void test_svm(void);
 void test_svm_model(void);
 void test_svm_smp(void);
+void test_svm_smp_model(void);
+void test_svm_long(void);
 
 #endif

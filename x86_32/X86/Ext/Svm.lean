@@ -65,8 +65,22 @@ long-mode compatibility mode; a guest whose CS is 64-bit stops at its first inst
   written (`Svm.smmSave`: SVM Guest, VMCB address, virtual interrupt, guest PAT, host EFER/CR4/CR0,
   nCR3); RSM returns to the guest from the state kept on chip and does not read those fields back
   (the map marks them read-only). SMM entry keeps EFER.SVME (RSM cannot change it, vol. 3 RSM).
-  Containerized platform SMM (SMM_CTL from a hypervisor with VM_CR/HWCR SmmLock) is not modelled:
-  SMM_CTL is never locked.
+  SMM_CTL (for containerized SMM) holds SMIs and blocks NMIs between ENTER and EXIT and is locked by
+  HWCR.SmmLock; it never enters SMM, so a guest writing it (without the MSR intercept) keeps its
+  intercepts and nested paging. SMRAM mapping is the chipset's and not modelled.
+* Every #VMEXIT saves the interrupt shadow and RFLAGS.RF "as of the moment the intercept triggers"
+  (15.7.1): for an intercepted instruction or an exception it raises, those it started with (TCG
+  agrees, `t_svm.c` r_shadow); an intercepted INTR, NMI or SMI exits also in the guest's shadow
+  (KVM: "vmexits aren't blocked by the interrupt shadow"; TCG holds them).
+* FERR_FREEZE: the model freezes no processor in legacy FERR handling (CR0.NE = 0: FERR# raises
+  IRQ13 and execution continues, as with IGNNE# asserted); with the intercept the exit happens where
+  the freeze would (`Svm.ferrFreeze`), unless the IGNNE MSR asserts IGNNE.
+* Addresses: nCR3 and the permission maps are full system-physical addresses (open bus above 4 GiB:
+  a map there intercepts everything); a long-mode guest's CR3, GDTR or IDTR, or a long-mode host's
+  VMLOAD of a TR/LDTR base, above 4 GiB stops the simulation (`Fault.unsupported`: the model's CR3 and
+  descriptor-table bases have 32 bits); outside long mode only bits 31:0 take part.
+* A VMEXIT_INVALID leaves the host's TLB as it is (`leaveGuest`); INIT in a guest restores the host's
+  PAT and SPEC_CTRL and drops the guest's TLB entries (`Svm.initRestore`, `Machine.initCpu`).
 * Not reported (CPUID 8000_000A:EDX): LbrVirt (the model records no branches and has no
   LastBranch*/LastInt* MSRs), AVIC, GMET (its EXITINFO1 user bit is ambiguous in the APM), and the
   dump's reserved bit 11.
@@ -156,19 +170,6 @@ def raxPa (i : Inst) : M UInt64 := do
 
 /-! ## #VMEXIT (15.6; vol. 3 VMRUN "Upon #VMEXIT") -/
 
-/-- The guest's TLB entries are dropped and the host's set-aside entries reinstated. -/
-def restoreHostTlb : M Unit := modM fun m =>
-  let t := m.cpu.svmx.hostTlb
-  let tag := if t.tag.size == tlbSize then t.tag else Array.replicate tlbSize 0
-  let v := if t.val.size == tlbSize then t.val else Array.replicate tlbSize 0
-  { m with tlbTag := tag, tlbVal := v, tlbLarge := t.large, tlbLargeRegions := t.regions,
-           tlbGlobal := t.global, cpu := { m.cpu with svmx := { m.cpu.svmx with hostTlb := {} } } }
-
-/-- SPEC_CTRL (MSR 48h) value kept in `Cpu.msrs` by `Sys.msr?`. -/
-@[inline] def specCtrlOf (c : Cpu) : UInt64 := ((c.msrs.find? (·.1 == 0x48)).map (·.2)).getD 0
-@[inline] def withSpecCtrl (c : Cpu) (v : UInt64) : Cpu :=
-  { c with msrs := (0x48, v) :: c.msrs.filter (·.1 != 0x48) }
-
 /-- The host state VMRUN saves from CPU state `c` (EIP: the instruction after VMRUN). -/
 def hostOf (c : Cpu) : SvmHost :=
   { es := c.es, cs := c.cs, ss := c.ss, ds := c.ds,
@@ -203,12 +204,27 @@ def enterGuestTlb (m : Machine) (flushAll : Bool) : Machine :=
            tlbLargeRegions := #[], tlbGlobal := false, dbPend := 0, dbHit := 0,
            cpu := { m.cpu with svmx := { m.cpu.svmx with hostTlb := ht } } }
 
+/-- The machine part of the return to the host (#VMEXIT after the VMCB writes, or VMEXIT_INVALID):
+from guest mode the guest's TLB entries are dropped and the host's set-aside ones reinstated, and
+with nested paging the host's PAT (gPAT replaced it) is back; then the host state VMRUN saved is
+reloaded (`withHost`: CR0.PE = 1, EFLAGS.VM = RF = 0, CPL 0, DR7 breakpoints disabled, GIF = 0, the
+guest controls cleared); EFLAGS.TF of the host raises its #DB trap after the completed VMRUN (15.5.1).
+A VMEXIT_INVALID (not in guest mode yet) leaves the TLB and PAT alone. -/
+def leaveGuest (m : Machine) : Machine :=
+  let s := m.cpu.svmx
+  let h := s.host
+  let m := if !s.guest then m else
+    let t := s.hostTlb
+    let c := if s.np then { m.cpu with sysx := { m.cpu.sysx with pat := s.hostPat } } else m.cpu
+    { m with tlbTag := if t.tag.size == tlbSize then t.tag else Array.replicate tlbSize 0,
+             tlbVal := if t.val.size == tlbSize then t.val else Array.replicate tlbSize 0,
+             tlbLarge := t.large, tlbLargeRegions := t.regions, tlbGlobal := t.global,
+             cpu := { c with svmx := { c.svmx with hostTlb := {} } } }
+  { m with cpu := withHost m.cpu h, dbPend := if h.eflags &&& Flag.TF != 0 then DR6.BS else 0, dbHit := 0 }
+
 /-- The return to the host after the guest state has been saved: write EXITCODE, EXITINFO1/2,
-EXITINTINFO and nRIP, clear EVENTINJ, clear the guest controls (intercepts, V_IRQ, V_INTR_MASKING,
-TSC_OFFSET, nested paging, ASID 0), reinstate the host's TLB and reload the host state with
-CR0.PE = 1, EFLAGS.VM = RF = 0, CPL 0 and DR7 breakpoints disabled; GIF = 0. A host PAE PDPTE with
-reserved bits shuts the processor down. EFLAGS.TF of the host raises its #DB trap after the
-completed VMRUN (15.5.1). -/
+EXITINTINFO and nRIP, clear EVENTINJ, then `leaveGuest`. A host PAE PDPTE with reserved bits shuts
+the processor down. -/
 def exitToHost (e : VmExit) : M Unit := do
   let s ← svmx
   let v := s.vmcb
@@ -218,15 +234,12 @@ def exitToHost (e : VmExit) : M Unit := do
   wr64 (v + 0x88) e.intInfo
   if implemented .svmFeatures then wr64 (v + 0xC8) e.nrip
   wr64 (v + 0xA8) 0
-  let h := s.host
-  restoreHostTlb
-  modCpu fun c => withHost c h
+  modM leaveGuest
   let c ← cpu
   -- the host's PAE PDPTEs from its CR3 (legacy PAE paging); illegal ones shut down
   if c.cr0 &&& CR0.PG != 0 && c.cr4 &&& CR4.PAE != 0 && !LongMode.lma c then
     let p ← tryCatch (readPdptes c.cr3) fun _ => throw (.shutdown "#VMEXIT: invalid host PDPTEs")
     modCpu fun c => { c with pdpte := p }
-  modM fun m => { m with dbPend := if h.eflags &&& Flag.TF != 0 then DR6.BS else 0, dbHit := 0 }
 
 /-- Guest instruction bytes for the decode assist of a nested or intercepted #PF (15.8.4): up to 15
 bytes at guest CS:rIP, fewer if a fetch faults; byte 0 holds the count. -/
@@ -291,8 +304,6 @@ def vmexit (e : VmExit) : M Unit := do
   wr32 (v + 0x60) ((w &&& ~~~0x3FF) ||| s.vTpr ||| (if s.vIrq then 0x100 else 0) ||| (if s.vGif then 0x200 else 0))
   let st ← rd32 (v + 0x68)
   wr32 (v + 0x68) ((st &&& ~~~1) ||| (if c.shadow then 1 else 0))
-  -- with nested paging the host's PAT register was replaced by gPAT
-  if s.np then modCpu fun c => { c with sysx := { c.sysx with pat := s.hostPat } }
   exitToHost e
 
 /-- `vmexit` as a machine transition (for `Step`): an exception while reloading the host state shuts
@@ -402,6 +413,11 @@ def vmrun (i : Inst) : M Unit := do
   if invalid then
     exitToHost { code := 0xFFFFFFFFFFFFFFFF }
     return
+  -- a long-mode guest's CR3, GDTR and IDTR bases are 64-bit addresses; the model's CR3 and
+  -- descriptor-table bases have 32 bits (as RSM's "CR3 above 4 GiB"): stop rather than truncate.
+  -- Outside long mode only bits 31:0 take part in address formation, so the truncation is exact.
+  if lme && pg && (cr3 >>> 32 != 0 || gdtBase >>> 32 != 0 || idtBase >>> 32 != 0) then
+    unsupported "VMRUN: long-mode guest CR3/GDTR/IDTR above 4 GiB"
   -- a protected-mode guest's CPL must be CS.RPL (the model derives the CPL from CS)
   let vm := rflags &&& Flag.VM.toUInt64 != 0
   if cr0 &&& CR0.PE.toUInt64 != 0 && !vm && cpl != (cs.sel.toUInt32 &&& 3) then
@@ -481,8 +497,12 @@ def vmloadSave (i : Inst) (save : Bool) : M Unit := do
   else
     let (fs, fsb) ← rdSeg (v + ssFs)
     let (gs, gsb) ← rdSeg (v + ssGs)
-    let (tr, _) ← rdSeg (v + ssTr)
-    let (ldtr, _) ← rdSeg (v + ssLdtr)
+    let (tr, trb) ← rdSeg (v + ssTr)
+    let (ldtr, ldtrb) ← rdSeg (v + ssLdtr)
+    -- in long mode the TSS and LDT bases are 64-bit linear addresses the model cannot hold (outside
+    -- long mode only bits 31:0 take part in address formation)
+    if LongMode.lma c && (trb >>> 32 != 0 || ldtrb >>> 32 != 0) then
+      unsupported "VMLOAD: TR/LDTR base above 4 GiB in long mode"
     let kgs := canon (← rd64 (v + 0x620))
     let star ← rd64 (v + 0x600)
     let lstar ← rd64 (v + 0x608)
@@ -587,15 +607,17 @@ def op0F? (i : Inst) : Option (M Unit) :=
 def vmCrLock : UInt64 := 8
 def vmCrSvmDis : UInt64 := 0x10
 
-/-- VM_CR (15.30.1): bits 63:5 MBZ (#GP(0)); with LOCK set, writes to LOCK and SVMDIS are ignored;
-setting SVMDIS while EFER.SVME = 1 is #GP(0). -/
+/-- VM_CR (15.30.1): bits 63:5 MBZ (#GP(0)); setting SVMDIS while EFER.SVME = 1 is #GP(0), also with
+LOCK set; with LOCK set, writes to LOCK and SVMDIS are otherwise ignored. -/
 def vmCrMsr : MsrImpl where
   rd := do return (← svmx).vmCr
   wr v := do
     if v &&& ~~~0x1F != 0 then gp 0
+    -- "Setting SVMDIS while EFER.SVME is 1 generates a #GP fault, regardless of the current state of
+    -- VM_CR.LOCK" (15.30.1): checked on the written value, before LOCK masks the write
+    if v &&& vmCrSvmDis != 0 && svme (← cpu) then gp 0
     let s ← svmx
     let v := if s.vmCr &&& vmCrLock != 0 then (v &&& 7) ||| (s.vmCr &&& 0x18) else v
-    if v &&& vmCrSvmDis != 0 && svme (← cpu) then gp 0
     modS fun s => { s with vmCr := v }
 
 /-- VM_HSAVE_PA (15.30.4): #GP(0) for a value with bits 11:0 set or at/above MAXPHYADDR. -/
@@ -629,21 +651,26 @@ def ignneMsr : MsrImpl where
     if v &&& ~~~1 != 0 then gp 0
     modS fun s => { s with ignne := v }
 
-/-- SMM_CTL (15.30.3), write-only (RDMSR #GP(0)): DISMISS clears the SMI latch, ENTER sets the SMM
-state (recording and blocking NMIs), EXIT leaves it (restoring the NMI blocking); the SMI/RSM
-special cycles have no effect; bits 63:5 MBZ. SMRAM mapping is the chipset's (not modelled);
-HWCR.SmmLock does not exist in the model, so writes are never locked. Only the documented
-combinations are defined (ENTER before SMI_CYCLE, DISMISS, RSM_CYCLE before EXIT). -/
+/-- SMM_CTL (15.30.3), write-only (RDMSR #GP(0)); #GP(0) while HWCR.SmmLock (bit 0) is set; bits 63:5
+MBZ. The register lets a hypervisor emulate the SMM entry and exit of an SMI it intercepted
+(containerized SMM): DISMISS (bit 0) clears the processor's SMI-pending latch; ENTER (1) records
+whether NMIs are blocked and blocks NMIs and SMIs (`SvmState.smmCtlIn`, `smmCtlNmi`; SMRAM mapping
+belongs to the chipset and is not modelled); EXIT (3) restores the recorded NMI blocking and
+re-enables SMIs; SMI_CYCLE (2) and RSM_CYCLE (4) send special bus cycles (no effect). ENTER does not
+put the processor into SMM: it stays in its mode, a guest with its intercepts and nested paging
+(only an SMI does that, 15.22). Bits are processed in the order DISMISS, ENTER, EXIT. -/
 def smmCtlMsr : MsrImpl where
   rd := gp 0
   wr v := do
     if v &&& ~~~0x1F != 0 then gp 0
-    if v &&& 2 != 0 then
-      modCpu fun c => { c with smm := true,
-                               sysbx := { c.sysbx with smmNmiBlocked := c.sysbx.nmiBlocked, nmiBlocked := true } }
+    if (← cpu).sysbx.hwcr &&& 1 != 0 then gp 0
     if v &&& 1 != 0 then modM fun m => { m with smiPending := false }
+    if v &&& 2 != 0 then
+      modCpu fun c => { c with svmx := { c.svmx with smmCtlIn := true, smmCtlNmi := c.sysbx.nmiBlocked },
+                               sysbx := { c.sysbx with nmiBlocked := true } }
     if v &&& 8 != 0 then
-      modCpu fun c => { c with smm := false, sysbx := { c.sysbx with nmiBlocked := c.sysbx.smmNmiBlocked } }
+      modCpu fun c => { c with svmx := { c.svmx with smmCtlIn := false },
+                               sysbx := { c.sysbx with nmiBlocked := c.svmx.smmCtlNmi } }
 
 def msr? (n : UInt32) : Option MsrImpl :=
   if !implemented .svm then none

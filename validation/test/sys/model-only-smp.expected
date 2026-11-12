@@ -15,4 +15,6 @@ smpm.cpuidb.1: bsp=00000007 00000002 00000201 00000000 ap=00000007 00000002 0000
 smpm.cpuid81: cmplegacy=1
 smpm.cpuid88: ecx=00007001
 smpm.init.cr0: 00000011 ready=1
+svmm.smp.init_exit: 00000063
+svmm.smp.init_np: guest_ran=1 pat=06060606:06060606 spec=00000000 efer=00000000 pg=0
 END

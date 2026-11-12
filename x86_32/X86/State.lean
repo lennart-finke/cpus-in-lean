@@ -228,6 +228,11 @@ structure SvmState where
   injNrip : UInt32 := 0
   /-- IGNNE MSR (C001_0115h) bit 0. -/
   ignne : UInt64 := 0
+  /-- SMM_CTL (C001_0116h) ENTER .. EXIT (15.30.3): SMIs are held (`smmCtlIn`) and NMIs blocked, the
+  NMI blocking at ENTER kept in `smmCtlNmi`. Not SMM: the processor stays in its mode, guest mode
+  with its intercepts and nested paging included (`Cpu.smm` is set only by an SMI). -/
+  smmCtlIn : Bool := false
+  smmCtlNmi : Bool := false
   deriving Repr, Inhabited
 
 /-- State of `X86/Ext/LongMode.lean` and `X86/Ext/LongModeBase.lean` (long mode; see the module

@@ -13,8 +13,14 @@ from the Lean model:
     check, then the final nested walk; EXITINFO1 bits P/RW/US/RSV/ID and 32/33; EXITINFO2 the guest
     physical address; accessed/dirty bits in both dimensions), with the nested tables in the host's
     32-bit or PAE format (15.25.3) and guests without paging, with 32-bit and PAE paging.
-The points the APM leaves open are taken as x86_32/X86/Ext/Svm.lean documents them (accessed and
-dirty bits of a leaf only for allowed accesses; PAE PDPTEs read at each walk under nested paging).
+Two points the APM leaves open are not derived from it; the table follows one documented reading
+and marks every case whose outcome depends on the choice (`open` = 1), so the kernel's report counts
+them separately (they check consistency with that reading, not the APM):
+  * A/D bits of a leaf entry (nested or guest) on an access the leaf's permissions refuse: not set
+    (the alternative sets them before the permission check);
+  * a PAE guest's PDPTEs under nested paging: read at each walk through the nested tables (the
+    alternative loads them at VMRUN/MOV CR3, so a nested fault on the PDPT page would not occur in the
+    walk).
 
     svmref.py table [NSVF] [NNPF] [SEED] > svm_cases.h   (default 400 400 1)
     svmref.py selftest
@@ -314,10 +320,12 @@ class Fault(Exception):
 
 class Walk2D:
     """The state of one nested-paging case: the nested entries of the window (PDE and PTEs of pages
-    0..11) and the guest's paging entries, as dicts updated with A/D bits."""
+    0..11) and the guest's paging entries, as dicts updated with A/D bits. `alt_ad`: the other reading
+    of the first open point (leaf A/D set before the permission check)."""
 
-    def __init__(self, c):
+    def __init__(self, c, alt_ad=False):
         self.c = c
+        self.alt_ad = alt_ad
         hp = c['hmode'] == 2
         self.hp = hp
         self.npde = attr(c['npde'], hp)
@@ -352,6 +360,8 @@ class Walk2D:
             fault(True, True)
         perm = pde & pte
         xd = hp and bool((pde | pte) >> 63)   # host EFER.NXE = 1 with PAE
+        if self.alt_ad:
+            self.npte[k] = pte | 0x20 | (0x40 if write else 0)
         if not perm & 4 or (write and not perm & 2) or (fetch and xd):
             fault(True, False)
         self.npte[k] = pte | 0x20 | (0x40 if write else 0)
@@ -407,15 +417,17 @@ class Walk2D:
             pf(True, True)
         perm = pde & pte
         xd = g == 2 and c['nxe'] and bool((pde | pte) >> 63)
+        if self.alt_ad:
+            self.gpte[k] = pte | 0x20 | (0x40 if write else 0)
         if (user and not perm & 4) or (write and not perm & 2 and (user or wp)) or (fetch and xd):
             pf(True, False)
         self.gpte[k] = pte | 0x20 | (0x40 if write else 0)
         self.nested(GPA0 + 0x1000 * k + (lin & 0xFFF), write, fetch, FINAL)
 
 
-def expect_npf(c):
+def expect_npf(c, alt_ad=False):
     """(code, info1 low, info1 high, info2, value, memory word, A/D bits) of t_svm.c npc_out."""
-    w = Walk2D(c)
+    w = Walk2D(c, alt_ad)
     pg, acc = c['pg'], c['acc']
     off = 0x100 if acc == 2 else 0
     lin = (NWIN if c['gmode'] else GPA0) + 0x1000 * pg + off
@@ -430,6 +442,18 @@ def expect_npf(c):
         code, i1, i2, val = f.code, f.info1, f.info2, 0
     ad = ((w.npte[pg] >> 5) & 3) | (((w.gpte[pg] >> 5) & 3) << 2 if c['gmode'] else 0)
     return (code, i1 & M32, i1 >> 32, i2, val, mem, ad)
+
+
+def npf_open(c):
+    """1 if the outcome depends on a point the APM leaves open (see the module documentation)."""
+    if expect_npf(c, alt_ad=True) != expect_npf(c):
+        return 1
+    if c['gmode'] == 2:
+        try:
+            Walk2D(c).nested(GPA0 + 0x8000, True, False, 1 << 33)   # the PDPT page's nested translation
+        except Fault:
+            return 1
+    return 0
 
 
 def gen_npf(r):
@@ -466,15 +490,15 @@ def table(nsvf, nnpf, seed):
         out.append('{0x%x, 0x%x, 0x%xull, 0x%x, 0x%x},' % (s, code, i1, 0xFFFFFFFF if nrip is None else nrip,
                                                          0xFFFF if vec is None else vec))
     out.append('};')
-    out.append('struct npx { struct npc c; u32 o[7]; };')
+    out.append('struct npx { struct npc c; u32 o[7]; u32 open; };')
     out.append('static const struct npx npx[] = {')
     for _ in range(nnpf):
         c = gen_npf(r)
         o = expect_npf(c)
-        out.append('{{%d, %d, %d, %d, %d, %d, %d, 0x%x, 0x%x, 0x%x, {%s}, {%s}}, {%s}},' % (
+        out.append('{{%d, %d, %d, %d, %d, %d, %d, 0x%x, 0x%x, 0x%x, {%s}, {%s}}, {%s}, %d},' % (
             c['hmode'], c['gmode'], c['wp'], c['nxe'], 1 if c['cpl'] else 0, c['acc'], c['pg'], c['ntab'],
             c['npde'], c['gpde'], ', '.join('0x%x' % a for a in c['npte']), ', '.join('0x%x' % a for a in c['gpte']),
-            ', '.join('0x%x' % v for v in o)))
+            ', '.join('0x%x' % v for v in o), npf_open(c)))
     out.append('};')
     return '\n'.join(out) + '\n'
 

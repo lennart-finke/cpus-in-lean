@@ -99,6 +99,9 @@ def onSecond (first : ExcClass) (second : UInt8) : DfAction :=
 def hwcrMcStatusWrEn : UInt64 := 1 <<< 18
 def hwcrIrPerfEn : UInt64 := 1 <<< 30
 def hwcrMask : UInt64 := hwcrMcStatusWrEn ||| hwcrIrPerfEn
+/-- HWCR bit 0, SmmLock (stored here for the SVM workstream's SMM_CTL, `Svm.smmCtlMsr`): once set it
+stays set until RESET (writes cannot clear it; the family 17h PPR, MSRC001_0015 HWCR[SmmLock]). -/
+def hwcrSmmLock : UInt64 := 1
 
 /-- IRPerfCount: bits 63:0 (AMD Open-Source Register Reference for family 17h models 00h-2Fh, pub.
 56255, MSRC000_00E9; the model 31h PPR was not available). -/
@@ -117,12 +120,13 @@ def irPerf (m : Machine) : UInt64 :=
 /-- The HWCR bits of this module, for the HWCR read of `Gpr.msr?`. -/
 def hwcrBits : M UInt64 := do return (← cpu).sysbx.hwcr
 
-/-- HWCR write (from `Gpr.msr?`): keep bits 18 and 30; enabling or disabling IRPerf latches the
+/-- HWCR write (from `Gpr.msr?`): keep bits 18 and 30, and bit 0 (sticky); enabling or disabling IRPerf latches the
 counter. -/
 def hwcrWrite (v : UInt64) : M Unit := modM fun m =>
   let now := irPerf m
   let r := retired m
-  { m with cpu := { m.cpu with sysbx := { m.cpu.sysbx with hwcr := v &&& hwcrMask, irBase := now, irAt := r } } }
+  { m with cpu := { m.cpu with sysbx := { m.cpu.sysbx with
+      hwcr := (v &&& (hwcrMask ||| hwcrSmmLock)) ||| (m.cpu.sysbx.hwcr &&& hwcrSmmLock), irBase := now, irAt := r } } }
 
 /-! ## MSRs -/
 

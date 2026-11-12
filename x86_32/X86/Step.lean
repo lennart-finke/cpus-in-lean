@@ -80,7 +80,10 @@ def raiseG : Nat → Machine → UInt8 → Option UInt32 → Bool → UInt64 →
       | some r => { m with keepCpu := false, cpu := { m.cpu with eip := r } }
       | none => { m with keepCpu := false }
     match deliver vec err soft.isSome ext m' with
-    | .ok _ m => { m with keepCpu := false }
+    | .ok _ m =>
+      -- the handler's first instruction is not in an interrupt shadow (the instruction that raised
+      -- the event, or the VMCB's shadow of an injected event, no longer applies)
+      { m with keepCpu := false, cpu := { m.cpu with shadow := false } }
     | .error f m =>
       let keep := m.keepCpu
       let m := if keep then { m with keepCpu := false } else { m with keepCpu := false, cpu := saved }
@@ -278,7 +281,7 @@ it follows:
 | EFER.SVME | 0 (with EFER) | EFER |
 | VM_CR (`svmx.vmCr`) | SVMDIS cleared when LOCK = 0, the other bits (LOCK, R_INIT, DIS_A20M, DPD) not modified | APM vol. 2, 15.30.1 ("cleared by INIT when LOCK is cleared to 0") |
 | GIF (`svmx.gif`) | 1 | no row (open): the model sets it as at RESET, so the started CPU takes interrupts; QEMU's `do_cpu_init` likewise sets GIF |
-| guest mode, the cached VMCB controls, host save area, pending injection, nested-paging state, host TLB stash (`svmx`) | ended / discarded (`SvmState.afterInit`): the CPU restarts at the reset vector as the host | no row: INIT in a guest is taken only when not intercepted (15.13.4, table 15-12); without the INIT intercept it resets the CPU, so no guest state survives |
+| guest mode, the cached VMCB controls, host save area, pending injection, nested-paging state, host TLB stash (`svmx`) | ended / discarded (`SvmState.afterInit`): the CPU restarts at the reset vector as the host; PAT and SPEC_CTRL, which VMRUN replaced by the guest's, get the host's values back (`Svm.initRestore`), and the guest's TLB entries are dropped (`Machine.initCpu`) | no row: INIT in a guest is taken only when not intercepted (15.13.4, table 15-12); without the INIT intercept it resets the CPU, so no guest state survives |
 | INIT itself with VM_CR.R_INIT = 1 | not an INIT: #SX (vector 30, error code 1) instead (`initEvent`) | APM vol. 2, 15.28 |
 | local APIC | reset except base, AE, EXTD and ID (`Apic.reset` in `Machine.initCpu`) | APIC "Enabled, see Table 16-2"; §16.10 |
 | TLB (`Machine.tlb*`) and PAE PDPTE registers (`pdpte`) | not modified (the table: caches and TLBs not modified by INIT; with CR0.PG = 0 neither is used, and enabling paging reloads them) | Instruction and Data TLBs |
@@ -326,6 +329,12 @@ def Apic.afterInit (a : Apic) : Apic := { ({ a with init := false } : Apic).rese
 
 def Machine.initCpu (m : Machine) : Machine :=
   let sig := (cpuid m.cpu 1 0).1
+  -- INIT in an SVM guest: the host's PAT and SPEC_CTRL back (`Svm.initRestore`), and the guest's
+  -- TLB entries (its ASID's) are dropped: the processor continues as the host (ASID 0)
+  let m := if m.cpu.svmx.guest then
+      { m with cpu := Svm.initRestore m.cpu, tlbTag := Array.replicate tlbSize 0, tlbLarge := false,
+               tlbGlobal := false, tlbLargeRegions := #[] }
+    else m
   { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := m.apic.afterInit, dbPend := 0 }.syncTimer.syncApic
 
 /-- A STARTUP IPI with vector `v` ends the INIT state: real mode at `v`00:0000. -/
@@ -386,6 +395,15 @@ def deliverNmi (m : Machine) : Machine :=
                                     sysbx := { c.sysbx with nmiPending := false, nmiBlocked := true } } }
   pendHits (raiseExc m Vec.NMI none true true)
 
+/-- The instruction-breakpoint matches (DR6 B0-B3) at the current CS:EIP, checked before the
+instruction: none with RF set, in 64-bit mode (the CS base is ignored there: the 64-bit executor's
+check, the model stops in `decode` without checking, as comparing CS.base + EIP would invent or lose a
+#DB), or with GIF = 0 (SVM: a breakpoint-register match is ignored and discarded, AMD APM vol. 2,
+15.17, table 15-10). -/
+@[inline] def instrBp (c : Cpu) : UInt32 :=
+  if c.bpOn && c.eflags &&& Flag.RF == 0 && !LongMode.in64 c && c.svmx.gif then
+    bpHits c (c.cs.base + c.eip) 1 (· == 0) else 0
+
 /-- The instruction part of a step: idle while halted, an instruction-breakpoint fault, or the
 instruction followed by its debug traps (data/I/O breakpoints, single-step). Traps raised by MOV SS /
 POP SS are held past the next instruction (it executes in the interrupt shadow). -/
@@ -395,11 +413,7 @@ POP SS are held past the next instruction (it executes in the interrupt shadow).
     addNotRetired { m with icount := t } (t - m.icount)
   else
     let c := m.cpu
-    -- in 64-bit mode (CS.L = 1 with LMA) the instruction is the 64-bit executor's, and so is its
-    -- instruction-breakpoint check against the 64-bit RIP (the CS base is ignored there): the model stops
-    -- in `decode` without checking (it would compare CS.base + EIP, inventing or losing a #DB)
-    let ibp := if c.bpOn && c.eflags &&& Flag.RF == 0 && !LongMode.in64 c then
-      bpHits c (c.cs.base + c.eip) 1 (· == 0) else 0
+    let ibp := instrBp c
     if ibp != 0 then
       dbTrap (addNotRetired { m with icount := m.icount + 1, cpu := { c with shadow := false } } 1) ibp
     else
@@ -416,10 +430,15 @@ POP SS are held past the next instruction (it executes in the interrupt shadow).
       else dbTrap m (bits ||| m.dbPend)
     | .error f m =>
       let m := addNotRetired { m with icount := m.icount + 1, dbHit := 0 } (m.icount + 1 - ic)
-      -- an intercepted guest instruction: the interrupt shadow it started in is saved (15.21.5)
-      let m := match f with
-        | .vmexit _ => { m with cpu := { m.cpu with shadow := c.shadow } }
-        | _ => m
+      -- a guest instruction that ends in a #VMEXIT (its intercept, an intercepted exception it raises,
+      -- or one raised while delivering that exception): the VMCB gets the interrupt shadow and
+      -- RFLAGS.RF the instruction started with (`execInstr` clears RF at the start), the state "as of
+      -- the moment the intercept triggers" (15.7.1, 15.21.5); a delivery that completes clears the
+      -- shadow (`raiseG`) and pushes RF = 1 for a fault (`faultState`)
+      let m := if c.svmOn then
+          { m with cpu := { m.cpu with shadow := c.shadow,
+                                       eflags := (m.cpu.eflags &&& ~~~Flag.RF) ||| (c.eflags &&& Flag.RF) } }
+        else m
       pendHits (handleFault m f)
 
 /-- The event a step takes at an instruction boundary (`nextEvent`). -/
@@ -449,7 +468,7 @@ SMIs) may be blocked for one instruction" (AMD 15.13.2; SDM vol. 3, 7.8.1 likewi
 blocks them. A halted processor is woken by any of 1-4 (INTR only with IF = 1). -/
 @[inline] def nextEvent (m : Machine) : Event :=
   let c := m.cpu
-  if m.smiPending && !c.smm && !c.shadow then .smi
+  if m.smiPending && !c.smiHeld && !c.shadow then .smi
   else if m.dbPend != 0 && !c.shadow then .dbTrap
   else
   let s := c.sysbx
@@ -487,14 +506,20 @@ GIF = 0, `stepAtSvm` replaces `stepAt` (`step`); otherwise nothing changes. In o
 
 1. an event injected by VMRUN (EVENTINJ), taken unconditionally before the first guest instruction
    (`injectEvent`; not subject to intercepts, its secondary exceptions are);
-2. SMI (GIF = 1, outside SMM and the interrupt shadow): #VMEXIT(SMI) (62h, EXITINFO1 bit 0 = 1, an
-   external SMI, still pending) with the SMI intercept, else SMM entry in the guest's context, which
-   flushes the TLB entries of all ASIDs (15.16.1); SMIs are held while GIF = 0;
+2. SMI (GIF = 1, outside SMM and SMM_CTL ENTER): #VMEXIT(SMI) (62h, EXITINFO1 bit 0 = 1, an
+   external SMI, still pending) with the SMI intercept, else (outside the interrupt shadow) SMM entry in
+   the guest's context, which flushes the TLB entries of all ASIDs (15.16.1); SMIs are held while
+   GIF = 0;
 3. debug traps: breakpoint matches (DR6.B0-B3) are discarded while GIF = 0, trace traps are taken;
 4. NMI (GIF = 1): #VMEXIT(NMI) (61h, still latched) with the NMI intercept, else delivered;
 5. physical INTR (GIF = 1; masked by EFLAGS.IF, or by the host's IF at VMRUN in a guest with
    V_INTR_MASKING, 15.21.1): #VMEXIT(INTR) (60h, not acknowledged) with the INTR intercept, else
    delivered through the guest's IDT;
+
+   the guest's interrupt shadow holds the events of 2, 4 and 5 only when they are delivered to the
+   guest: an intercepted SMI, NMI or INTR exits also in the shadow, which the VMCB then records
+   (15.21.5: the shadow is a property of the guest's instruction stream; KVM likewise, "vmexits
+   aren't blocked by the interrupt shadow"; QEMU's TCG holds them);
 6. a virtual interrupt (V_IRQ with V_INTR_PRIO > V_TPR or V_IGN_TPR, guest EFLAGS.IF, the virtual
    GIF, not in a shadow; 15.21.4): #VMEXIT(VINTR) (64h, V_IRQ stays set) with the VINTR intercept,
    else V_IRQ is cleared and V_INTR_VECTOR delivered as an external interrupt;
@@ -523,7 +548,7 @@ def stepAtSvm (m : Machine) : Machine :=
   let s := c.svmx
   if s.inject &&& 0x80000000 != 0 then injectEvent m else
   let g := c.svmOn
-  if s.gif && m.smiPending && !c.smm && !c.shadow then
+  if s.gif && m.smiPending && !c.smiHeld && (!c.shadow || (g && Svm.bit s.i3 2)) then
     if g && Svm.bit s.i3 2 then Svm.vmexitM m { code := 0x62, info1 := 1 }
     else
       let m := if g then { m with cpu := { c with svmx := { s with hostTlb := {} } } } else m
@@ -536,9 +561,9 @@ def stepAtSvm (m : Machine) : Machine :=
   if dp != 0 && !c.shadow then dbTrap { m with cpu := { m.cpu with halted := false } } dp
   else
   let n := c.sysbx
-  if s.gif && n.nmiPending && n.nmiDelay == 0 && !n.nmiBlocked && !c.shadow then
+  if s.gif && n.nmiPending && n.nmiDelay == 0 && !n.nmiBlocked && (!c.shadow || (g && Svm.bit s.i3 1)) then
     if g && Svm.bit s.i3 1 then Svm.vmexitM m { code := 0x61 } else deliverNmi m
-  else if s.gif && m.intr && c.physIntrOk && !c.shadow then
+  else if s.gif && m.intr && c.physIntrOk && (!c.shadow || (g && Svm.bit s.i3 0)) then
     if g && Svm.bit s.i3 0 then Svm.vmexitM m { code := 0x60 }
     else
       let m := { m with cpu := { m.cpu with halted := false } }
@@ -570,8 +595,8 @@ def Machine.svmIdle (m : Machine) : Bool :=
   let c := m.cpu
   let s := c.svmx
   let n := c.sysbx
-  c.halted && s.inject == 0 && (if s.gif then m.dbPend else m.dbPend &&& ~~~0xF) == 0 &&
-    !(s.gif && m.smiPending && !c.smm) && m.timerAt == maxU64 &&
+  c.halted && s.inject &&& 0x80000000 == 0 && (if s.gif then m.dbPend else m.dbPend &&& ~~~0xF) == 0 &&
+    !(s.gif && m.smiPending && !c.smiHeld) && m.timerAt == maxU64 &&
     !(s.gif && m.intr && c.physIntrOk) && !c.vintrReady &&
     !(s.gif && (n.nmiPending || m.apic.nmi) && (!n.nmiBlocked || n.nmiDelay != 0)) &&
     !(s.gif && m.apic.init && !c.smm)
@@ -579,7 +604,7 @@ def Machine.svmIdle (m : Machine) : Bool :=
 /-- `true` if the machine can make no progress without external input. -/
 def Machine.idle (m : Machine) : Bool :=
   if m.cpu.svmx.guest || !m.cpu.svmx.gif then m.svmIdle else
-  m.cpu.halted && m.dbPend == 0 && !m.smiPending && m.timerAt == maxU64 &&
+  m.cpu.halted && m.dbPend == 0 && !(m.smiPending && !m.cpu.smiHeld) && m.timerAt == maxU64 &&
     !(m.intr && m.cpu.eflags &&& Flag.IF != 0) &&
     !((m.cpu.sysbx.nmiPending || m.apic.nmi) && (!m.cpu.sysbx.nmiBlocked || m.cpu.sysbx.nmiDelay != 0))
 

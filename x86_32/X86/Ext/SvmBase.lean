@@ -32,6 +32,10 @@ host's EFLAGS.IF at VMRUN (AMD APM vol. 2, 15.21.1). -/
 @[inline] def Cpu.physIntrOk (c : Cpu) : Bool :=
   if c.svmOn && c.svmx.vIntrMasking then c.svmx.hostIf else c.eflags &&& Flag.IF != 0
 
+/-- SMIs are held: in SMM, or between SMM_CTL ENTER and EXIT (15.30.3: ENTER blocks "further NMI and
+SMI interrupts", EXIT "unconditionally reenable[s] SMI"). -/
+@[inline] def Cpu.smiHeld (c : Cpu) : Bool := c.smm || c.svmx.smmCtlIn
+
 /-- A virtual interrupt is taken (15.21.4): V_IRQ pending with V_INTR_PRIO above V_TPR (or
 V_IGN_TPR), guest EFLAGS.IF = 1, GIF and the virtual GIF (if enabled, 15.33.2) set, not in an
 interrupt shadow. -/
@@ -45,7 +49,8 @@ processor restarts at the reset vector), GIF = 1; VM_CR.SVMDIS is cleared unless
 (15.30.1); the MSRs (VM_HSAVE_PA, SVM_KEY, TSC_RATIO, the other VM_CR bits) keep their values. -/
 def SvmState.afterInit (s : SvmState) : SvmState :=
   { vmCr := if s.vmCr &&& 8 == 0 then s.vmCr &&& ~~~0x10 else s.vmCr,
-    hsavePa := s.hsavePa, svmKey := s.svmKey, tscRatio := s.tscRatio, ignne := s.ignne }
+    hsavePa := s.hsavePa, svmKey := s.svmKey, tscRatio := s.tscRatio, ignne := s.ignne,
+    smmCtlIn := s.smmCtlIn, smmCtlNmi := s.smmCtlNmi }
 
 namespace Svm
 
@@ -109,13 +114,20 @@ treats it as non-selective (table 15-7). -/
 
 /-! ## I/O and MSRs (15.10, 15.11) -/
 
+/-- Bit `b` of the permission-map byte at system-physical `a`, read like every other physical access
+(`physRd`): above 4 GiB (where the model has no memory) the byte reads as open bus FFh, so an access
+covered by a map there is intercepted (fail closed), also for a map whose pages cross 4 GiB. -/
+@[inline] def pmBit (a : UInt64) (b : UInt32) : M Bool := do
+  return ((← physRd a 1) >>> b) &&& 1 != 0
+
 /-- The IOPM bits of an access of `sz` bytes at `port` (bit p of the 12 KiB map at IOPM_BASE_PA
 for port p; ports above FFFFh of a wrapping access use the map's first bits of its third page). -/
-def iopmHit (base : UInt64) (port : UInt32) (sz : Sz) (mem : ByteArray) : Bool :=
-  (List.range sz.toNat).any fun k =>
+def iopmHit (base : UInt64) (port : UInt32) (sz : Sz) : M Bool := do
+  let mut hit := false
+  for k in List.range sz.toNat do
     let p := port + k.toUInt32
-    let a := base + (p >>> 3).toUInt64
-    a >>> 32 == 0 && (rdBytes mem a.toUInt32 1 >>> (p &&& 7)) &&& 1 != 0
+    if ← pmBit (base + (p >>> 3).toUInt64) (p &&& 7) then hit := true
+  return hit
 
 /-- IN/OUT/INS/OUTS: the IOIO intercept after the virtual-8086/IOPL/TSS-bitmap checks and before
 every other exception (15.10.2). EXITINFO1 (figure 15-2): port (31:16), effective segment (12:10,
@@ -124,8 +136,10 @@ the default DS for OUTS, ES for INS), address size (A32 bit 8, A16 bit 7), opera
 def ioio (port : UInt32) (sz : Sz) (inp str rep : Bool) (seg : UInt8) (adsz : Sz) : M Unit := fun m =>
   let c := m.cpu
   if !(c.svmOn && bit c.svmx.i3 27) then .ok () m
-  else if !iopmHit (c.svmx.iopm &&& ~~~0xFFF) port sz m.mem then .ok () m
-  else
+  else match iopmHit (c.svmx.iopm &&& ~~~0xFFF) port sz m with
+  | .error f m => .error f m
+  | .ok false m => .ok () m
+  | .ok true m =>
     let info : UInt64 := (port.toUInt64 <<< 16) ||| ((if str then seg.toUInt64 else 0) <<< 10) |||
       (if adsz == 4 then 0x100 else 0x80) |||
       (if sz == 4 then 0x40 else if sz == 2 then 0x20 else 0x10) |||
@@ -146,19 +160,19 @@ MSR's own (15.11); EXITINFO1 = 0 for RDMSR, 1 for WRMSR. -/
 def msr (n : UInt32) (write : Bool) : M Unit := fun m =>
   let c := m.cpu
   if !(c.svmOn && bit c.svmx.i3 28) then .ok () m else
-  let hit := match msrpmPos n with
-    | none => true
-    | some (off, b) =>
-      let a := (c.svmx.msrpm &&& ~~~0xFFF) + off.toUInt64
-      a >>> 32 == 0 && (rdBytes m.mem a.toUInt32 1 >>> (b + (if write then 1 else 0))) &&& 1 != 0
-  if hit then exitInstr 0x7C (if write then 1 else 0) 0 m else .ok () m
+  let r : M Bool := match msrpmPos n with
+    | none => pure true
+    | some (off, b) => pmBit ((c.svmx.msrpm &&& ~~~0xFFF) + off.toUInt64) (b + (if write then 1 else 0))
+  match r m with
+  | .error f m => .error f m
+  | .ok hit m => if hit then exitInstr 0x7C (if write then 1 else 0) 0 m else .ok () m
 
 /-- A guest WRMSR (not intercepted) of an MSR that affects address translation (MTRRs 200h-2FFh and
-2FFh, SYSCFG and the IORRs/TOP_MEM C001_0010h-C001_001Ah) flushes the TLB entries of all ASIDs
+2FFh, SYSCFG and the IORRs/TOP_MEM C001_0010h-C001_001Ah, TOP_MEM2 C001_001Dh) flushes the TLB entries of all ASIDs
 (15.16.1): the host's set-aside entries are dropped (the running ASID's by the MSR itself). -/
 @[inline] def wrmsrGuest (n : UInt32) : M Unit := fun m =>
   let c := m.cpu
-  if c.svmOn && ((0x200 ≤ n && n ≤ 0x2FF) || (0xC0010010 ≤ n && n ≤ 0xC001001A)) then
+  if c.svmOn && ((0x200 ≤ n && n ≤ 0x2FF) || (0xC0010010 ≤ n && n ≤ 0xC001001A) || n == 0xC001001D) then
     .ok () { m with cpu := { c with svmx := { c.svmx with hostTlb := {} } } }
   else .ok () m
 
@@ -203,6 +217,16 @@ def pause : M Unit := fun m =>
   else if armed && bit c.svmx.i4 12 then exitInstr 0x8C 0 0 m
   else if bit c.svmx.i4 11 then exitInstr 0x8B 0 0 m
   else .ok () m
+
+/-- FERR_FREEZE (vector 3 bit 30, exit code 7Eh): with CR0.NE = 0, a waiting x87 instruction with a
+pending unmasked exception freezes the processor until IGNNE# (or an interrupt) in legacy FERR
+handling; the intercept exits instead, at the waiting instruction. The model does not freeze a
+processor without the intercept (FERR# raises IRQ13 and execution continues, `Fpu.fpPending`, as with
+IGNNE# asserted), so the exit is taken whenever the freeze condition holds and the IGNNE MSR
+(C001_0115h, 15.30.2) does not assert IGNNE. -/
+@[inline] def ferrFreeze : M Unit := fun m =>
+  let c := m.cpu
+  if c.svmOn && bit c.svmx.i3 30 && c.svmx.ignne &&& 1 == 0 then exitInstr 0x7E 0 0 m else .ok () m
 
 /-- The task-switch intercept (15.14.1), after the incoming TSS has been checked: EXITINFO1 = the
 TSS selector, EXITINFO2 = the error code (31:0) with bit 36 for IRET, 38 for a far JMP, 44 if an
@@ -270,6 +294,23 @@ to the APIC's TPR as well). -/
 @[inline] def setVTpr (v : UInt32) : M Unit := modCpu fun c =>
   if c.svmOn then { c with svmx := { c.svmx with vTpr := v &&& 0xF } } else c
 
+/-! ## Host state swapped at VMRUN -/
+
+/-- SPEC_CTRL (MSR 48h) value kept in `Cpu.msrs` by `Sys.msr?`. -/
+@[inline] def specCtrlOf (c : Cpu) : UInt64 := ((c.msrs.find? (·.1 == 0x48)).map (·.2)).getD 0
+@[inline] def withSpecCtrl (c : Cpu) (v : UInt64) : Cpu :=
+  { c with msrs := (0x48, v) :: c.msrs.filter (·.1 != 0x48) }
+
+/-- Leaving guest mode by INIT (an INIT the guest does not intercept resets the processor, 15.13.4):
+the registers VMRUN swapped for the guest's get the host's values back, since INIT itself does not
+modify them (table 14-1): PAT (gPAT replaced it under nested paging; vol. 3 VMRUN: "the host PAT
+register is unchanged" by gPAT) and SPEC_CTRL. The rest of the guest's state is overwritten by the
+INIT state or discarded with the SVM controls (`SvmState.afterInit`). -/
+def initRestore (c : Cpu) : Cpu :=
+  if !c.svmx.guest then c else
+  let c := if c.svmx.np then { c with sysx := { c.sysx with pat := c.svmx.hostPat } } else c
+  withSpecCtrl c c.svmx.host.specCtrl
+
 /-! ## SMM (15.22) -/
 
 /-- The virtual-interrupt quadword in the format of VMCB offset 060h (V_TPR, V_IRQ, V_GIF,
@@ -282,20 +323,20 @@ def vintWord (s : SvmState) : UInt64 :=
 /-- The SVM fields of the AMD64 SMM state-save map (APM vol. 2, table 10-1), as offsets from
 SMBASE + 8000h with their quadword values, written by SMM entry (`smmEnter`). An SMI taken in guest
 mode (one the guest does not intercept, 15.22) records it: SVM Guest (FED8h) = 1, the guest's VMCB
-physical address (FEE0h), its virtual-interrupt state (FEE8h, the VMCB 060h format), and the nested
-paging context the SMM handler needs to translate guest addresses: guest PAT (FF20h), host EFER
-(FF28h), host CR4 (FF30h), nCR3 (FF38h) and host CR0 (FF40h); outside guest mode they are 0, as are
-gPAT and nCR3 without nested paging. The table marks them read-only, and RSM does not read them back:
-guest mode, the VMCB and the host state stay on chip across SMM (`SvmState`), so RSM returns to the
-guest exactly as it was interrupted (SMM software changing these fields has no effect). FEF0h–FEF7h
-(reserved) is written as 0. -/
+physical address (FEE0h), its virtual-interrupt state (FEE8h, the VMCB 060h format), and the host
+context: guest PAT (FF20h, with nested paging), host EFER (FF28h), host CR4 (FF30h), host CR3
+(FF38h, "SVM Host CR3" in table 10-1; KVM's `svm_host_cr3`) and host CR0 (FF40h); outside guest mode
+they are 0, as is gPAT without nested paging. RSM does not read them back (a model choice: the APM
+does not say what RSM does with them): guest mode, the VMCB and the host state stay on chip across SMM
+(`SvmState`), so RSM returns to the guest exactly as it was interrupted, and SMM software changing
+these fields has no effect. FEF0h–FEF7h (reserved) is written as 0. -/
 def smmSave (c : Cpu) : List (UInt32 × UInt64) :=
   let s := c.svmx
   let g := s.guest
   let z (x : Bool) (v : UInt64) : UInt64 := if x then v else 0
   [(0x7ED8, z g 1), (0x7EE0, z g s.vmcb), (0x7EE8, z g (vintWord s)), (0x7EF0, 0),
    (0x7F20, z (g && s.np) c.sysx.pat), (0x7F28, z g s.host.efer.toUInt64), (0x7F30, z g s.host.cr4.toUInt64),
-   (0x7F38, z (g && s.np) s.ncr3), (0x7F40, z g s.host.cr0.toUInt64)]
+   (0x7F38, z g s.host.cr3.toUInt64), (0x7F40, z g s.host.cr0.toUInt64)]
 
 end Svm
 end X86

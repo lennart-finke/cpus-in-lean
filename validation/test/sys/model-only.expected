@@ -488,9 +488,9 @@ svmm.init.guest: code=0000005e i1=00000001 host_sx=0
 svmm.smi.host: gif0=0 after_stgi=1
 svmm.smi.icpt: code=00000062 i1=00000001 rip=00000002 smm_before_stgi=0 smm=1
 svmm.smi.guest: code=00000081 smm=1
-svmm.smi.save.guest: guest=00000001:00000000 vmcb_ok=1 vint=00030005:00000041 efer=00001000 hefer=00001000 hcr0=00000033 hcr4=00040610 gpat=00000000 ncr3=00000000
+svmm.smi.save.guest: guest=00000001:00000000 vmcb_ok=1 vint=00030005:00000041 efer=00001000 hefer=00001000 hcr0=00000033 hcr4=00040610 gpat=00000000 hcr3_ok=1
 svmm.smi.save.host: smm=1 guest=00000000 vmcb=00000000 hefer=00000000 efer_svme=00001000
-svmm.smi.save.np: code=00000081 smm=1 guest=00000001 gpat=00070406:00070406 ncr3_ok=1 hefer=00001000 hcr0=80000033 hcr4_ok=1
+svmm.smi.save.np: code=00000081 smm=1 guest=00000001 gpat=00070406:00070406 hcr3_ok=1 hefer=00001000 hcr0=80000033 hcr4_ok=1
 svmm.skinit: eax=00030000 edx_sig=1 esp=00040000 fl=00000002 cr0=00000011 cr4=00000000 efer=00000000 vmcr=00000007 cs=00000008 ss=00000010 ebx=00000000 esi=00000000
 svmm.skinit.icpt: code=00000086
 svmm.swap: code=00000081 guest_spec=00000004 guest_pat=06060606 host_spec=00000001 host_pat=00070406:00070406 vmcb_spec=00000004
@@ -528,5 +528,17 @@ svm.np.h32.gpae.exec.nx: code=00000081 i1=00000000:00000000 i2=00000000:00000000
 svm.np.h32.gpae.rd.rsvd: code=00000081 i1=00000000:00000000 i2=00000000:00000000 rax=00000000 d0=00000000 nad=000000ff gad=00000000
 svm.np.hostpg0: code=ffffffff
 svmm.svfx: 400 cases, 0 differ from svmref.py
-svmm.npx: 400 cases, 0 differ from svmref.py
+svmm.npx: 400 cases, 0 differ from svmref.py, 138 depend on a reading the APM leaves open
+svmm.df.0: code=00000048 i1=00000000 ii=00000033:80000b0d
+svmr.gif.ibp: gif0=0 gif1=1
+svmr.intr.shadow.deliver: code=00000081 rip=00000000 rax=00000050 shadow=0
+svmr.intr.shadow.icpt: code=00000060 rip=00000000 rax=00000000 shadow=1
+svmr.pm4g: iopm=0000007b iopm_cross=0000007b msrpm=0000007c
+svmr.vmcr.lock_svmdis: vec=0000000d vmcr=00000008 after=00000000
+svmr.ncr3.4g: code=00000400 i1=00000001:0000001d i2_rip=1
+svmr.ferr.freeze: code=0000007e rip=0000000a
+svmr.ferr.ignne: code=00000081 rip=0000000b
+svmr.smmctl.guest: code=00000072 ebx=600df00d smi_held=1 smi_after_exit=1
+svmr.smi.realpg: code=00000081 smm=1 cr0=80000010
+svmr.smmlock: before=0000ffff locked=0000000d hwcr0=00000001
 END
