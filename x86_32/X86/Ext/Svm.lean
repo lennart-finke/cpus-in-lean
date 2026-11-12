@@ -161,6 +161,40 @@ def restoreHostTlb : M Unit := modM fun m =>
 @[inline] def withSpecCtrl (c : Cpu) (v : UInt64) : Cpu :=
   { c with msrs := (0x48, v) :: c.msrs.filter (·.1 != 0x48) }
 
+/-- The host state VMRUN saves from CPU state `c` (EIP: the instruction after VMRUN). -/
+def hostOf (c : Cpu) : SvmHost :=
+  { es := c.es, cs := c.cs, ss := c.ss, ds := c.ds,
+    gdtBase := c.gdtBase, gdtLimit := c.gdtLimit, idtBase := c.idtBase, idtLimit := c.idtLimit,
+    efer := c.efer, cr0 := c.cr0, cr3 := c.cr3, cr4 := c.cr4,
+    eflags := c.eflags, eip := c.eip, esp := c.esp, eax := c.eax, dr6 := c.dr6, dr7 := c.dr7,
+    specCtrl := specCtrlOf c }
+
+/-- The CPU state #VMEXIT leaves from the guest's `c` and the saved host state `h`: the host's
+segments ES/CS/SS/DS, GDTR, IDTR, EFER, CR0 with PE, CR3, CR4, RFLAGS without VM and RF, RIP, RSP,
+RAX, DR6, DR7 with every breakpoint disabled and SPEC_CTRL; the guest controls cleared, GIF = 0. -/
+def withHost (c : Cpu) (h : SvmHost) : Cpu :=
+  let c := { c with
+    svmx := { c.svmx with guest := false, gif := false, icr := 0, idr := 0, iexc := 0, i3 := 0, i4 := 0,
+                          i5 := 0, tscOffset := 0, asid := 0, vIrq := false, vIntrMasking := false,
+                          vGifEn := false, np := false, vmsaveVirt := false, inject := 0 },
+    es := h.es, cs := h.cs, ss := h.ss, ds := h.ds,
+    gdtBase := h.gdtBase, gdtLimit := h.gdtLimit, idtBase := h.idtBase, idtLimit := h.idtLimit,
+    efer := h.efer, cr0 := h.cr0 ||| CR0.PE, cr3 := h.cr3, cr4 := h.cr4,
+    eflags := h.eflags &&& ~~~(Flag.VM ||| Flag.RF), eip := h.eip, esp := h.esp, eax := h.eax,
+    dr6 := h.dr6, halted := false, shadow := false,
+    lmx := { c.lmx with ripHi := 0, rspHi := 0 } }
+  (withSpecCtrl c h.specCtrl).setDr7 (h.dr7 &&& ~~~0xFF)
+
+/-- VMRUN's TLB step (15.16): the host's entries are set aside in `SvmState.hostTlb` (dropped with
+TLB_CONTROL 01h, `flushAll`) and the guest starts with an empty TLB. -/
+def enterGuestTlb (m : Machine) (flushAll : Bool) : Machine :=
+  let ht : SvmTlb := if flushAll then {} else
+    { tag := m.tlbTag, val := m.tlbVal, large := m.tlbLarge, regions := m.tlbLargeRegions,
+      global := m.tlbGlobal }
+  { m with tlbTag := Array.replicate tlbSize 0, tlbVal := Array.replicate tlbSize 0, tlbLarge := false,
+           tlbLargeRegions := #[], tlbGlobal := false, dbPend := 0, dbHit := 0,
+           cpu := { m.cpu with svmx := { m.cpu.svmx with hostTlb := ht } } }
+
 /-- The return to the host after the guest state has been saved: write EXITCODE, EXITINFO1/2,
 EXITINTINFO and nRIP, clear EVENTINJ, clear the guest controls (intercepts, V_IRQ, V_INTR_MASKING,
 TSC_OFFSET, nested paging, ASID 0), reinstate the host's TLB and reload the host state with
@@ -178,18 +212,7 @@ def exitToHost (e : VmExit) : M Unit := do
   wr64 (v + 0xA8) 0
   let h := s.host
   restoreHostTlb
-  modCpu fun c =>
-    let c := { c with
-      svmx := { c.svmx with guest := false, gif := false, icr := 0, idr := 0, iexc := 0, i3 := 0, i4 := 0,
-                            i5 := 0, tscOffset := 0, asid := 0, vIrq := false, vIntrMasking := false,
-                            vGifEn := false, np := false, vmsaveVirt := false, inject := 0 },
-      es := h.es, cs := h.cs, ss := h.ss, ds := h.ds,
-      gdtBase := h.gdtBase, gdtLimit := h.gdtLimit, idtBase := h.idtBase, idtLimit := h.idtLimit,
-      efer := h.efer, cr0 := h.cr0 ||| CR0.PE, cr3 := h.cr3, cr4 := h.cr4,
-      eflags := h.eflags &&& ~~~(Flag.VM ||| Flag.RF), eip := h.eip, esp := h.esp, eax := h.eax,
-      dr6 := h.dr6, halted := false, shadow := false,
-      lmx := { c.lmx with ripHi := 0, rspHi := 0 } }
-    (withSpecCtrl c h.specCtrl).setDr7 (h.dr7 &&& ~~~0xFF)
+  modCpu fun c => withHost c h
   let c ← cpu
   -- the host's PAE PDPTEs from its CR3 (legacy PAE paging); illegal ones shut down
   if c.cr0 &&& CR0.PG != 0 && c.cr4 &&& CR4.PAE != 0 && !LongMode.lma c then
@@ -298,12 +321,7 @@ def vmrun (i : Inst) : M Unit := do
   let c ← cpu
   if c.smm then unsupported "VMRUN in SMM (undefined)"
   -- save the host state (hidden on-chip, see the module documentation)
-  let host : SvmHost := {
-    es := c.es, cs := c.cs, ss := c.ss, ds := c.ds,
-    gdtBase := c.gdtBase, gdtLimit := c.gdtLimit, idtBase := c.idtBase, idtLimit := c.idtLimit,
-    efer := c.efer, cr0 := c.cr0, cr3 := c.cr3, cr4 := c.cr4,
-    eflags := c.eflags, eip := c.eip, esp := c.esp, eax := c.eax, dr6 := c.dr6, dr7 := c.dr7,
-    specCtrl := specCtrlOf c }
+  let host := hostOf c
   modS fun s => { s with vmcb := v, host }
   -- the control area
   let icr ← rd32 v
@@ -391,13 +409,7 @@ def vmrun (i : Inst) : M Unit := do
     if c.cr4 &&& CR4.PAE == 0 then (if c.cr4 &&& CR4.PSE != 0 then 1 else 0)
     else if LongMode.lma c then 3 else 2
   -- the host's TLB entries are set aside (TLB_CONTROL 01h: flushed); the guest starts empty
-  modM fun m =>
-    let ht : SvmTlb := if tlbCtl == 1 then {} else
-      { tag := m.tlbTag, val := m.tlbVal, large := m.tlbLarge, regions := m.tlbLargeRegions,
-        global := m.tlbGlobal }
-    { m with tlbTag := Array.replicate tlbSize 0, tlbVal := Array.replicate tlbSize 0, tlbLarge := false,
-             tlbLargeRegions := #[], tlbGlobal := false, dbPend := 0, dbHit := 0,
-             cpu := { m.cpu with svmx := { m.cpu.svmx with hostTlb := ht } } }
+  modM fun m => enterGuestTlb m (tlbCtl == 1)
   let nefer := (efer.toUInt32 &&& ~~~EFER.LMA) ||| (if lme && pg then EFER.LMA else 0)
   let in64 := nefer &&& EFER.LMA != 0 && lBitCs
   modCpu fun c =>
