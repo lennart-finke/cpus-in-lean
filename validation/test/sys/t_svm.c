@@ -480,17 +480,20 @@ static void t_exc(void) {
    only #DF intercepted the #UD -> #GP -> #DF chain exits with the #GP in EXITINTINFO; with #GP
    intercepted the first #GP exits with the #UD in EXITINTINFO; with neither, the shutdown intercept
    (15.14.3). */
+/* c = 0 (the #DF intercept of a double fault from combining exceptions) is model-only: TCG shuts
+   down instead (m_df0) */
+static void t_df_case(int c, const char *pfx) {
+	vmcb_flat(G(0x0f, 0x0b));
+	VM32(S_IDTR + 4) = 0;
+	VM32(C_EXC) = c == 0 ? (1 << 8) : c == 1 ? (1 << 13) : 0;
+	if (c == 2) VM32(C_I3) |= 1u << I_SHUTDOWN;
+	run();
+	kprintf("%s.%d: code=%x i1=%x", pfx, c, (u32)VM64(C_CODE), c == 1 ? (u32)VM64(C_INFO1) : 0);
+	x64("ii", c == 2 ? 0 : VM64(C_EII));
+	kputc('\n');
+}
 static void t_df(void) {
-	for (int c = 0; c < 3; c++) {
-		vmcb_flat(G(0x0f, 0x0b));
-		VM32(S_IDTR + 4) = 0;
-		VM32(C_EXC) = c == 0 ? (1 << 8) : c == 1 ? (1 << 13) : 0;
-		if (c == 2) VM32(C_I3) |= 1u << I_SHUTDOWN;
-		run();
-		kprintf("svm.df.%d: code=%x i1=%x", c, (u32)VM64(C_CODE), c == 1 ? (u32)VM64(C_INFO1) : 0);
-		x64("ii", c == 2 ? 0 : VM64(C_EII));
-		kputc('\n');
-	}
+	for (int c = 1; c < 3; c++) t_df_case(c, "svm.df");
 }
 
 /* Priority of instruction intercepts and exceptions (table 15-7) in a CPL-3 guest with every
@@ -1161,6 +1164,14 @@ static u32 fz_case(u32 seed, int qemu) {
 	VM64(S_RFLAGS) = 2 | (frnd() & 0x8D5);
 	VM64(S_DR7) = 0x400 | (frnd() & 0x2000 & 0);
 	gdt[31] = seg_desc(0, 0xFFFFF, 0x12, 0xC);
+	/* the QEMU-compared fuzzer also varies the interrupt shadow and RFLAGS.RF the guest starts with
+	   (saved as of the moment an intercept triggers, 15.7.1, 15.21.5); drawn last, so the model-only
+	   replay of svmref.py (qemu = 0) is unchanged */
+	if (qemu) {
+		VM32(C_INTST) = frnd() % 4 == 0;
+		/* not for VMMCALL itself: TCG's VMMCALL exit saves RF = 0 */
+		if (frnd() % 4 == 0 && !streq(f->n, "vmmcall")) VM64(S_RFLAGS) |= 0x10000;
+	}
 	return k;
 }
 
@@ -1176,10 +1187,11 @@ static void fz_show(const char *tag, u32 n, u32 k, u32 rip, int qemu) {
 	u32 rax = (u32)VM64(S_RAX);
 	if (code == 0x81 && fpool[k].code[0] != 0x0f && (fpool[k].code[0] == 0xe4 || fpool[k].code[1] == 0xed)) rax = 0;
 	u32 i2 = (code == 0x7B) ? (u32)VM64(C_INFO2) - rip : (code == 0x4E || code == 0x400) ? (u32)VM64(C_INFO2) : 0;
-	kprintf("%s %d %s cpl=%d: code=%x i1=%x i2=%x rip=%x rax=%x rsp=%x fl=%x ebx=%x esi=%x edi=%x\n", tag, n,
+	kprintf("%s %d %s cpl=%d: code=%x i1=%x i2=%x rip=%x rax=%x rsp=%x fl=%x ebx=%x esi=%x edi=%x sh=%d\n", tag, n,
 	        fpool[k].n, VM8(S_CPL), code, i1, i2, (u32)VM64(S_RIP) - (code == 0x81 && (u32)VM64(S_RIP) >= (u32)svm_gisr &&
 	        (u32)VM64(S_RIP) < (u32)svm_gisr + 4096 ? (u32)svm_gisr : rip), rax,
-	        (u32)VM64(S_RSP) - (u32)gstack, (u32)VM64(S_RFLAGS), svm_g[3], svm_g[6] - (u32)gdata, svm_g[7] - (u32)gdata);
+	        (u32)VM64(S_RSP) - (u32)gstack, (u32)VM64(S_RFLAGS), svm_g[3], svm_g[6] - (u32)gdata, svm_g[7] - (u32)gdata,
+	        VM32(C_INTST) & 1);
 }
 
 /* SVM fuzzer (QEMU-compared): `svf` cases (default 300) of random intercept vectors, guest state and
@@ -1365,9 +1377,10 @@ static void m_svfx(void) {
 
 /* Nested-paging cases (32-bit and PAE hosts, every guest mode) against svmref.py's 2D walk. */
 static void m_npx(void) {
-	u32 bad = 0, n = sizeof npx / sizeof npx[0];
+	u32 bad = 0, n = sizeof npx / sizeof npx[0], open = 0;
 	for (u32 i = 0; i < n; i++) {
 		const struct npx *x = &npx[i];
+		open += x->open;
 		host_paging(x->c.hmode);
 		npc_run(&x->c);
 		u32 o[7];
@@ -1385,7 +1398,9 @@ static void m_npx(void) {
 			kputc('\n');
 		}
 	}
-	kprintf("svmm.npx: %d cases, %d differ from svmref.py\n", n, bad);
+	/* `open`: cases whose outcome depends on a point the APM leaves open (svmref.py's documentation);
+	   for them the check is consistency with the documented reading, not with the APM */
+	kprintf("svmm.npx: %d cases, %d differ from svmref.py, %d depend on a reading the APM leaves open\n", n, bad, open);
 }
 
 /* ---------------- two CPUs (smp=2) ---------------- */
@@ -1448,12 +1463,22 @@ static void ap_vmrun(void) {
 	                 :: "m"(gcount), "m"(ap_vmcb) : "memory");
 }
 
+static volatile u32 sap_mode, sap_res[6];
+static void svm_ap_np(void);
 void svm_ap_main(void) {
 	struct { u16 lim; u32 base; } __attribute__((packed)) id = { sizeof idt - 1, (u32)idt };
 	__asm__ volatile("lidt %0" :: "m"(id));
 	LR(0xF0) = 0x1FF; LR(0x80) = 0;
+	if (sap_mode == 3) {   /* after the INIT of svm_ap_np: what INIT left */
+		u64 pat = rdmsr(0x277);
+		sap_res[0] = (u32)pat; sap_res[1] = (u32)(pat >> 32); sap_res[2] = (u32)rdmsr(0x48);
+		sap_res[3] = (u32)rdmsr(EFER_MSR); sap_res[4] = RDCR(0);
+		sap_res[5] = 1;
+		return;
+	}
 	wrmsr(EFER_MSR, rdmsr(EFER_MSR) | SVME);
 	wrmsr(VM_HSAVE, (u32)ap_hsave);
+	if (sap_mode == 2) { svm_ap_np(); return; }
 	sap_started = 1;
 	for (int k = 0; k < 3; k++) {
 		ap_guest_vmcb();
@@ -1500,8 +1525,9 @@ void test_svm_smp(void) {
 		else for (volatile int d = 0; d < 200000; d++) {}
 	}
 	sap_wait(&sap_got, 3);   /* the AP has stored the INIT exit code (then takes the INIT at STGI) */
-	kprintf("svm.smp: started=%d intr_exit=%x nmi_exit=%x init_exit=%x ap_intr=%d ap_nmi=%d phase=%d\n", sap_started,
-	        sap_code[0], sap_code[1], sap_code[2], sap_intr, sap_nmi, sap_phase);
+	/* the INIT exit (sap_code[2]) is model-only (test_svm_smp_model): TCG resets the CPU in guest mode */
+	kprintf("svm.smp: started=%d intr_exit=%x nmi_exit=%x ap_intr=%d ap_nmi=%d phase=%d\n", sap_started,
+	        sap_code[0], sap_code[1], sap_intr, sap_nmi, sap_phase);
 	/* the INIT was taken after the AP's STGI: hand the AP back to t_smp.c's AP loop, which the
 	   model-only SMP tests use */
 	trap_hook = old_hook;
@@ -1889,9 +1915,9 @@ static void m_smi(void) {
 	   Guest, VMCB address, virtual interrupt, and the nested-paging context (guest PAT, host EFER, CR4,
 	   nCR3, CR0), 0 outside guest mode; SMM entry and RSM keep EFER.SVME */
 #define SV(o) (*(volatile u32 *)(0xA0000 + (o)))
-	kprintf("svmm.smi.save.guest: guest=%x:%x vmcb_ok=%d vint=%x:%x efer=%x hefer=%x hcr0=%x hcr4=%x gpat=%x ncr3=%x\n",
+	kprintf("svmm.smi.save.guest: guest=%x:%x vmcb_ok=%d vint=%x:%x efer=%x hefer=%x hcr0=%x hcr4=%x gpat=%x hcr3_ok=%d\n",
 	        SV(0xFED8), SV(0xFEDC), SV(0xFEE0) == (u32)vmcb && SV(0xFEE4) == 0, SV(0xFEE8), SV(0xFEEC), SV(0xFED0),
-	        SV(0xFF28), SV(0xFF40), SV(0xFF30), SV(0xFF20), SV(0xFF38));
+	        SV(0xFF28), SV(0xFF40), SV(0xFF30), SV(0xFF20), SV(0xFF38) == RDCR(3) && SV(0xFF3C) == 0);
 	*cnt = 0;
 	clgi();
 	outb(0xB2, 0);
@@ -1907,10 +1933,11 @@ static void m_smi(void) {
 	vmcb_flat(G(0xe6, 0xb2, 0x90, 0x90));
 	VM64(C_NP) = 1; VM64(C_NCR3) = (u32)npd32; VM64(S_GPAT) = 0x0007040600070406ULL;
 	run();
-	u32 hcr4 = RDCR(4);
+	u32 hcr4 = RDCR(4), hcr3 = RDCR(3);
 	host_paging(0);
-	kprintf("svmm.smi.save.np: code=%x smm=%d guest=%x gpat=%x:%x ncr3_ok=%d hefer=%x hcr0=%x hcr4_ok=%d\n",
-	        (u32)VM64(C_CODE), *cnt, SV(0xFED8), SV(0xFF20), SV(0xFF24), SV(0xFF38) == (u32)npd32 && SV(0xFF3C) == 0,
+	/* FF38h is the host's CR3 ("SVM Host CR3", table 10-1), not nCR3 */
+	kprintf("svmm.smi.save.np: code=%x smm=%d guest=%x gpat=%x:%x hcr3_ok=%d hefer=%x hcr0=%x hcr4_ok=%d\n",
+	        (u32)VM64(C_CODE), *cnt, SV(0xFED8), SV(0xFF20), SV(0xFF24), SV(0xFF38) == hcr3 && SV(0xFF3C) == 0,
 	        SV(0xFF28), SV(0xFF40), SV(0xFF30) == hcr4);
 #undef SV
 }
@@ -2044,9 +2071,17 @@ static void m_misc(void) {
 	t_np_hostpg0();
 }
 
+static void r_shadow(void);
 void test_svm(void) {
 	if (!has_feature(0x80000001, 0, 2, 2)) { kputs("svm: not available\n"); return; }
 	svm_setup();
+	if (param("svmr", 0)) {   /* development runs of one review regression: the setup they need */
+		wrmsr(EFER_MSR, rdmsr(EFER_MSR) | SVME); wrmsr(VM_HSAVE, (u32)vmcb2); LR(0xF0) = 0x1FF;
+		gpd = page_alloc(1); gpt = page_alloc(1);
+		static const u8 smh[] = { 0x66, 0xff, 0x06, 0x00, 0x61, 0x0f, 0xaa };   /* inc dword [6100h]; rsm */
+		for (u32 k = 0; k < sizeof smh; k++) ((u8 *)0xA8000)[k] = smh[k];
+		return;
+	}
 	t_enable();
 	t_cpl3();
 	t_basic();
@@ -2072,10 +2107,365 @@ void test_svm(void) {
 	t_np(2);
 	t_fuzz();
 	t_npfuzz();
+	r_shadow();   /* TCG agrees: the shadow and RF as the intercept triggers (review regression) */
+}
+
+/* Model-only, smp=2 pass: an INIT the guest does not intercept resets the AP in a nested-paging guest;
+   PAT and SPEC_CTRL, which VMRUN replaced by gPAT and the guest's SPEC_CTRL, are the host's again
+   (INIT does not modify them; vol. 3 VMRUN: gPAT leaves the host PAT unchanged). The AP's host runs
+   with 32-bit paging (identity) and its own PAT; the BSP sends INIT, then STARTUP into the SVM
+   trampoline, where the AP reports. */
+static void svm_ap_np(void) {
+	WRCR(4, (RDCR(4) & ~0x20u) | 0x10);
+	WRCR(3, (u32)hpd32);
+	WRCR(0, RDCR(0) | 0x80000000u);
+	wrmsr(0x277, 0x0606060606060606ULL);
+	wrmsr(0x48, 0);
+	ap_guest_vmcb();
+	u8 *v = ap_vmcb;
+	*(u32 *)(v + C_I3) = 0;   /* no INIT intercept */
+	*(u64 *)(v + C_NP) = 1; *(u64 *)(v + C_NCR3) = (u32)npd32;
+	*(u64 *)(v + S_GPAT) = 0x0007040600070406ULL;
+	*(u64 *)(v + 0x6E0) = 1;   /* the guest's SPEC_CTRL */
+	__asm__ volatile(".byte 0x0f,0x01,0xdd" ::: "memory");   /* CLGI */
+	sap_phase = 20;
+	ap_vmrun();   /* the INIT resets the AP inside the guest: no return */
+	sap_phase = 21;
+}
+
+void test_svm_smp_model(void) {
+	if (!ap_vmcb) return;
+	/* test_svm_smp's INIT with the INIT intercept: #VMEXIT(INIT), 63h (15.13.4, table 15-12) */
+	kprintf("svmm.smp.init_exit: %x\n", sap_code[2]);
+	if (!hpd32) { hpd32 = page_alloc(1); hpdpt = page_alloc(1); hpd64 = page_alloc(4); }
+	for (u32 k = 0; k < 1024; k++) hpd32[k] = (k << 22) | 0x83 | (k >= 0x3F8 ? 0x18 : 0);
+	build_nested(0);
+	memcpy((void *)SAP_TRAMP, sap_tramp, sap_tramp_end - sap_tramp);
+	*(volatile u16 *)(SAP_TRAMP + (sap_gdtr - sap_tramp)) = sizeof gdt - 1;
+	*(volatile u32 *)(SAP_TRAMP + (sap_gdtr - sap_tramp) + 2) = (u32)gdt;
+	sap_stack_top = (u32)sap_stack + sizeof sap_stack;
+	sap_mode = 2; sap_phase = 0; sap_res[5] = 0;
+	ipi(1, 0xC500); ipi(1, 0x8500); ipi(1, 0x600 | (SAP_TRAMP >> 12));
+	sap_wait(&sap_phase, 20);
+	*gcount = 0;
+	sap_wait(gcount, 1);   /* the guest runs */
+	sap_mode = 3;
+	ipi(1, 0x4500);   /* INIT (not intercepted) */
+	ipi(1, 0x600 | (SAP_TRAMP >> 12));
+	sap_wait(&sap_res[5], 1);
+	kprintf("svmm.smp.init_np: guest_ran=%d pat=%x:%x spec=%x efer=%x pg=%d\n", *gcount != 0, sap_res[1], sap_res[0],
+	        sap_res[2], sap_res[3], sap_res[4] >> 31);
+	sap_mode = 0;
+	smp_restart_ap();
+}
+
+/* ---------------- long mode (long=1 pass, qemu-system-x86_64) ---------------- */
+
+/* Called by t_long.c in compatibility mode (EFER.LMA = 1, 4-level host paging, NXE): VMRUN from a
+   compatibility-mode host, so the nested tables are 4-level (15.25.3), for a guest without paging and
+   for a compatibility-mode guest (EFER.LMA = 1, CS.L = 0) with its own 4-level tables under nested
+   paging (the 2D walk of 15.25.5 with 4-level tables in both dimensions). The same accesses as t_np
+   (nacc); every exception is intercepted (a long-mode guest would need a 64-bit IDT). Nested tables:
+   identity 0..64 MiB in 2 MiB pages, the window GPA0 in 4 KiB pages (pages k = 0..15 of `npages`,
+   nperm; page 11 with reserved address bit 51); the guest's tables in window pages 12 (PML4), 13
+   (PDPT), 14 (PD0: identity 0..64 MiB), 15 (PD1: NWIN) and 10 (PT). */
+static u64 *lnpml4, *lnpdpt, *lnpd, *lnpt;
+
+static void build_nested4(void) {
+	if (!lnpml4) { lnpml4 = page_alloc(1); lnpdpt = page_alloc(1); lnpd = page_alloc(1); lnpt = page_alloc(1); }
+	if (!npages) npages = page_alloc(16);
+	memset(lnpml4, 0, 4096); memset(lnpdpt, 0, 4096); memset(lnpd, 0, 4096); memset(lnpt, 0, 4096);
+	lnpml4[0] = (u32)lnpdpt | 7;
+	lnpdpt[0] = (u32)lnpd | 7;
+	for (u32 k = 0; k < 32; k++) lnpd[k] = ((u64)k << 21) | 0x87;
+	lnpd[GPA0 >> 21] = (u32)lnpt | 7;
+	lnpd[(GPA0 >> 21) + 1] = (GPA0 + 0x200000) | 0x87 | 0x2000;   /* reserved bit 13 of a 2 MiB PDE */
+	for (int k = 0; k < 16; k++) lnpt[k] = nperm(k, 1) ? ((u32)npages + 0x1000 * k) | nperm(k, 1) : 0;
+	lnpt[11] = ((u32)npages + 0xB000) | 7 | (1ULL << 51);   /* above MAXPHYADDR 48: reserved */
+	memset(npages, 0, 16 * 4096);
+	*(u32 *)npages = 0x600DF00D;
+	*(u32 *)(npages + 0x2000) = 0x5EADBEEF;
+	u8 *code = npages + 0x7000;   /* mov eax,7777h; vmmcall */
+	code[0] = 0xb8; code[1] = 0x77; code[2] = 0x77; code[3] = 0; code[4] = 0; code[5] = 0x0f; code[6] = 0x01; code[7] = 0xd9;
+	/* the guest's 4-level tables (guest-physical addresses) */
+	u64 *pml4 = (u64 *)(npages + 0xC000), *pdpt = (u64 *)(npages + 0xD000), *pd0 = (u64 *)(npages + 0xE000),
+	    *pd1 = (u64 *)(npages + 0xF000), *pt = (u64 *)(npages + 0xA000);
+	pml4[0] = (GPA0 + 0xD000) | 7;
+	pdpt[0] = (GPA0 + 0xE000) | 7;
+	pdpt[1] = (GPA0 + 0xF000) | 7;
+	for (u32 k = 0; k < 32; k++) pd0[k] = ((u64)k << 21) | 0x87;
+	pd1[0] = (GPA0 + 0xA000) | 7;
+	pd1[2] = (GPA0 + 0x6000) | 7;   /* a guest page table in a page not present at the nested level */
+	u64 map[6] = { GPA0 | 7, (GPA0 + 0x1000) | 7, (GPA0 + 0x2000) | 7, 0, (GPA0 + 0x7000) | 7, (GPA0 + 0xB000) | 7 };
+	for (int k = 0; k < 6; k++) pt[k] = map[k];
+}
+
+void test_svm_long(void) {
+	if (!has_feature(0x80000001, 0, 2, 2)) { kputs("svm: not available\n"); return; }
+	if (!vmcb) svm_setup();
+	wrmsr(EFER_MSR, rdmsr(EFER_MSR) | SVME);
+	wrmsr(VM_HSAVE, (u32)vmcb2);
+	static const char *gn[] = { "goff", "", "", "glong" };
+	for (int gmode = 0; gmode < 4; gmode += 3) {
+		for (u32 a = 0; a < sizeof nacc / sizeof nacc[0]; a++) {
+			if (gmode == 0 && (nacc[a].off == 0x3000 || nacc[a].off == 0x400000)) continue;
+			build_nested4();
+			u32 addr;
+			if (gmode == 0) {
+				static const u32 gpa[] = { 0, 4, 0x1000, 0x2008, 0x2000, 0, 0x7000, 0xB000 };
+				addr = GPA0 + gpa[a];
+			} else addr = NWIN + nacc[a].off;
+			u32 rip = nacc[a].kind == 1 ? G(0x89, 0x01) : nacc[a].kind == 0 ? G(0x8b, 0x01) : G(0xff, 0xd1);
+			vmcb_flat(rip);
+			VM32(C_EXC) = 0xFFFFFFFF;
+			VM64(C_NP) = 1;
+			VM64(C_NCR3) = (u32)lnpml4;
+			VM64(S_GPAT) = 0x0007040600070406ULL;
+			svm_g[1] = addr;
+			VM64(S_RAX) = 0x11223344;
+			if (gmode == 3) {
+				VM64(S_EFER) = SVME | 0x100 | 0x400 | 0x800;   /* LME, LMA, NXE */
+				VM64(S_CR0) = 0x80010011; VM64(S_CR4) = 0x20; VM64(S_CR3) = GPA0 + 0xC000;
+			}
+			run();
+			/* accessed/dirty bits of the nested PTEs of window pages 0, 2, 3, 4, 5, 10, 12, 15 and of the
+			   guest PTEs of window pages 0, 1, 2, 4 */
+			u32 nad = 0, gad = 0;
+			static const int nk[] = { 0, 2, 3, 4, 5, 10, 12, 15 };
+			for (int j = 0; j < 8; j++) nad = (nad << 2) | (((u32)lnpt[nk[j]] >> 5) & 3);
+			static const int gk[] = { 0, 1, 2, 4 };
+			for (int j = 0; j < 4; j++) gad = (gad << 2) | (((u32)((u64 *)(npages + 0xA000))[gk[j]] >> 5) & 3);
+			kprintf("svm.np.h64.%s.%s: code=%x", gn[gmode], nacc[a].n, (u32)VM64(C_CODE));
+			x64("i1", VM64(C_CODE) == 0x81 ? 0 : VM64(C_INFO1));
+			x64("i2", VM64(C_CODE) == 0x81 ? 0 : (VM64(C_CODE) == 0x400 || VM64(C_CODE) == 0x4E) ? VM64(C_INFO2) : 0);
+			kprintf(" rax=%x d0=%x nad=%x gad=%x\n", VM64(C_CODE) == 0x81 ? (u32)VM64(S_RAX) : 0,
+			        *(u32 *)(npages + 4), nad, gad);
+		}
+	}
+}
+
+/* ---------------- review regressions (model-only, except r_shadow) ---------------- */
+
+/* With GIF = 0 an instruction-breakpoint match is ignored and discarded (table 15-10), like a data
+   breakpoint (m_gifdb); with GIF = 1 it faults. */
+__asm__(".globl rv_bpf\nrv_bpf:\n nop\n.globl rv_bpl\nrv_bpl:\n nop\n ret\n");
+extern char rv_bpf[], rv_bpl[];
+static volatile u32 rv_db;
+static int rv_hook(struct frame *f) {
+	if (f->vec == 1) { rv_db++; f->eflags |= 0x10000; return 1; }   /* RF: resume past the breakpoint */
+	return 0;
+}
+static void r_gif_ibp(void) {
+	int (*old)(struct frame *) = trap_hook;
+	trap_hook = rv_hook;
+	WRDR(0, (u32)rv_bpl); WRDR(6, 0);
+	rv_db = 0; clgi(); WRDR(7, 0x401); ((void (*)(void))rv_bpf)(); WRDR(7, 0x400); stgi();
+	u32 g0 = rv_db;
+	rv_db = 0; WRDR(7, 0x401); ((void (*)(void))rv_bpf)(); WRDR(7, 0x400);
+	trap_hook = old;
+	kprintf("svmr.gif.ibp: gif0=%d gif1=%d\n", g0, rv_db);
+}
+
+/* The interrupt shadow and RFLAGS.RF a #VMEXIT saves are those of the moment the intercept triggers
+   (15.7.1, 15.21.5): also for an intercepted exception (UD2 with the VMCB's shadow; an instruction
+   after MOV SS that takes an intercepted #PF), as for an intercepted instruction (CPUID). */
+static void r_shadow(void) {
+	vmcb_flat(G(0x0f, 0x0b));
+	VM32(C_EXC) = 1u << 6; VM32(C_INTST) = 1;
+	run();
+	u32 ud = (u32)VM64(C_CODE), uds = VM32(C_INTST) & 1;
+	vmcb_flat(G(0x0f, 0xa2));
+	VM32(C_I3) |= 1u << I_CPUID; VM32(C_INTST) = 1;
+	run();
+	kprintf("svmr.shadow.exc: ud=%x shadow=%d cpuid=%x shadow=%d\n", ud, uds, (u32)VM64(C_CODE), VM32(C_INTST) & 1);
+	build_gpt32();
+	u32 rip = G(0x8c, 0xd0, 0x8e, 0xd0, 0x8b, 0x01);   /* mov eax,ss; mov ss,eax; mov eax,[ecx] */
+	vmcb_flat(rip);
+	VM32(C_EXC) = 1u << 14;
+	VM64(S_CR0) = 0x80000011; VM64(S_CR4) = 0x10; VM64(S_CR3) = (u32)gpd;
+	svm_g[1] = GWIN + 0x1000;   /* not present */
+	run();
+	kprintf("svmr.shadow.movss_pf: code=%x rip=%x shadow=%d\n", (u32)VM64(C_CODE), (u32)VM64(S_RIP) - rip,
+	        VM32(C_INTST) & 1);
+	vmcb_flat(G(0x0f, 0xa2));
+	VM32(C_I3) |= 1u << I_CPUID;
+	VM64(S_RFLAGS) = 0x10002;
+	run();
+	kprintf("svmr.rf.cpuid: code=%x fl=%x\n", (u32)VM64(C_CODE), (u32)VM64(S_RFLAGS));
+	vmcb_flat(G(0x0f, 0x0b));
+	VM32(C_EXC) = 1u << 6;
+	VM64(S_RFLAGS) = 0x10002;
+	run();
+	kprintf("svmr.rf.ud: code=%x fl=%x\n", (u32)VM64(C_CODE), (u32)VM64(S_RFLAGS));
+}
+
+/* An intercepted INTR exits also in the guest's interrupt shadow, which the VMCB records (15.21.5;
+   KVM: "vmexits aren't blocked by the interrupt shadow"); without the intercept the shadow holds it. */
+static void r_intr_shadow(void) {
+	for (int icpt = 0; icpt < 2; icpt++) {
+		u32 rip = G(0x90, 0x90);
+		vmcb_flat(rip);
+		VM64(S_RFLAGS) = 0x202;
+		VM32(C_INTST) = 1;
+		if (icpt) VM32(C_I3) |= 1u << I_INTR;
+		trap_hook = svm_hook;
+		h_intr = 0;
+		clgi();
+		self_ipi(0x50);
+		settle();
+		svm_vmcb_pa = (u32)vmcb;
+		svm_vmrun_raw();
+		stgi();
+		__asm__ volatile("sti");
+		settle();
+		__asm__ volatile("cli");
+		LR(0xB0) = 0;
+		trap_hook = 0;
+		/* delivered: the guest's stub for vector 50h reports it with VMMCALL (RIP in the stub) */
+		kprintf("svmr.intr.shadow.%s: code=%x rip=%x rax=%x shadow=%d\n", icpt ? "icpt" : "deliver",
+		        (u32)VM64(C_CODE), icpt ? (u32)VM64(S_RIP) - rip : 0, (u32)VM64(S_RAX), VM32(C_INTST) & 1);
+	}
+}
+
+/* An I/O or MSR permission map at or above 4 GiB reads as open bus (all ones): every access it covers
+   is intercepted, also through a map whose pages cross 4 GiB. */
+static void r_pm4g(void) {
+	vmcb_flat(G(0xe4, 0x80));   /* in al,80h */
+	VM32(C_I3) |= 1u << I_IOIO;
+	VM64(C_IOPM) = 0x100000000ULL;
+	run();
+	u32 a = (u32)VM64(C_CODE);
+	vmcb_flat(G(0x66, 0xba, 0x00, 0x80, 0xec));   /* mov dx,8000h; in al,dx: byte 1000h of the map */
+	VM32(C_I3) |= 1u << I_IOIO;
+	VM64(C_IOPM) = 0xFFFFF000ULL;
+	run();
+	u32 b = (u32)VM64(C_CODE);
+	vmcb_flat(G(0xb9, 0x10, 0, 0, 0, 0x0f, 0x32));   /* mov ecx,10h; rdmsr */
+	VM32(C_I3) |= 1u << I_MSR;
+	VM64(C_MSRPM) = 0x100000000ULL;
+	run();
+	kprintf("svmr.pm4g: iopm=%x iopm_cross=%x msrpm=%x\n", a, b, (u32)VM64(C_CODE));
+}
+
+/* VM_CR: setting SVMDIS with EFER.SVME = 1 is #GP(0) also while LOCK is set (15.30.1). */
+static void r_vmcr_lock(void) {
+	wrmsr(SVM_KEY, 0x77);
+	wrmsr(VM_CR, VM_CR_LOCK);
+	int e = try_wr(VM_CR, VM_CR_LOCK | VM_CR_SVMDIS);
+	u32 v = (u32)rdmsr(VM_CR);
+	wrmsr(SVM_KEY, 0x77);
+	wrmsr(VM_CR, 0);
+	kprintf("svmr.vmcr.lock_svmdis: vec=%x vmcr=%x after=%x\n", e, v, (u32)rdmsr(VM_CR));
+}
+
+/* nCR3 is a full system-physical address: 32-bit nested tables at nCR3 = 1_0000_0000h + x are not
+   those at x (they read as open bus: a reserved-bit NPF). */
+static void r_ncr3_4g(void) {
+	host_paging(1);
+	build_nested(0);
+	vmcb_flat(G(0x90));
+	VM64(C_NP) = 1; VM64(C_NCR3) = 0x100000000ULL | (u32)npd32; VM64(S_GPAT) = 0x0007040600070406ULL;
+	run();
+	host_paging(0);
+	kprintf("svmr.ncr3.4g: code=%x", (u32)VM64(C_CODE));
+	x64("i1", VM64(C_INFO1)); kprintf(" i2_rip=%d\n", VM64(C_INFO2) == (u32)gcode);
+}
+
+/* SMM_CTL from a guest without the MSR intercept: ENTER blocks SMIs and NMIs but does not enter SMM,
+   so the guest's intercepts and nested paging stay in force (15.30.3, 15.22). */
+static void r_smmctl_guest(void) {
+	host_paging(1);
+	build_nested(0);
+	/* mov ecx,C0010116h; mov eax,2; xor edx,edx; wrmsr; mov ebx,[10000000h]; cpuid */
+	vmcb_flat(G(0xb9, 0x16, 0x01, 0x01, 0xc0, 0xb8, 0x02, 0, 0, 0, 0x31, 0xd2, 0x0f, 0x30,
+	            0x8b, 0x1d, 0x00, 0x00, 0x00, 0x10, 0x0f, 0xa2));
+	VM32(C_I3) |= 1u << I_CPUID;
+	VM64(C_NP) = 1; VM64(C_NCR3) = (u32)npd32; VM64(S_GPAT) = 0x0007040600070406ULL;
+	run();
+	host_paging(0);
+	u32 code = (u32)VM64(C_CODE), ebx = svm_g[3];
+	/* SMIs are held until EXIT */
+	volatile u32 *cnt = (volatile u32 *)0x6100;
+	*cnt = 0;
+	outb(0xB2, 0);
+	u32 held = *cnt;
+	wrmsr(0xC0010116, 8);   /* EXIT */
+	settle();
+	kprintf("svmr.smmctl.guest: code=%x ebx=%x smi_held=%d smi_after_exit=%d\n", code, ebx, held == 0, *cnt);
+}
+
+/* HWCR.SmmLock (bit 0, sticky): SMM_CTL writes are #GP(0). Last: the lock stays until RESET. */
+static void r_smmlock(void) {
+	int a = try_wr(0xC0010116, 0);
+	wrmsr(0xC0010015, rdmsr(0xC0010015) | 1);
+	int b = try_wr(0xC0010116, 0);
+	wrmsr(0xC0010015, rdmsr(0xC0010015) & ~1ULL);
+	kprintf("svmr.smmlock: before=%x locked=%x hwcr0=%x\n", a, b, (u32)rdmsr(0xC0010015) & 1);
+}
+
+/* An SMI in a paged-real-mode guest (CR0.PE = 0, PG = 1, 15.19) returns to it: RSM allows PG without
+   PE when EFER.SVME = 1. */
+static void r_smi_realpg(void) {
+	volatile u32 *cnt = (volatile u32 *)0x6100;
+	*cnt = 0;
+	build_gpt32();
+	vmcb_flat(G(0xe6, 0xb2, 0x90, 0x90));   /* out 0b2h,al (32-bit code in big real mode) */
+	VM64(S_CR0) = 0x80000010; VM64(S_CR4) = 0x10; VM64(S_CR3) = (u32)gpd;
+	seg(S_CS, 0, 0xC9B, 0xFFFFFFFF, 0); seg(S_DS, 0, 0xC93, 0xFFFFFFFF, 0);
+	seg(S_SS, 0, 0xC93, 0xFFFFFFFF, 0); seg(S_ES, 0, 0xC93, 0xFFFFFFFF, 0);
+	run();
+	kprintf("svmr.smi.realpg: code=%x smm=%d cr0=%x\n", (u32)VM64(C_CODE), *cnt, (u32)VM64(S_CR0));
+}
+
+/* FERR_FREEZE (vector 3 bit 30, exit 7Eh): with CR0.NE = 0 a waiting x87 instruction with a pending
+   unmasked exception would freeze; the intercept exits at it. With IGNNE asserted (the IGNNE MSR) no
+   freeze: FERR# and execution continues. */
+static void r_ferr(void) {
+	for (int ign = 0; ign < 2; ign++) {
+		/* fninit; fldcw [ebx] (exceptions unmasked); fld1; fldz; fdivp (ZE pending); fwait */
+		vmcb_flat(G(0xdb, 0xe3, 0xd9, 0x2b, 0xd9, 0xe8, 0xd9, 0xee, 0xde, 0xf9, 0x9b));
+		*(u16 *)gdata = 0x0340;
+		svm_g[3] = (u32)gdata;
+		VM64(S_CR0) = 0x11;   /* NE = 0 */
+		VM32(C_I3) |= 1u << I_FERR;
+		wrmsr(0xC0010115, ign);
+		run();
+		wrmsr(0xC0010115, 0);
+		kprintf("svmr.ferr.%s: code=%x rip=%x\n", ign ? "ignne" : "freeze", (u32)VM64(C_CODE),
+		        (u32)VM64(S_RIP) - (u32)gcode);
+	}
+	outb(0xF0, 0);   /* FERR#/IRQ13 off (IGNNE port) */
+}
+
+/* Development run only (svmr=11; it ends the run): a halted guest with a stale EVENTINJ (V = 0) and
+   nothing to wake it is idle, so the simulation stops instead of spinning (Machine.svmIdle,
+   MpMachine.runnableState: only V counts, as in stepAtSvm). */
+static void r_stale_inject(void) {
+	vmcb_flat(G(0xf4));   /* hlt (not intercepted), guest IF = 0 */
+	VM32(C_INJ) = 0x30;   /* vector 30h, type 0, V = 0 */
+	kputs("svmr.stale_inject: halting\n");
+	run();
+	kputs("svmr.stale_inject: not reached\n");
+}
+
+static void m_review(u32 only) {
+	if (only == 11) r_stale_inject();
+	if (!only || only == 1) r_gif_ibp();
+	if (only == 2) r_shadow();   /* in test_svm (QEMU-compared) */
+	if (!only || only == 3) r_intr_shadow();
+	if (!only || only == 4) r_pm4g();
+	if (!only || only == 5) r_vmcr_lock();
+	if (!only || only == 6) r_ncr3_4g();
+	if (!only || only == 7) r_ferr();
+	if (!only || only == 8) r_smmctl_guest();
+	if (!only || only == 9) r_smi_realpg();
+	if (!only || only == 10) r_smmlock();
 }
 
 void test_svm_model(void) {
 	if (!vmcb) return;
+	u32 only = param("svmr", 0);   /* development runs: one review regression only */
+	if (only) { m_review(only); return; }
 	m_cpuid();
 	m_vmcr();
 	m_nrip();
@@ -2095,4 +2485,6 @@ void test_svm_model(void) {
 	m_misc();
 	m_svfx();
 	m_npx();
+	t_df_case(0, "svmm.df");   /* TCG shuts down (formerly a rewriting deviation rule) */
+	m_review(0);
 }

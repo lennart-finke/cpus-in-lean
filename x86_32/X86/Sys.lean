@@ -846,12 +846,13 @@ def rsmEfer (e cur cr0 cr4 : UInt32) : UInt32 :=
   (e &&& ~~~(EFER.LMA ||| EFER.SVME)) ||| (cur &&& EFER.SVME) ||| lma
 
 /-- The saved state is invalid and RSM shuts the processor down (APM vol. 2, 10.4): CR0.PE = 0 with
-PG = 1, CR0.NW = 1 with CD = 0, CR0 bits 63:32, a reserved CR4 bit (every bit MOV CR4 accepts is valid:
+PG = 1 unless EFER.SVME = 1 (`svme`, the EFER.SVME RSM leaves: paged real mode is legal with SVM
+enabled, vol. 2 15.19, vol. 3 RSM; an SMI in a paged-real-mode guest returns to it), CR0.NW = 1 with CD = 0, CR0 bits 63:32, a reserved CR4 bit (every bit MOV CR4 accepts is valid:
 an SMI taken while it is set must be able to return), DR6/DR7 bits 63:32, an unsupported EFER bit,
 EFER.LME ∧ CR0.PG with CR4.PAE = 0, or with CS.L = CS.D = 1. -/
-def rsmInvalid (cr0 cr4 dr6 dr7 efer : UInt64) (csAttr : UInt32) : Bool :=
+def rsmInvalid (cr0 cr4 dr6 dr7 efer : UInt64) (csAttr : UInt32) (svme : Bool := false) : Bool :=
   let c0 := cr0.toUInt32
-  (c0 &&& CR0.PG != 0 && c0 &&& CR0.PE == 0) || (c0 &&& CR0.NW != 0 && c0 &&& CR0.CD == 0) ||
+  (c0 &&& CR0.PG != 0 && c0 &&& CR0.PE == 0 && !svme) || (c0 &&& CR0.NW != 0 && c0 &&& CR0.CD == 0) ||
   cr0 >>> 32 != 0 || cr4 &&& ~~~Cpuid.cr4Writable.toUInt64 != 0 || dr6 >>> 32 != 0 || dr7 >>> 32 != 0 ||
   efer &&& ~~~(Cpuid.eferWritable ||| EFER.LMA).toUInt64 != 0 ||
   (efer.toUInt32 &&& EFER.LME != 0 && c0 &&& CR0.PG != 0 &&
@@ -883,7 +884,7 @@ def rsm : M Unit := do
   let eferq ← r8 0x7ED0
   let csAttr ← r2 (smmSegOff 1 + 2)
   let rev ← r 0x7EFC
-  if rsmInvalid cr0q cr4q dr6q dr7q eferq csAttr || rev != smmRevision then
+  if rsmInvalid cr0q cr4q dr6q dr7q eferq csAttr (c.efer &&& EFER.SVME != 0) || rev != smmRevision then
     throw (.shutdown "RSM: invalid saved state")
   -- CR3 above 4 GiB (bits 51:32) cannot be held by the model's 32-bit CR3
   if cr3q >>> 32 != 0 then unsupported "RSM: CR3 above 4 GiB"

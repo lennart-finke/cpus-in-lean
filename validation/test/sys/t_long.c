@@ -703,6 +703,9 @@ void test_long(void) {
 
 	lm_fuzz();
 
+	/* SVM from a compatibility-mode host: 4-level nested tables (t_svm.c) */
+	test_svm_long();
+
 	/* deactivation: clear PG (LMA = 0), then LME */
 	lm_off();
 	kprintf("lm.off: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));

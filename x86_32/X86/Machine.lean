@@ -880,8 +880,12 @@ monitored line records it (`Machine.watch`, the determinism contract of `X86/Mp.
   match physWr a 4 v m with | .ok _ m => m | .error _ m => m
 
 /-- `setTableA` of the nested walk (`adStore`). -/
-@[inline] def nSetA (m : Machine) (a : UInt32) (e : UInt32) : Machine :=
-  if e &&& 0x20 != 0 then m else adStore m a.toUInt64 (e ||| 0x20)
+@[inline] def nSetA (m : Machine) (a : UInt64) (e : UInt32) : Machine :=
+  if e &&& 0x20 != 0 then m else adStore m a (e ||| 0x20)
+
+/-- A 32-bit nested-table entry at system-physical `a` (open bus above 4 GiB, as `physRd`). -/
+@[inline] def rd32p (mem : ByteArray) (a : UInt64) : UInt32 :=
+  if a >>> 32 != 0 then 0xFFFFFFFF else rdBytes mem a.toUInt32 4
 
 /-- The nested walk of guest-physical `gpa` for a user access (`write`, `fetch`; `kind` = `npfFinal`
 or `npfTable`): the host-physical address, whether every level allows writes, whether the leaf's D
@@ -902,12 +906,13 @@ def nestedWalk (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M (UInt64 Ã
     -- 32-bit paging (nMode 1: CR4.PSE, 4 MiB pages with PSE-36)
     if gpa >>> 32 != 0 then .error (fault false false) m else
     let lin := gpa.toUInt32
-    let pdeA := (s.ncr3.toUInt32 &&& 0xFFFFF000) + ((lin >>> 22) <<< 2)
-    let pde := rdBytes m.mem pdeA 4
+    -- nCR3 is a full system-physical address (bits 47:12; a table above 4 GiB reads as open bus)
+    let pdeA := (s.ncr3 &&& 0xFFFFFFFFF000) + ((lin >>> 22) <<< 2).toUInt64
+    let pde := rd32p m.mem pdeA
     if pde &&& 1 == 0 then .error (fault false false) m else
     if pde &&& 0x80 != 0 && s.nMode == 1 then
       if pde &&& pse4mRsvd != 0 then .error (fault true true) m else
-      finish m [pde.toUInt64] pdeA.toUInt64 pde.toUInt64 (pse36Base pde ||| (lin &&& 0x3FF000).toUInt64)
+      finish m [pde.toUInt64] pdeA pde.toUInt64 (pse36Base pde ||| (lin &&& 0x3FF000).toUInt64)
     else
     let m := nSetA m pdeA pde
     let pteA := pteAddr pde lin
@@ -918,7 +923,7 @@ def nestedWalk (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M (UInt64 Ã
     -- legacy PAE: the PDPTE from memory at nCR3[31:5]
     if gpa >>> 32 != 0 then .error (fault false false) m else
     let rsv := paeRsvd nxe
-    let pdpte := rd64 m.mem ((s.ncr3 &&& 0xFFFFFFE0) + ((gpa >>> 30) <<< 3))
+    let pdpte := rd64 m.mem ((s.ncr3 &&& 0xFFFFFFFFFFE0) + ((gpa >>> 30) <<< 3))
     if pdpte &&& 1 == 0 then .error (fault false false) m else
     if pdpte &&& pdpteRsvd != 0 then .error (fault true true) m else
     let pdeA := (pdpte &&& paeAddr) + (((gpa >>> 21) &&& 0x1FF) <<< 3)
@@ -927,7 +932,7 @@ def nestedWalk (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M (UInt64 Ã
     let large := pde &&& 0x80 != 0
     if pde &&& rsv != 0 || (large && pde &&& 0x1FE000 != 0) then .error (fault true true) m else
     if large then finish m [pde] pdeA pde ((pde &&& 0xFFFFFFE00000) ||| (gpa &&& 0x1FF000)) else
-    let m := nSetA m pdeA.toUInt32 pde.toUInt32
+    let m := nSetA m pdeA pde.toUInt32
     let pteA := (pde &&& paeAddr) + (((gpa >>> 12) &&& 0x1FF) <<< 3)
     let pte := rd64 m.mem pteA
     if pte &&& 1 == 0 then .error (fault false false) m else
@@ -940,21 +945,21 @@ def nestedWalk (gpa : UInt64) (write fetch : Bool) (kind : UInt64) : M (UInt64 Ã
     let e4 := rd64 m.mem e4A
     if e4 &&& 1 == 0 then .error (fault false false) m else
     if e4 &&& (rsv ||| 0x180) != 0 then .error (fault true true) m else
-    let m := nSetA m e4A.toUInt32 e4.toUInt32
+    let m := nSetA m e4A e4.toUInt32
     let e3A := (e4 &&& paeAddr) + (((gpa >>> 30) &&& 0x1FF) <<< 3)
     let e3 := rd64 m.mem e3A
     if e3 &&& 1 == 0 then .error (fault false false) m else
     let g1 := e3 &&& 0x80 != 0
     if e3 &&& rsv != 0 || (g1 && e3 &&& 0x3FFFE000 != 0) then .error (fault true true) m else
     if g1 then finish m [e4, e3] e3A e3 ((e3 &&& 0xFFFFC0000000) ||| (gpa &&& 0x3FFFF000)) else
-    let m := nSetA m e3A.toUInt32 e3.toUInt32
+    let m := nSetA m e3A e3.toUInt32
     let e2A := (e3 &&& paeAddr) + (((gpa >>> 21) &&& 0x1FF) <<< 3)
     let e2 := rd64 m.mem e2A
     if e2 &&& 1 == 0 then .error (fault false false) m else
     let m2 := e2 &&& 0x80 != 0
     if e2 &&& rsv != 0 || (m2 && e2 &&& 0x1FE000 != 0) then .error (fault true true) m else
     if m2 then finish m [e4, e3, e2] e2A e2 ((e2 &&& 0xFFFFFFE00000) ||| (gpa &&& 0x1FF000)) else
-    let m := nSetA m e2A.toUInt32 e2.toUInt32
+    let m := nSetA m e2A e2.toUInt32
     let e1A := (e2 &&& paeAddr) + (((gpa >>> 12) &&& 0x1FF) <<< 3)
     let e1 := rd64 m.mem e1A
     if e1 &&& 1 == 0 then .error (fault false false) m else

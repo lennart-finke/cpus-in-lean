@@ -57,6 +57,8 @@ def setFerr (on : Bool) : M Unit := modM fun m => { m with pic1 := m.pic1.setLin
 /-- A pending unmasked exception at a waiting instruction: #MF, or FERR# with CR0.NE = 0. -/
 def fpPending : M Unit := do
   if (← cpu).cr0 &&& CR0.NE != 0 then exc Vec.MF
+  -- SVM: the FERR_FREEZE intercept of a guest takes the place of the freeze (`Svm.ferrFreeze`)
+  Svm.ferrFreeze
   setFerr true
 
 /-- Device-not-available and pending-exception checks before an ESC instruction. -/

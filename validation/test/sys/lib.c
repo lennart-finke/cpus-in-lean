@@ -178,6 +178,7 @@ void sys_main(void) {
 		test_svm_smp();   /* SVM: a guest on the AP while the BSP sends it IPIs (t_svm.c) */
 		model_only();
 		test_smp_model();
+		test_svm_smp_model();   /* SVM: INIT in a nested-paging guest on the AP (t_svm.c) */
 		sys_exit();
 	}
 	if (param("svm", 0)) {   /* SVM workstream: only the SVM tests (development runs) */

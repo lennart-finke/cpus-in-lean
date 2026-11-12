@@ -128,10 +128,11 @@ theorem nextEvent_nmi_shadow {m : Machine} (h : m.cpu.shadow = true) : nextEvent
   repeat' split
   all_goals simp_all
 
-/-- An SMI outside SMM and outside a shadow is taken before anything else. -/
+/-- An SMI outside SMM (and outside SMM_CTL's ENTER..EXIT, `Cpu.smiHeld`) and outside a shadow is
+taken before anything else. -/
 theorem nextEvent_smi_first {m : Machine} (h : m.smiPending = true) (hs : m.cpu.smm = false)
-    (hsh : m.cpu.shadow = false) : nextEvent m = .smi := by
-  simp [nextEvent, h, hs, hsh]
+    (hc : m.cpu.svmx.smmCtlIn = false) (hsh : m.cpu.shadow = false) : nextEvent m = .smi := by
+  simp [nextEvent, Cpu.smiHeld, h, hs, hc, hsh]
 
 /-- A deliverable NMI is taken before a maskable interrupt (and after SMIs and debug traps). -/
 theorem nextEvent_nmi_before_intr {m : Machine} (hsmi : m.smiPending = false) (hdb : m.dbPend = 0)
