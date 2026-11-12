@@ -3,6 +3,7 @@ smpm.lowpri.apr: bsp=0 ap=1 00000070
 smpm.lowpri.tie: bsp=0 ap=1 00000071
 smpm.lowpri.focus: bsp=1 00000072 ap=0
 smpm.lowpri.nofocus: bsp=1 00000073 ap=1 00000073
+smpm.lowpri.subclass: bsp=0 ap=1 00000095
 smpm.rr.tpr: rrs=00000002 rrr=00000037
 smpm.rr.apr: rrs=00000002 rrr=00000037
 smpm.ipi.extint: bsp=0 ap=1 00000037

@@ -224,7 +224,10 @@ def latchNmi (m : Machine) (k : Nat) : Machine := m.modApicAt k fun a => { a wit
 /-- Lowest-priority arbitration among `cands` for vector `v` (APM 16.6.2): a focus CPU (the vector
 in its ISR or IRR, with focus checking enabled by its SVR bit 9 = 0) accepts it, the one with the
 highest APIC ID if there are several (the APM leaves this open); otherwise the APIC with the lowest
-arbitration priority (APR), ties going to the highest APIC ID. -/
+arbitration priority, ties going to the highest APIC ID. The arbitration compares the Arbitration
+Priority field, APR bits 7:4 ("the local APIC with the lowest arbitration priority, as indicated by the
+Arbitration Priority field in the Arbitration Priority Register"; figure 16-22: AP = bits 7:4, APS =
+bits 3:0 the sub-class), not the sub-class; the Intel SDM (13.6.2.4) compares the whole APR. -/
 def lowestPri (m : Machine) (v : UInt32) (cands : List Nat) : Option Nat :=
   let higherId := fun (j k : Nat) => (m.apicAt j).physId > (m.apicAt k).physId
   let focus := cands.filter fun k =>
@@ -235,8 +238,8 @@ def lowestPri (m : Machine) (v : UInt32) (cands : List Nat) : Option Nat :=
   | [] =>
     match cands with
     | c :: cs => some (cs.foldl (fun b k =>
-        let x := (m.apicAt k).apr
-        let y := (m.apicAt b).apr
+        let x := (m.apicAt k).apr >>> 4
+        let y := (m.apicAt b).apr >>> 4
         if x < y || (x == y && higherId k b) then k else b) c)
     | [] => none
 

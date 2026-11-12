@@ -68,6 +68,7 @@ def main (args : List String) : IO UInt32 := do
   let o := parse {} args
   let maxI := o.maxI
   let [path] := o.files | do IO.eprintln "usage: x86sys [--max N] [--mem MB] [--smp N] [--quantum Q] [--cmdline STR] systest.elf"; return 2
+  if o.smp > maxCpus then IO.eprintln s!"--smp: at most {maxCpus} CPUs"; return 2
   let img ← IO.FS.readBinFile path
   let m0 ← match loadElf img (o.mem * 1024 * 1024) o.cmdline with
     | .ok m => pure m

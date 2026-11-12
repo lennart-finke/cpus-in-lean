@@ -32,13 +32,13 @@ __asm__(
 	".code32\n"
 	"ap_entry32:\n"
 	" movl $0x10, %eax\n movl %eax, %ds\n movl %eax, %es\n movl %eax, %fs\n movl %eax, %gs\n movl %eax, %ss\n"
-	" movl ap_stack_top, %esp\n"
-	" call ap_main\n"
+	" movl ap_stack_step, %eax\n lock xaddl %eax, ap_stack_top\n movl %eax, %esp\n"   /* own stack in smpn mode */
+	" call ap_entry\n"
 	"1: cli\n hlt\n jmp 1b\n");
 extern char ap_tramp[], ap_tramp_end[], ap_tr_gdtr[], ap_tr_cs[], ap_tr_edx[];
 
 static u8 ap_stack[8192] __attribute__((aligned(16)));
-u32 ap_stack_top;
+u32 ap_stack_top, ap_stack_step;   /* each AP takes the stack at ap_stack_top, which moves by ap_stack_step */
 
 /* mailbox and logs */
 static volatile u32 ap_gen, ap_ready, ap_cmd, ap_arg[4], ap_ack, ap_res[8];
@@ -171,6 +171,54 @@ void ap_main(void) {
 		}
 		ap_cmd = 0;
 		ap_ack++;
+	}
+}
+
+/* smpn=N (model-only, any number of CPUs): every AP started at once reports its CPUID topology */
+static volatile u32 smpn_mode, apn_count;
+static volatile u32 (*apn_rec)[17];   /* page_alloc'd in smpn mode: the other passes keep their layout */
+
+static void topo_record(volatile u32 *r) {
+	u32 x[4];
+	cpuid(1, 0, x); r[0] = x[1]; r[1] = (x[3] >> 28) & 1;
+	cpuid(0xB, 0, x); r[2] = x[0]; r[3] = x[1]; r[4] = x[2]; r[5] = x[3];
+	cpuid(0xB, 1, x); r[6] = x[0]; r[7] = x[1]; r[8] = x[2]; r[9] = x[3];
+	cpuid(0x80000001, 0, x); r[10] = (x[2] >> 1) & 1;
+	cpuid(0x80000008, 0, x); r[11] = x[2];
+	cpuid(0x8000001E, 0, x); r[12] = x[0]; r[13] = x[1]; r[14] = x[2];
+	r[15] = LR(0x20) >> 24;
+	cpuid(0x80000000, 0, x); r[16] = x[0];
+}
+static void apn_main(void) {
+	u32 x[4];
+	cpuid(1, 0, x);
+	u32 k = x[1] >> 24;
+	if (k < 128) topo_record(apn_rec[k]);
+	__sync_fetch_and_add(&apn_count, 1);
+	for (;;) __asm__ volatile("cli\n hlt");
+}
+void ap_entry(void) { if (smpn_mode) apn_main(); else ap_main(); }
+
+void test_smpn(u32 n) {
+	LR(0xF0) = 0x1FF;
+	apn_rec = page_alloc(3);
+	ap_stack_top = (u32)page_alloc(32) + 32 * 4096;   /* 1 KiB per AP */
+	ap_stack_step = (u32)-1024;
+	smpn_mode = 1;
+	memcpy((void *)AP_TRAMP, ap_tramp, ap_tramp_end - ap_tramp);
+	*(volatile u16 *)(AP_TRAMP + (ap_tr_gdtr - ap_tramp)) = sizeof gdt - 1;
+	*(volatile u32 *)(AP_TRAMP + (ap_tr_gdtr - ap_tramp) + 2) = (u32)gdt;
+	/* INIT, STARTUP, STARTUP to all but self, back to back */
+	ipi(0, 0xC0000 | 0x4500);
+	ipi(0, 0xC0000 | 0x600 | AP_VEC);
+	ipi(0, 0xC0000 | 0x600 | AP_VEC);
+	for (u32 k = 0; k < 50000000 && apn_count < n - 1; k++) cpu_relax();
+	topo_record(apn_rec[0]);
+	kprintf("smpn: cpus=%d started=%d\n", n, apn_count);
+	for (u32 k = 0; k < n && k < 128; k++) {
+		volatile u32 *r = apn_rec[k];
+		kprintf("smpn %d: apic=%x l1ebx=%x htt=%d b0=%x,%x,%x,%x b1=%x,%x,%x,%x cmpl=%d c88=%x maxext=%x e1e=%x,%x,%x\n", k, r[15],
+		        r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[16], r[12], r[13], r[14]);
 	}
 }
 
@@ -443,6 +491,16 @@ void test_smp_model(void) {
 	wait_ap_n(1);
 	LR(0x80) = 0; LR(0xF0) = 0x1FF;
 	logs("smpm.lowpri.nofocus");
+	/* the arbitration compares APR bits 7:4, the Arbitration Priority field (AMD APM vol. 2, 16.6.2): BSP
+	   TPR 80h and AP TPR 8Fh tie, and the highest APIC ID (the AP) accepts; comparing the whole APR (the
+	   Intel rule) would pick the BSP */
+	LR(0x80) = 0x80;
+	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0x8F);
+	ipi(0x03, 0x900 | 0x95);
+	spin(20000);
+	logs("smpm.lowpri.subclass");
+	LR(0x80) = 0;
+	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0);
 	/* remote read of the AP's TPR and APR */
 	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0x37);
 	ipi(1, 0x300 | 0x08);

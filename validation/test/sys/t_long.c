@@ -700,10 +700,6 @@ void test_long(void) {
 		kprintf("lm.smm.after: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));
 		lm_pci_w8(0x0000, 0x72, 0x0A);
 	}
-	/* a code segment with L = 1 and D = 1 (reserved) as a far JMP target: last, since TCG enters it
-	   and the stub's copy of the stack then differs */
-	v = TRY(ljmp(RSVDC, stub_at[0xF6]));
-	kprintf("lm.jmp.rsvdcode: vec=%x err=%x\n", v, v == 13 ? last.err : 0);
 
 	lm_fuzz();
 
@@ -747,6 +743,12 @@ void test_long_model(void) {
 	wrmsr(EFER, 0);
 	lm_pci_w8(0x0000, 0x72, 0x0A);
 	lm_on();
+	/* a code segment with L = 1 and D = 1 (reserved in long mode, AMD APM vol. 2, 4.8.1) as the target of a
+	   far JMP: the model raises #GP(selector) as the Intel SDM's JMP pseudocode does for IA-32e mode; AMD's
+	   pseudocode has no such check and real Zen 2 behaviour is unconfirmed, so this is a model choice,
+	   checked here only (TCG enters the segment as 64-bit code). */
+	vec = TRY(ljmp(RSVDC, stub_at[0xF6]));
+	kprintf("lmm.jmp.rsvdcode: vec=%x err=%x\n", vec, vec == 13 ? last.err : 0);
 	vec = TRY(WRCR(4, RDCR(4) & ~0x20));
 	kprintf("lmm.cr4.pae.clear: vec=%x cr4=%x\n", vec, RDCR(4));
 	lm_off();
