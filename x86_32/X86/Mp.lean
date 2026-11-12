@@ -191,10 +191,19 @@ def step (s : MpMachine) : MpMachine :=
     ⟨m, cores, quantum, qleft - 1, retired, since⟩
   else resched ⟨m, cores, quantum, qleft, retired, since⟩
 
-/-- `true` if no CPU can make progress without external input. -/
+/-- `step` when the running CPU is runnable with quantum left (`step`'s second case, without its tests). -/
+@[inline] def stepRunning (s : MpMachine) : MpMachine :=
+  let ⟨m, cores, quantum, qleft, retired, since⟩ := s
+  let m := X86.step m
+  let m := if !m.cpu.halted && m.cpu.smpx.mwait.isSome then
+    { m with cpu := { m.cpu with smpx := { m.cpu.smpx with mwait := none } } } else m
+  ⟨m, cores, quantum, qleft - 1, retired, since⟩
+
+/-- `true` if no CPU can make progress without external input. The running CPU is tested first: while
+it is runnable (nearly every step) the cost does not depend on the number of CPUs. -/
 def idle (s : MpMachine) : Bool :=
   if s.cores.isEmpty then s.m.idle else
-  s.nextTimer == maxU64 && !(List.range s.ncpu).any s.runnableAt &&
+  !runnableCur s.m && s.nextTimer == maxU64 && !(List.range s.ncpu).any s.runnableAt &&
   (s.m.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem s.m.watchHit s.m.cpu).halted) &&
   s.cores.all fun c => c.cpu.smpx.mwait.isNone || (mwaitWake s.m.mem s.m.watchHit c.cpu).halted
 
@@ -203,7 +212,11 @@ partial def runUntil (s : MpMachine) (limit : UInt64) : MpMachine :=
   if s.cores.isEmpty then
     let ⟨m, cores, quantum, qleft, retired, since⟩ := s
     ⟨m.runUntil limit, cores, quantum, qleft, retired, since⟩
-  else if s.m.icount ≥ limit || s.m.fatal.isSome || s.idle then s
+  else if s.m.icount ≥ limit || s.m.fatal.isSome then s
+  -- the common case: the running CPU is runnable (then the machine is not idle, and `step` is
+  -- `stepRunning`); its cost does not depend on the number of CPUs
+  else if s.qleft != 0 && runnableCur s.m then (stepRunning s).runUntil limit
+  else if s.idle then s
   else s.step.runUntil limit
 
 /-- Instructions executed by each CPU so far. -/

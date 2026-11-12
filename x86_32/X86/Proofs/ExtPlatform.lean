@@ -104,4 +104,19 @@ theorem ioapicService_edge (m : Machine) (p : Nat) (h : IoApic.levelEntry (m.ioa
     m.ioapicService p = m := by
   simp [Machine.ioapicService, h]
 
+namespace MpMachine
+
+/-- The fast path of `runUntil` is `step`: with quantum left and the running CPU runnable. -/
+theorem stepRunning_eq (s : MpMachine) (hc : s.cores.isEmpty = false) (hq : s.qleft ≠ 0)
+    (hr : runnableCur s.m = true) : s.stepRunning = s.step := by
+  obtain ⟨m, cores, quantum, qleft, retired, since⟩ := s
+  simp_all [stepRunning, step]
+
+/-- While the running CPU is runnable the machine is not idle (so `runUntil` need not test it). -/
+theorem idle_runnable (s : MpMachine) (hc : s.cores.isEmpty = false) (hr : runnableCur s.m = true) :
+    s.idle = false := by
+  simp [idle, hc, hr]
+
+end MpMachine
+
 end X86
