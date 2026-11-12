@@ -127,13 +127,19 @@ def crc32_cases(rng, count):
 
 
 def cache_cases(rng, count):
-    # CLFLUSH, CLFLUSHOPT, CLWB on writable, read-only and not-present pages; prefetches never fault
+    # CLFLUSH, CLFLUSHOPT, CLWB on writable, read-only and not-present pages; prefetches never fault.
+    # The first bundle also had a fourth page state, PTE 0x45 (read-only with the accessed bit clear), to
+    # ask whether a flush sets the accessed bit. A user-mode oracle cannot clear an accessed bit or see
+    # one, and the native comparison does not include page-table entries, so that state is the read-only
+    # case again natively, and the oracle refuses it (record_check.h: only 0, 0x65 and 0x67 have a native
+    # equivalent); it ended the first EPYC run at this campaign. The accessed-bit question belongs to the
+    # QEMU/KVM tests, which compare the page-table entries.
     forms = [('clflush', '0fae3b', 'clfsh'), ('clflushopt', '660fae3b', 'clflushopt'),
              ('clwb', '660fae33', 'clwb'), ('prefetch', '0f0d03', 'prefetchw'),
              ('prefetchw', '0f0d0b', 'prefetchw'), ('prefetch_r5', '0f0d2b', 'prefetchw'),
              ('prefetchnta', '0f1803', None), ('prefetch_reg', '0f0dc1', 'prefetchw')]
     for name, code, _ in forms:
-        for perms in ((0x67, 0x67), (0x65, 0x67), (0, 0x67), (0x45, 0x67)):
+        for perms in ((0x67, 0x67), (0x65, 0x67), (0, 0x67)):
             for offset in (0, 63, 4095):
                 yield gpr_record(code, address=ADDR + offset, permissions=perms), \
                     gmeta('gpr_cache', name, code, permissions=perms, offset=offset)

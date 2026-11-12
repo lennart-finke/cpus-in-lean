@@ -11,6 +11,9 @@
  * the signal frame, and the observed values plus an availability flag (0 when the
  * kernel's frame has no AVX state) follow each output row.
  * `oracle cpuid` prints every CPUID leaf and subleaf of the machine instead.
+ * Every record is validated before it runs (record_check.h; a refused record ends the batch with an
+ * ERROR line naming the reason), and `oracle check < campaign.bin` is that validation alone, as a dry run
+ * over a whole campaign: nothing is executed, refused records are listed (exit status 3).
  */
 typedef unsigned long long u64;
 typedef unsigned int u32;
@@ -38,6 +41,8 @@ _Static_assert(sizeof(struct fp_input)==208,"FP extension layout");
 /* v2: YMM0..7[255:128] input; observed values; YMM_Hi128 offset (0: no AVX in frames) */
 static u64 ymm_input[16],ymm_observed[16];
 static u32 ymm_offset,ymm_ok,v2;
+#include "record_check.h"
+static unsigned check_target; /* RC_AMD, RC_MISALIGN_SSE of this processor (CPUID) */
 #endif
 struct action {u64 handler,flags,restorer,mask;};
 _Static_assert(sizeof(struct context)==256,"Linux sigcontext layout");
@@ -296,6 +301,28 @@ static void memory_check(void) {
 static void cpuid(u32 leaf,u32 sub,u32 *r) {
  __asm__ volatile("cpuid":"=a"(r[0]),"=b"(r[1]),"=c"(r[2]),"=d"(r[3]):"a"(leaf),"c"(sub));
 }
+#ifdef NATIVE_FP
+static void read_record(void) {
+ read_all(&input,sizeof(input));
+ read_all(&fp_input,sizeof(fp_input));
+ if(v2)read_all(ymm_input,128);
+}
+/* `oracle check`: record_check on every record of a campaign, without executing anything. */
+static void check_input(void) {
+ u64 count;read_all(&count,8);
+ v2=count>>63;count&=~(1ull<<63);
+ if(!count || count>1000000)fail("invalid count",count);
+ u64 refused=0;
+ text(1,"CHECK ");hex(1,count);text(1,"\n");
+ for(u64 index=0;index<count;index++) {
+  read_record();
+  u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,check_target,&value);
+  if(why){text(1,"REJECT ");hex(1,index);hex(1,value);text(1,why);text(1,"\n");refused++;}
+ }
+ u8 extra;if(call(0,0,(long)&extra,1,0,0,0)!=0)fail("trailing input",0);
+ text(1,"END ");hex(1,refused);text(1,"\n");finish(refused?3:0);
+}
+#endif
 /* Every leaf up to the reported maxima of the standard, hypervisor (if any) and
  * extended ranges, subleaves 0..63 for each (a subleaf beyond the defined ones repeats
  * or returns zeros; the comparison tool interprets them). */
@@ -315,9 +342,19 @@ static void cpuid_dump(void) {
  text(1,"END\n");finish(0);
 }
 void start(u64 *stack) {
- if(stack[0]!=2){text(2,"usage: oracle i386|x86_64|cpuid < native.bin\n");finish(2);}
+ if(stack[0]!=2){text(2,"usage: oracle i386|x86_64|cpuid|check < native.bin\n");finish(2);}
  const char *arch=(const char *)stack[2];compat=arch[0]=='i';
- if(arch[0]=='c')cpuid_dump();
+ if(arch[0]=='c' && arch[1]=='p')cpuid_dump();
+#ifdef NATIVE_FP
+ {
+  u32 r[4];cpuid(0,0,r);
+  if(r[1]==0x68747541 && r[3]==0x69746e65 && r[2]==0x444d4163)check_target|=RC_AMD; /* AuthenticAMD */
+  cpuid(0x80000000,0,r);
+  if(r[0]>=0x80000001){cpuid(0x80000001,0,r);if(r[2]>>7&1)check_target|=RC_MISALIGN_SSE;}
+ }
+ if(arch[0]=='c' && arch[1]=='h')check_input();
+#endif
+ if(arch[0]=='c'){text(2,"usage: oracle i386|x86_64|cpuid|check < native.bin\n");finish(2);}
  u64 count;read_all(&count,8);
 #ifdef NATIVE_FP
  v2=count>>63;count&=~(1ull<<63);
@@ -347,10 +384,14 @@ void start(u64 *stack) {
 #endif
  text(1,"BEGIN ");hex(1,count);text(1,"\n");
  for(u64 index=0;index<count;index++) {
-  read_all(&input,sizeof(input));
 #ifdef NATIVE_FP
-  read_all(&fp_input,sizeof(fp_input));
-  if(v2)read_all(ymm_input,128);
+  read_record();
+  {
+   u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,check_target,&value);
+   if(why)fail(why,value);
+  }
+#else
+  read_all(&input,sizeof(input));
 #endif
 #ifdef NATIVE_MEMORY
   memory_prepare();
