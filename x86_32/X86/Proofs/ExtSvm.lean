@@ -1,6 +1,7 @@
 import Std.Tactic.BVDecide
 import X86.Step
 import X86.Proofs.Basic
+import X86.Proofs.Ext
 /-!
 # SVM (`X86/Ext/Svm.lean`, `X86/Ext/SvmBase.lean`; AMD APM vol. 2, chapter 15)
 
@@ -27,6 +28,10 @@ import X86.Proofs.Basic
 * `nestedWalk_above4g`, `nestedWalk_pde_np`: the nested walk with 32-bit or PAE nested tables maps
   nothing at or above 4 GiB, and with 32-bit tables succeeds only through a present entry of the page
   directory at nCR3 (what the walk can reach starts at nCR3).
+* `cpuid_svm_reachable`: with the legacy identity CPUID reports SVM (8000_0001 ECX bit 2) and the
+  SVM leaf 8000_000A is reachable (the maximum extended leaf is 8000_000A; SVM revision 1).
+* `smmSave_host`, `smmSave_guest`: SMM entry outside guest mode writes every SVM field of the AMD64
+  state-save map as 0; in guest mode SVM Guest = 1 and the VMCB address (15.22, table 10-1).
 -/
 namespace X86
 open Svm
@@ -211,5 +216,23 @@ theorem nestedWalk_pde_np {m : Machine} {gpa : UInt64} {w f : Bool} {k : UInt64}
   unfold nestedWalk
   simp only [hm, decide_true, ↓reduceIte, hg', Bool.false_eq_true, hp']
   exact ⟨_, rfl⟩
+
+/-! ## CPUID and SMM -/
+
+theorem cpuid_svm_reachable (c : Cpu) :
+    (cpuid c 0x80000001 0).2.2.1 &&& 4 ≠ 0 ∧ (cpuid c 0x80000000 0).1 = 0x8000000A ∧
+    (cpuid c 0x8000000A 0).1 = 1 := by
+  rw [cpuid_former, cpuid_former, cpuid_former]
+  refine ⟨?_, ?_, ?_⟩
+  · simp only [presentCpuid, sysALeaf]; simp [Cpuid.topoEcx81]; split <;> decide
+  · simp [presentCpuid, sysALeaf]
+  · simp [presentCpuid, sysALeaf]
+
+theorem smmSave_host (c : Cpu) (h : c.svmx.guest = false) : ∀ p ∈ Svm.smmSave c, p.2 = 0 := by
+  simp [Svm.smmSave, h]
+
+theorem smmSave_guest (c : Cpu) (h : c.svmx.guest = true) :
+    (Svm.smmSave c).lookup 0x7ED8 = some 1 ∧ (Svm.smmSave c).lookup 0x7EE0 = some c.svmx.vmcb := by
+  simp [Svm.smmSave, h, List.lookup]
 
 end X86

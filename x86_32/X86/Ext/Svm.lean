@@ -59,6 +59,14 @@ long-mode compatibility mode; a guest whose CS is 64-bit stops at its first inst
 * VMSAVE/VMLOAD virtualization (15.33.1) "is only recognized when the hypervisor is in 64 bit
   mode": never in this model, so a guest VMLOAD/VMSAVE with the enable bit set is a #VMEXIT with its
   exit code (as the APM requires); with the bit clear it runs on the system-physical address.
+* SMM (15.22): an SMI the guest intercepts is #VMEXIT(SMI) and stays pending for the host; one it
+  does not intercept enters SMM in the guest's context (the handler runs without intercepts and
+  without nested paging, `Cpu.svmOn`, `Cpu.npOn`), with the SVM fields of the AMD64 state-save map
+  written (`Svm.smmSave`: SVM Guest, VMCB address, virtual interrupt, guest PAT, host EFER/CR4/CR0,
+  nCR3); RSM returns to the guest from the state kept on chip and does not read those fields back
+  (the map marks them read-only). SMM entry keeps EFER.SVME (RSM cannot change it, vol. 3 RSM).
+  Containerized platform SMM (SMM_CTL from a hypervisor with VM_CR/HWCR SmmLock) is not modelled:
+  SMM_CTL is never locked.
 * Not reported (CPUID 8000_000A:EDX): LbrVirt (the model records no branches and has no
   LastBranch*/LastInt* MSRs), AVIC, GMET (its EXITINFO1 user bit is ambiguous in the APM), and the
   dump's reserved bit 11.

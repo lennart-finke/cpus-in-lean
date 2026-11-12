@@ -21,13 +21,15 @@ theorem physRd_none (p n : UInt32) (m : Machine) (h : m.tso = none) (hap : isMmi
   have lo : p.toUInt64.toUInt32 = p := by bv_decide
   simp only [physRd, hi, lo, hap, Bool.false_eq_true, ite_false, h]
 
-theorem physWr_none (p n v : UInt32) (m : Machine) (h : m.tso = none) (hap : isMmio m p = false) :
+/-- (`hw`: no other CPU waits in MWAIT, `Machine.watch`; always so with one CPU.) -/
+theorem physWr_none (p n v : UInt32) (m : Machine) (h : m.tso = none) (hap : isMmio m p = false)
+    (hw : m.watch = #[]) :
     physWr p.toUInt64 n v m = .ok () { m with mem := wrBytes m.mem p n v } := by
   have hi : (p.toUInt64 >>> 32 != 0) = false := by
     have : p.toUInt64 >>> 32 = 0 := by simp only [X86.shr64]; bv_decide
     simp [this]
   have lo : p.toUInt64.toUInt32 = p := by bv_decide
-  simp only [physWr, hi, lo, hap, Bool.false_eq_true, ite_false, h]
+  simp only [physWr, hi, lo, hap, Bool.false_eq_true, ite_false, h, hw, Array.isEmpty_empty, ite_true]
 
 namespace Tso
 

@@ -50,7 +50,14 @@ precedes the first 64-bit instruction:
 * every interrupt and exception while EFER.LMA = 1 (IDT and gate checks, target code segment
   checks, IST/RSPn, the 16-byte-aligned 8-byte frame pushes, RFLAGS update).
 
-Faults raised by these checks are delivered (again through the 64-bit IDT) as on hardware. The
+Faults raised by these checks are delivered (again through the 64-bit IDT) as on hardware. Debug
+breakpoints: DR0–DR3 hold 32-bit linear addresses in this model (MOV DRn outside 64-bit mode writes
+bits 31:0, and the bridge passes them zero-extended), so an access at or above 4 GiB (a stack slot
+of a transfer, `wr64`) matches no breakpoint, and one that starts below 4 GiB is compared with its
+full range. The instruction-breakpoint check of the first 64-bit instruction (against the 64-bit RIP)
+belongs to that instruction, i.e. to the 64-bit executor: `stepInstr` makes none in 64-bit mode.
+Debug traps raised by the transfer itself (data breakpoints on its stack writes below 4 GiB, a
+single-step trap of the transferring instruction) are pending at the boundary and delivered there. The
 transfer leaves the machine at the instruction boundary before the first 64-bit instruction:
 CS holds the 64-bit code segment, RIP = `LongModeState.ripHi`:EIP, RSP = `rspHi`:ESP, R11 = `r11`
 after SYSCALL, and `entry` names the transfer; the other general registers have their 32-bit values
@@ -60,9 +67,11 @@ step stops there (an interrupt or debug trap pending at that boundary is deliver
 64-bit mode, as on hardware). This state is exactly what a 64-bit executor needs to resume; the
 bridge in `validation/` (`BridgeMain.lean`) maps it to the `x86_64` model's state.
 
+SMM: SMIs are taken in long mode too; the AMD64 state-save map holds EFER, RIP/RSP and R11, and RSM
+recomputes LMA = LME ∧ PG ∧ PAE (`Sys.lean`, `rsmEfer`).
+
 Not modelled (stop with `Fault.unsupported`): a #PF at a linear address ≥ 4 GiB during a transfer
-(an inner stack above 4 GiB: CR2 is 32 bits in the model), SMM entry with EFER.LMA = 1 and RSM with
-EFER.LME = 1 (the model's SMRAM state-save map is the 32-bit legacy one, without EFER).
+(an inner stack above 4 GiB: CR2 is 32 bits in the model), RSM to a CR3 above 4 GiB.
 -/
 namespace X86
 namespace LongMode
@@ -136,7 +145,9 @@ if the address is not canonical, then paging (both pages are checked before anyt
 def wr64 (lin v : UInt64) (user : Bool) : M Unit := do
   if !canonical lin || !canonical (lin + 7) then exc Vec.SS (some 0)
   if user && lin &&& 7 != 0 then acCheck
-  dbData lin.toUInt32 8 true
+  -- DR0–DR3 hold 32-bit addresses in this model (they are written outside 64-bit mode), so a slot at or
+  -- above 4 GiB matches no breakpoint; the comparison uses the whole linear address
+  if lin >>> 32 == 0 then dbData lin.toUInt32 8 true
   let p0 ← xlate64 lin user
   let p1 ← xlate64 ((lin + 7) &&& ~~~0xFFF) user
   for k in [0:8] do
@@ -150,20 +161,24 @@ def wr64 (lin v : UInt64) (user : Bool) : M Unit := do
   wr64 n v user
   return n
 
-/-- Push 8 bytes through SS in compatibility mode (a same-privilege CALL through a 64-bit call gate:
-"PUSH.v" with v = 8 uses SS:rSP.s, vol. 3 CALL (Far), pseudocode conventions): segment checks on the
-8 bytes, then paging. -/
-def pushSeg8 (v : UInt64) : M Unit := do
+/-- The two 8-byte pushes (`a`, then `b`) of a same-privilege CALL through a 64-bit call gate. In the
+APM's pseudocode (vol. 3 CALL (Far), CALLF_CALLGATE) they come after CS is loaded with the 64-bit
+target ("PUSH.v old_CS; PUSH.v next_RIP" with v = 8), and WRITE_MEM tests the mode at the access: in
+64-bit mode the SS base and limit are not used, a non-canonical address is #SS(0) (vol. 3, 2.5.3
+WRITE_MEM; vol. 2, 4.12 and 2.4.5). So the pushes go to the flat linear addresses RSP − 8 and
+RSP − 16 (with paging and #AC at CPL 3). The stack pointer is then updated at the stack size the
+instruction started with (pseudocode "RSP.s = RSP − 8", S fixed at the start of the instruction):
+ESP for a 32-bit SS, SP for a 16-bit one. QEMU does the same (`helper_lcall_protected`: `PUSHQ` on
+the unmasked RSP, `SET_ESP` with the old SS mask). -/
+def pushGate8 (a b : UInt64) : M Unit := do
   let c ← cpu
-  let big := c.ss.big
-  let sp := if big then c.esp - 8 else (c.esp - 8) &&& 0xFFFF
-  let lin ← segAddr SegN.SS sp 8 true
   let user := c.cpl == 3
-  acChk lin 8 user
-  linProbeWr lin 8 user
-  linWr lin 4 v.toUInt32 user
-  linWr (lin + 4) 4 (v >>> 32).toUInt32 user
-  modCpu fun c => { c with esp := if big then sp else (c.esp &&& 0xFFFF0000) ||| sp }
+  let r := rsp c
+  wr64 (r - 8) a user
+  wr64 (r - 16) b user
+  let n := (r - 16).toUInt32
+  modCpu fun c => if c.ss.big then { c with esp := n, lmx := { c.lmx with rspHi := 0 } }
+                   else { c with esp := (c.esp &&& 0xFFFF0000) ||| (n &&& 0xFFFF) }
 
 /-! ## Descriptors -/
 
@@ -309,7 +324,7 @@ clear (#GP(gate)); the target: non-null (#GP(0)), a 64-bit code segment with DPL
 for JMP a non-conforming one with DPL = CPL, present (#NP(target)); the 64-bit offset canonical
 (#GP(0)). A CALL to a more privileged segment switches to RSPn of the 64-bit TSS with a null SS and
 pushes SS, RSP, CS, RIP as 8 bytes each on it (no parameters are copied); a CALL at the same
-privilege pushes CS and RIP (8 bytes each) through SS. The target is 64-bit code: the model stops
+privilege pushes CS and RIP (8 bytes each, `pushGate8`). The target is 64-bit code: the model stops
 there. -/
 def gateLong (gsel : UInt16) (lo hi addr : UInt32) (call : Bool) : M Unit := do
   let c ← cpu
@@ -349,9 +364,7 @@ def gateLong (gsel : UInt16) (lo hi addr : UInt32) (call : Bool) : M Unit := do
     let nsp := sp
     modCpu fun c => { c with ss := nullSs ncpl.toUInt16 ncpl, esp := nsp.toUInt32,
                              lmx := { c.lmx with rspHi := (nsp >>> 32).toUInt32 } }
-  else if call then
-    pushSeg8 c.cs.sel.toUInt64
-    pushSeg8 ret
+  else if call then pushGate8 c.cs.sel.toUInt64 ret
   modCpu fun c => { c with cs := toSeg ((tsel &&& 0xFFFC) ||| ncpl.toUInt16) dlo dhi, eip := target.toUInt32 }
   enter64 (target >>> 32).toUInt32 (if call then "far CALL through a call gate" else "far JMP through a call gate")
 

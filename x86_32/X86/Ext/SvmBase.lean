@@ -270,5 +270,32 @@ to the APIC's TPR as well). -/
 @[inline] def setVTpr (v : UInt32) : M Unit := modCpu fun c =>
   if c.svmOn then { c with svmx := { c.svmx with vTpr := v &&& 0xF } } else c
 
+/-! ## SMM (15.22) -/
+
+/-- The virtual-interrupt quadword in the format of VMCB offset 060h (V_TPR, V_IRQ, V_GIF,
+V_INTR_PRIO, V_IGN_TPR, V_INTR_MASKING, V_GIF enable, V_INTR_VECTOR in bits 39:32). -/
+def vintWord (s : SvmState) : UInt64 :=
+  let b (x : Bool) (k : UInt64) : UInt64 := if x then 1 <<< k else 0
+  s.vTpr.toUInt64 ||| b s.vIrq 8 ||| b s.vGif 9 ||| (s.vPrio.toUInt64 <<< 16) ||| b s.vIgnTpr 20 |||
+    b s.vIntrMasking 24 ||| b s.vGifEn 25 ||| (s.vVec.toUInt64 <<< 32)
+
+/-- The SVM fields of the AMD64 SMM state-save map (APM vol. 2, table 10-1), as offsets from
+SMBASE + 8000h with their quadword values, written by SMM entry (`smmEnter`). An SMI taken in guest
+mode (one the guest does not intercept, 15.22) records it: SVM Guest (FED8h) = 1, the guest's VMCB
+physical address (FEE0h), its virtual-interrupt state (FEE8h, the VMCB 060h format), and the nested
+paging context the SMM handler needs to translate guest addresses: guest PAT (FF20h), host EFER
+(FF28h), host CR4 (FF30h), nCR3 (FF38h) and host CR0 (FF40h); outside guest mode they are 0, as are
+gPAT and nCR3 without nested paging. The table marks them read-only, and RSM does not read them back:
+guest mode, the VMCB and the host state stay on chip across SMM (`SvmState`), so RSM returns to the
+guest exactly as it was interrupted (SMM software changing these fields has no effect). FEF0h–FEF7h
+(reserved) is written as 0. -/
+def smmSave (c : Cpu) : List (UInt32 × UInt64) :=
+  let s := c.svmx
+  let g := s.guest
+  let z (x : Bool) (v : UInt64) : UInt64 := if x then v else 0
+  [(0x7ED8, z g 1), (0x7EE0, z g s.vmcb), (0x7EE8, z g (vintWord s)), (0x7EF0, 0),
+   (0x7F20, z (g && s.np) c.sysx.pat), (0x7F28, z g s.host.efer.toUInt64), (0x7F30, z g s.host.cr4.toUInt64),
+   (0x7F38, z (g && s.np) s.ncr3), (0x7F40, z g s.host.cr0.toUInt64)]
+
 end Svm
 end X86

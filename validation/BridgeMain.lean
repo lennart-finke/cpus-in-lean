@@ -18,7 +18,8 @@ perform that 64-bit instruction, which neither model does, so the hand-off is on
 For the long-mode system test (`test/sys/t_long.c`) every 64-bit target is one of the test's stubs:
 the bridge runs the stub in the `x86_64` model up to its final IRETQ (where `X64` stops), and checks
 it against `LongStub.run` (the stub emulation `x86sys` uses): the record and the IRETQ frame the stub
-writes, and the registers at the IRETQ, must be identical. It then continues the IA-32 run from the
+writes, and the registers at the IRETQ, must be identical (a stub at CPL > 0 whose IRETQ to ring 0
+faults is followed into the #GP handler's stub on both sides). It then continues the IA-32 run from the
 emulated IRETQ. The UART output of the kernel goes to stdout as in `x86sys`.
 
 The state mapping (IA-32 → X64): general registers zero-extended (`LongModeState` holds RIP/RSP bits
@@ -26,9 +27,25 @@ The state mapping (IA-32 → X64): general registers zero-extended (`LongModeSta
 FS_BASE/GS_BASE MSR values while the cache is unchanged), GDTR/IDTR/LDTR/TR, CR0/2/3/4, DR0–3/6/7,
 EFER, STAR/LSTAR/CSTAR/SFMASK, KernelGSbase, XMM0–7 (XMM8–15 zero) and MXCSR, the x87 registers
 (physical order), control/status word and a full tag word (00 or 11: the model keeps only empty
-bits), the stored MSRs, HLT/interrupt shadow, the whole physical memory. Not mapped: the local APIC
-(X64 has none; its page reads as RAM), the PIC/PIT/UART device states (reset values) and
-pending events, the YMM upper halves and XCR0 (X64 has no AVX state).
+bits), the stored MSRs, HLT/interrupt shadow, the whole physical memory, and the time-stamp counter:
+X64's TSC (RDTSC, RDMSR 10h) is its instruction count, the IA-32 model's is `icount + SysState.tscOff`
+(WRMSR 10h sets the offset), so the X64 machine starts at `icount + tscOff` (mod 2^64), which X64
+uses only for the TSC and its own device timers (whose states are reset anyway).
+
+Not mapped (`X64` has no place for it), by owner, with what 64-bit code could observe:
+* the local APIC and I/O APIC (`Machine.apic`, `peers`, `ioapic`; `SmpState` APIC_BASE/x2APIC mode):
+  X64 has none, the APIC page reads as RAM, RDMSR 1Bh and 800h–8FFh are #GP; the PIC/PIT/UART/CMOS
+  device states (reset values) and pending events (`dbPend`, SMI/NMI latches, `SysBState`);
+* `SseState.ymmh`, XCR0, IA32_XSS, the XINUSE tracking (`XsaveState`): X64 has no AVX/XSAVE state
+  (XGETBV, XSAVE are #UD there);
+* `SysState`: SYSENTER_CS/ESP/EIP (174h–176h) and PAT (277h) — RDMSR is #GP in X64 (SYSENTER is #UD in
+  long mode on AMD anyway);
+* `GprState`: TSC_AUX (C000_0103h; X64 has no RDTSCP/RDPID), MPERF/APERF, PerfCtr/PerfEvtSel,
+  the RDRAND state, HWCR.MonMwaitUserEn, the armed MONITOR line; `SysBState`: HWCR bits, IRPerfCount;
+  every other stored MSR (`Cpu.msrs`: MTRRs, MCA, SYSCFG, ...) — X64's RDMSR knows only EFER, the
+  SYSCALL MSRs, FS/GS/KernelGS base, TSC and PATCH_LEVEL (8Bh, which it reads as 0);
+* `LongModeState`: the high halves of RAX..R15 other than R11 (the IA-32 model keeps none; mapped as 0);
+* `SvmState` (owner SVM), SMM state (`smm`, `smbase`): X64 has no SVM or SMM.
 -/
 open X86
 
@@ -63,7 +80,10 @@ def toX64 (m : X86.Machine) : X64.Machine :=
     cr4 := c.cr4.toUInt64, dr0 := c.dr0.toUInt64, dr1 := c.dr1.toUInt64, dr2 := c.dr2.toUInt64,
     dr3 := c.dr3.toUInt64, dr6 := c.dr6.toUInt64, dr7 := c.dr7.toUInt64,
     msrs := c.msrs.map fun (n, v) => (n.toUInt64, v), halted := c.halted, shadow := c.shadow }
-  { cpu, mem := m.mem, icount := m.icount }
+  { cpu, mem := m.mem, icount := m.icount + c.sysx.tscOff }
+
+/-- X64's time-stamp counter (its instruction count) at the hand-off is the IA-32 model's TSC. -/
+theorem toX64_tsc (m : X86.Machine) : (toX64 m).icount = m.icount + m.cpu.sysx.tscOff := rfl
 
 def loadElf (img : ByteArray) (memSize : Nat) (cmdline : String) : Except String X86.Machine := do
   if img.size < 84 || u32At img 0 != 0x464C457F then throw "not an ELF file"
@@ -130,9 +150,17 @@ def main (args : List String) : IO UInt32 := do
       -- the stub emulation of x86sys, from the same IA-32 state
       match LongStub.resume m with
       | none =>
-        IO.println s!"BRIDGE stop {stops}: {m.cpu.lmx.entry} rip={hex (LongMode.rip m.cpu)}: not a test stub; x86_64 model: {xr} at rip={hex x.cpu.rip} after {x.icount - m.icount} instructions"
+        IO.println s!"BRIDGE stop {stops}: {m.cpu.lmx.entry} rip={hex (LongMode.rip m.cpu)}: not a test stub; x86_64 model: {xr} at rip={hex x.cpu.rip} after {x.icount - (m.icount + m.cpu.sysx.tscOff)} instructions"
         done := true
       | some m' =>
+        -- a stub whose IRETQ faults (a stub entered at CPL 1..3 returning to ring 0: #GP) continues in
+        -- the ring-0 stub of the #GP, which X64 runs as well: follow the emulation to that stub's IRETQ
+        let mut m' := m'
+        for _ in [0:4] do
+          if LongMode.in64 m'.cpu then
+            match LongStub.resume (X86.step m') with
+            | some m'' => m' := m''
+            | none => pure ()
         -- X64 stops at the stub's IRETQ (to compatibility mode); compare the stub's memory writes and
         -- registers with the emulation: the record (rax/rbx/rcx/r11 slots and the copy) and the frame
         let iretOk := match x.fatal with

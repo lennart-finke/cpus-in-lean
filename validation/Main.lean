@@ -68,6 +68,7 @@ def main (args : List String) : IO UInt32 := do
     | some (p : String) => IO.FS.readBinFile p
     | none => pure ByteArray.empty
   let cmdline := o.files[2]?.getD "console=ttyS0 earlyprintk=serial,ttyS0"
+  if o.smp > maxCpus then IO.eprintln s!"--smp: at most {maxCpus} CPUs"; return 2
   let m0 ← match loadLinux (o.memMB * 1024 * 1024) kernel initrd cmdline o.smp with
     | .ok m => pure m
     | .error e => do IO.eprintln s!"boot: {e}"; return 1

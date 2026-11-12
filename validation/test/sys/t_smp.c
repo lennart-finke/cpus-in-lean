@@ -32,13 +32,13 @@ __asm__(
 	".code32\n"
 	"ap_entry32:\n"
 	" movl $0x10, %eax\n movl %eax, %ds\n movl %eax, %es\n movl %eax, %fs\n movl %eax, %gs\n movl %eax, %ss\n"
-	" movl ap_stack_top, %esp\n"
-	" call ap_main\n"
+	" movl ap_stack_step, %eax\n lock xaddl %eax, ap_stack_top\n movl %eax, %esp\n"   /* own stack in smpn mode */
+	" call ap_entry\n"
 	"1: cli\n hlt\n jmp 1b\n");
 extern char ap_tramp[], ap_tramp_end[], ap_tr_gdtr[], ap_tr_cs[], ap_tr_edx[];
 
 static u8 ap_stack[8192] __attribute__((aligned(16)));
-u32 ap_stack_top;
+u32 ap_stack_top, ap_stack_step;   /* each AP takes the stack at ap_stack_top, which moves by ap_stack_step */
 
 /* mailbox and logs */
 static volatile u32 ap_gen, ap_ready, ap_cmd, ap_arg[4], ap_ack, ap_res[8];
@@ -86,7 +86,7 @@ static void logs(const char *what) {
 	bsp_n = 0; ap_n = 0;
 }
 
-enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC };
+enum { C_APIC = 1, C_IPI, C_PG_ON, C_PG_OFF, C_READ, C_X2_ON, C_X2_OFF, C_X2_IPI, C_MWAIT, C_COUNT, C_CPUID, C_TSC, C_MWAIT1, C_CR0 };
 
 static void ap_apic_init(void) {
 	LR(0xF0) = 0x1FF; LR(0x80) = 0; LR(0xE0) = 0xFFFFFFFF; LR(0xD0) = 0x02000000;
@@ -103,7 +103,15 @@ void ap_main(void) {
 	ap_res[1] = r[1] >> 24;
 	ap_res[2] = *(volatile u16 *)(AP_TRAMP + (ap_tr_cs - ap_tramp));
 	ap_res[3] = *(volatile u32 *)(AP_TRAMP + (ap_tr_edx - ap_tramp)) == r[0];
-	ap_res[4] = RDCR(0) & 0x8005003F;
+	/* the whole CR0 (CD and NW come from RESET and are kept by INIT) and the x87 control and tag
+	   words, which RESET sets to 0040h and 5555h and INIT does not change (AMD APM vol. 2, table 14-1) */
+	ap_res[4] = RDCR(0);
+	{
+		u8 env[28];
+		__asm__ volatile("fnstenv %0" : "=m"(env));
+		ap_res[5] = *(u16 *)env;
+		ap_res[6] = *(u16 *)(env + 8);
+	}
 	ap_gen++;
 	ap_ready = 1;
 	for (;;) {
@@ -139,6 +147,14 @@ void ap_main(void) {
 			}
 			ap_res[0] = mw_flag[0];
 			break;
+		case C_MWAIT1:   /* one MONITOR/MWAIT (IF = 0, ECX = 0: only a store to the line ends it) */
+			__asm__ volatile("monitor" :: "a"(&mw_flag[0]), "c"(0), "d"(0));
+			mw_armed = 1;
+			if (ap_arg[0]) while (mw_armed != 2) cpu_relax();   /* the BSP stores between MONITOR and MWAIT */
+			__asm__ volatile("mwait" :: "a"(0), "c"(0));
+			ap_res[0] = 1;
+			break;
+		case C_CR0: WRCR(0, RDCR(0) & ~0x60000000); break;   /* clear CD and NW */
 		case C_COUNT:
 			for (u32 i = 0; i < ap_arg[0]; i++) __asm__ volatile("lock incl %0" : "+m"(counter));
 			break;
@@ -155,6 +171,54 @@ void ap_main(void) {
 		}
 		ap_cmd = 0;
 		ap_ack++;
+	}
+}
+
+/* smpn=N (model-only, any number of CPUs): every AP started at once reports its CPUID topology */
+static volatile u32 smpn_mode, apn_count;
+static volatile u32 (*apn_rec)[17];   /* page_alloc'd in smpn mode: the other passes keep their layout */
+
+static void topo_record(volatile u32 *r) {
+	u32 x[4];
+	cpuid(1, 0, x); r[0] = x[1]; r[1] = (x[3] >> 28) & 1;
+	cpuid(0xB, 0, x); r[2] = x[0]; r[3] = x[1]; r[4] = x[2]; r[5] = x[3];
+	cpuid(0xB, 1, x); r[6] = x[0]; r[7] = x[1]; r[8] = x[2]; r[9] = x[3];
+	cpuid(0x80000001, 0, x); r[10] = (x[2] >> 1) & 1;
+	cpuid(0x80000008, 0, x); r[11] = x[2];
+	cpuid(0x8000001E, 0, x); r[12] = x[0]; r[13] = x[1]; r[14] = x[2];
+	r[15] = LR(0x20) >> 24;
+	cpuid(0x80000000, 0, x); r[16] = x[0];
+}
+static void apn_main(void) {
+	u32 x[4];
+	cpuid(1, 0, x);
+	u32 k = x[1] >> 24;
+	if (k < 128) topo_record(apn_rec[k]);
+	__sync_fetch_and_add(&apn_count, 1);
+	for (;;) __asm__ volatile("cli\n hlt");
+}
+void ap_entry(void) { if (smpn_mode) apn_main(); else ap_main(); }
+
+void test_smpn(u32 n) {
+	LR(0xF0) = 0x1FF;
+	apn_rec = page_alloc(3);
+	ap_stack_top = (u32)page_alloc(32) + 32 * 4096;   /* 1 KiB per AP */
+	ap_stack_step = (u32)-1024;
+	smpn_mode = 1;
+	memcpy((void *)AP_TRAMP, ap_tramp, ap_tramp_end - ap_tramp);
+	*(volatile u16 *)(AP_TRAMP + (ap_tr_gdtr - ap_tramp)) = sizeof gdt - 1;
+	*(volatile u32 *)(AP_TRAMP + (ap_tr_gdtr - ap_tramp) + 2) = (u32)gdt;
+	/* INIT, STARTUP, STARTUP to all but self, back to back */
+	ipi(0, 0xC0000 | 0x4500);
+	ipi(0, 0xC0000 | 0x600 | AP_VEC);
+	ipi(0, 0xC0000 | 0x600 | AP_VEC);
+	for (u32 k = 0; k < 50000000 && apn_count < n - 1; k++) cpu_relax();
+	topo_record(apn_rec[0]);
+	kprintf("smpn: cpus=%d started=%d\n", n, apn_count);
+	for (u32 k = 0; k < n && k < 128; k++) {
+		volatile u32 *r = apn_rec[k];
+		kprintf("smpn %d: apic=%x l1ebx=%x htt=%d b0=%x,%x,%x,%x b1=%x,%x,%x,%x cmpl=%d c88=%x maxext=%x e1e=%x,%x,%x\n", k, r[15],
+		        r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[16], r[12], r[13], r[14]);
 	}
 }
 
@@ -179,6 +243,38 @@ static void start_ap(u32 gen) {
 	wait_until(&ap_ready, 1);
 }
 
+/* INIT and STARTUP back to back, without the delays of start_ap (Linux sends INIT, STARTUP, STARTUP
+   with init_udelay = 0 on current CPUs): the AP is started whatever the scheduling of the two CPUs. The
+   APIC accepts a STARTUP in the INIT state (AMD APM vol. 2, 16.5), also while the INIT is still being
+   processed; a second STARTUP to a started CPU is ignored. */
+static void start_b2b(const char *name, int kind) {
+	u32 gen = ap_gen + 1;
+	ap_ready = 0;
+	LR(0x280) = 0;
+	ipi(1, 0xC500);   /* INIT, level assert */
+	if (kind == 1) ipi(1, 0x8500);   /* INIT de-assert */
+	ipi(1, 0x600 | AP_VEC);
+	if (kind == 3) spin(300);
+	if (kind >= 2) ipi(1, 0x600 | AP_VEC);
+	wait_until(&ap_gen, gen);
+	wait_until(&ap_ready, 1);
+	LR(0x280) = 0;
+	kprintf("smp.b2b.%s: started=%d ready=%d esr=%x\n", name, ap_gen == gen, ap_ready, LR(0x280));
+}
+
+/* Start the AP into ap_main again and wait until it is ready: for a test that borrowed the AP and left
+   it in the INIT state or elsewhere (t_svm.c's test_svm_smp). */
+void smp_restart_ap(void) {
+	u32 gen = ap_gen + 1;
+	ap_ready = 0;
+	ipi(1, 0xC500);
+	ipi(1, 0x8500);
+	ipi(1, 0x600 | AP_VEC);
+	wait_until(&ap_gen, gen);
+	wait_until(&ap_ready, 1);
+	LR(0x280) = 0;
+}
+
 void test_smp(void) {
 	trap_hook = smp_hook;
 	outb(0x21, 0xFF); outb(0xA1, 0xFF);
@@ -190,8 +286,25 @@ void test_smp(void) {
 	LR(0x280) = 0;
 	start_ap(1);
 	LR(0x280) = 0;
-	kprintf("smp.start: gen=%d ready=%d apicid=%x cpuid_id=%x cs=%x edx_sig=%d cr0=%x esr=%x\n", ap_gen, ap_ready,
-	        ap_res[0], ap_res[1], ap_res[2], ap_res[3], ap_res[4], LR(0x280));
+	kprintf("smp.start: gen=%d ready=%d apicid=%x cpuid_id=%x cs=%x edx_sig=%d cr0=%x esr=%x fcw=%x ftw=%x\n", ap_gen,
+	        ap_ready, ap_res[0], ap_res[1], ap_res[2], ap_res[3], ap_res[4], LR(0x280), ap_res[5], ap_res[6]);
+
+	/* MWAIT ends with any store to the monitored line, also when a second store restores its contents
+	   before the waiting CPU runs again (APM vol. 3 MWAIT); a store between MONITOR and MWAIT
+	   triggers the monitor, so MWAIT does not wait. (QEMU's MWAIT with several CPUs does not wait.) */
+	for (u32 k = 0; k < 2; k++) {
+		u32 t = ap_ack;
+		mw_flag[0] = 0; mw_flag[1] = 0; mw_armed = 0; ap_res[0] = 0;
+		ap_arg[0] = k;
+		__sync_synchronize();
+		ap_cmd = C_MWAIT1;
+		wait_until(&mw_armed, 1);
+		if (!k) spin(5000);
+		mw_flag[1] = 1; mw_flag[1] = 0;
+		if (k) mw_armed = 2;
+		wait_until(&ap_ack, t + 1);
+		kprintf("smp.mwait.%s: woke=%d\n", k ? "armed_restore" : "restore", ap_res[0]);
+	}
 
 	/* fixed IPIs, physical destination, both directions */
 	ipi(1, 0x4051);
@@ -260,6 +373,10 @@ void test_smp(void) {
 	ap_ready = 0;
 	start_ap(2);
 	kprintf("smp.restart: gen=%d ready=%d cs=%x\n", ap_gen, ap_ready, ap_res[2]);
+	start_b2b("init_sipi", 0);
+	start_b2b("init_deassert_sipi", 1);
+	start_b2b("init_sipi_sipi", 2);
+	start_b2b("init_sipi_spin_sipi", 3);
 
 	/* TLB shootdown: the BSP remaps a page, invalidates its own TLB entry and asks the AP by IPI */
 	u32 *pd = page_alloc(1), *pt = page_alloc(1);
@@ -387,6 +504,16 @@ void test_smp_model(void) {
 	wait_ap_n(1);
 	LR(0x80) = 0; LR(0xF0) = 0x1FF;
 	logs("smpm.lowpri.nofocus");
+	/* the arbitration compares APR bits 7:4, the Arbitration Priority field (AMD APM vol. 2, 16.6.2): BSP
+	   TPR 80h and AP TPR 8Fh tie, and the highest APIC ID (the AP) accepts; comparing the whole APR (the
+	   Intel rule) would pick the BSP */
+	LR(0x80) = 0x80;
+	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0x8F);
+	ipi(0x03, 0x900 | 0x95);
+	wait_ap_n(1);   /* the AP accepts (not a fixed spin: the AP may not run within it at a large quantum) */
+	logs("smpm.lowpri.subclass");
+	LR(0x80) = 0;
+	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0);
 	/* remote read of the AP's TPR and APR */
 	ap_do(C_APIC, 0x02000000, 0xFFFFFFFF, 0x37);
 	ipi(1, 0x300 | 0x08);
@@ -401,6 +528,14 @@ void test_smp_model(void) {
 	logs("smpm.ipi.extint");
 	/* SMI IPI: the AP enters SMM at its SMBASE (the t_smm handler counts at 0x6000) and resumes */
 	memcpy((void *)0xA8000, smi_h, smi_h_end - smi_h);
+	/* the t_smm handler replaces the saved EAX by 5A5A5A5Ah, which the AP's code may hold a live value
+	   in when the SMI arrives: this copy leaves it alone (the 12 bytes 67 66 C7 86 D0 7F 00 00 imm32 of
+	   each such store, one per save-map layout, become NOPs), so the outcome does not depend on where the AP is interrupted */
+	{
+		u8 *h = (u8 *)0xA8000;
+		for (u32 i = 8; i + 4 <= (u32)(smi_h_end - smi_h); i++)
+			if (*(volatile u32 *)(h + i) == 0x5A5A5A5A) for (u32 j = i - 8; j < i + 4; j++) h[j] = 0x90;
+	}
 	for (int i = 0; i < 20; i++) ((volatile u32 *)0x6000)[i] = 0;
 	ipi(1, 0x200);
 	spin(20000);
@@ -426,5 +561,11 @@ void test_smp_model(void) {
 	kprintf("smpm.cpuid81: cmplegacy=%d\n", (r[2] >> 1) & 1);
 	cpuid(0x80000008, 0, r);
 	kprintf("smpm.cpuid88: ecx=%x\n", r[2]);
+	/* INIT keeps CR0.CD and CR0.NW (AMD APM vol. 2, table 14-1): the AP clears them, then INIT and
+	   STARTUP; its CR0 still has them clear. (TCG's INIT resets CR0 to 6000_0010h.) */
+	ap_do(C_CR0, 0, 0, 0);
+	ap_ready = 0;
+	start_ap(ap_gen + 1);
+	kprintf("smpm.init.cr0: %x ready=%d\n", ap_res[4], ap_ready);
 	trap_hook = 0;
 }

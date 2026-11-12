@@ -8,8 +8,10 @@ No native result is an input to this executable.
 
 `x86fp --compat` runs each case as the native oracle really runs it: in compatibility mode under a
 64-bit Linux (EFER.LME/LMA/NXE/SCE set, 4-level paging with the same identity map and test pages,
-CR4.PAE, a 32-bit DPL-3 code segment with L = 0, the user selectors 0x23/0x2B of Linux's
-__USER32_CS/__USER_DS). Without the flag the case runs in legacy protected mode (32-bit paging). -/
+CR4 = 0035_0EF0h as Linux sets it on a 7742 (PAE, PSE, PGE, MCE, OSFXSR, OSXMMEXCPT, OSXSAVE, UMIP,
+FSGSBASE, SMEP, SMAP), a 32-bit DPL-3 code segment with L = 0, the user selectors 0x23/0x2B of
+Linux's __USER32_CS/__USER_DS). (Linux emulates SGDT/SIDT/SMSW that UMIP makes #GP for 32-bit
+processes; the model reports the #GP.) Without the flag the case runs in legacy protected mode (32-bit paging). -/
 open X86
 
 def rdQ (v : ByteArray) (o : Nat) : UInt64 :=
@@ -83,7 +85,11 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) (compat : Bool := fa
     else Array.replicate 8 {}
   c := { c with sse := { xmm := xmm.toArray, mxcsr := (u32At v (o + 432)).toUInt32, ymmh } }
   if compat then
-    c := { c with cr3 := 0x5000, cr4 := c.cr4 ||| CR4.PAE,
+    -- CR4 as 64-bit Linux 6.x sets it on an EPYC 7742 (CPUID 7:EBX FSGSBASE/SMEP/SMAP, 7:ECX UMIP; no
+    -- PCID, PKU, LA57): PSE, PAE, MCE, PGE (head_64.S, mm/init.c), OSFXSR, OSXMMEXCPT (fpu/init.c),
+    -- OSXSAVE (fpu/xstate.c), SMEP, SMAP, UMIP (setup_smep/setup_smap/setup_umip, CONFIG_X86_UMIP=y),
+    -- FSGSBASE (identify_cpu) = 0035_0EF0h; DE, TSD, PCE, VME, PVI clear (cpu_init, per task/mm)
+    c := { c with cr3 := 0x5000, cr4 := 0x350EF0,
                   efer := EFER.SCE ||| EFER.LME ||| EFER.LMA ||| EFER.NXE }
   let m : Machine := { cpu := c, mem }
   let (m, vec, err) ← match execInstr m with

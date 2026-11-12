@@ -31,10 +31,22 @@ The guest kernels have no ACPI, so the CPUs and the I/O APIC are described by an
 structure (at `mpFloat`, in the BIOS area 0xF0000–0xFFFFF that Linux scans and the e820 map reserves)
 and an MP configuration table (at `mpConfig`): one processor entry per CPU (APIC ID = CPU number,
 local APIC version 10h, enabled, CPU 0 the boot processor, signature and feature flags from CPUID
-leaf 1), an ISA bus, the I/O APIC (ID N, version 11h, at 0xFEC00000), I/O interrupt entries for ISA
+leaf 1), an ISA bus, the I/O APIC (ID `ioApicId N`, version 11h, at 0xFEC00000), I/O interrupt entries for ISA
 IRQs 0..15 except 2 with IRQ 0 on pin 2 (conforming polarity and trigger), and the local interrupt
 entries ExtINT → LINT0 of the boot processor and NMI → LINT1 of every CPU: the layout SeaBIOS
 generates for QEMU. Feature byte 2 bit 7 (IMCRP) = 0: virtual-wire mode, no IMCR. -/
+
+/-- The I/O APIC's ID for `n` CPUs (local APIC IDs 0..n−1): `n` while that fits the 82093AA's 4-bit ID
+register below the serial-bus broadcast ID 15 (n ≤ 14: an ID no local APIC has, which the legacy
+identity's Linux checks, `setup_ioapic_ids_from_mpc`), otherwise 0. With n ≥ 15 no 4-bit ID is free;
+on xAPIC systems (the system bus of the 7742) I/O APIC and local APIC IDs are separate name spaces, and
+QEMU/SeaBIOS give the I/O APIC ID 0 for any number of CPUs. The MP table and the ID register always
+agree. Supported: 1 ≤ n ≤ 128 (the threads of one 7742 package, `Cpuid.topo`; xAPIC IDs < 255); Linux
+with the legacy (Intel, APIC version 10h) identity insists on unique 4-bit IDs and boots with n ≤ 14. -/
+def ioApicId (n : Nat) : UInt32 := if n ≤ 14 then n.toUInt32 else 0
+
+/-- The largest number of CPUs `MpMachine` supports (one EPYC 7742 package). -/
+def maxCpus : Nat := 128
 
 def mpFloat : UInt32 := 0xF0000
 def mpConfig : UInt32 := 0xF0010
@@ -52,9 +64,9 @@ def mpConfigTable (c : Cpu) (n : Nat) : List UInt8 :=
   let procs := (List.range n).flatMap fun k =>
     [0, k.toUInt8, 0x10, if k == 0 then 3 else 1] ++ leBytes 4 sig.toNat ++ leBytes 4 feat.toNat ++ leBytes 8 0
   let bus := [1, 0] ++ "ISA   ".toUTF8.toList
-  let ioapic := [2, n.toUInt8, 0x11, 1] ++ leBytes 4 0xFEC00000
+  let ioapic := [2, (ioApicId n).toUInt8, 0x11, 1] ++ leBytes 4 0xFEC00000
   let ints := ((List.range 16).filter (· != 2)).flatMap fun irq =>
-    [3, 0, 0, 0, 0, irq.toUInt8, n.toUInt8, (if irq == 0 then 2 else irq).toUInt8]
+    [3, 0, 0, 0, 0, irq.toUInt8, (ioApicId n).toUInt8, (if irq == 0 then 2 else irq).toUInt8]
   let locals := [4, 3, 0, 0, 0, 0, 0, 0] ++ [4, 1, 0, 0, 0, 0, 0xFF, 1]
   let body := procs ++ bus ++ ioapic ++ ints ++ locals
   let count := n + 1 + 1 + 15 + 2
@@ -74,7 +86,7 @@ def placeMpTables (mem : ByteArray) (c : Cpu) (n : Nat) : ByteArray :=
   put (put mem mpFloat mpFloatingPointer) mpConfig (mpConfigTable c n)
 
 /-- Load a Linux bzImage. With `smp = n > 0` the MP tables for `n` CPUs are placed and the I/O APIC
-gets ID `n` (as firmware assigns it); the CPUs themselves are added by `MpMachine.ofMachine`. -/
+gets ID `ioApicId n` (as firmware assigns it); the CPUs themselves are added by `MpMachine.ofMachine`. -/
 def loadLinux (memSize : Nat) (kernel initrd : ByteArray) (cmdline : String) (smp : Nat := 0) :
     Except String Machine := do
   if kernel.size < 0x300 then throw "kernel image too small"
@@ -130,6 +142,6 @@ def loadLinux (memSize : Nat) (kernel initrd : ByteArray) (cmdline : String) (sm
     cr0 := CR0.PE ||| CR0.ET }
   if smp == 0 then return { cpu, mem }
   let cpu := { cpu with smpx := { cpu.smpx with ncpu := smp.toUInt32 } }
-  return { cpu, mem := placeMpTables mem cpu smp, ioapic := { id := smp.toUInt32 } }
+  return { cpu, mem := placeMpTables mem cpu smp, ioapic := { id := ioApicId smp } }
 
 end X86

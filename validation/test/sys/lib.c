@@ -161,6 +161,10 @@ void sys_main(void) {
 	setup();
 	kputs("BEGIN\n");
 	if (param("seed", 0)) kprintf("PARAMS seed=%x\n", param("seed", 0));
+	if (param("smpn", 0)) {   /* model-only: N CPUs started at once report their CPUID topology */
+		test_smpn(param("smpn", 0));
+		sys_exit();
+	}
 	if (param("smp", 0)) {   /* the SMP transcript (second run of run.sh) */
 		test_smp();
 		test_svm_smp();   /* SVM: a guest on the AP while the BSP sends it IPIs (t_svm.c) */

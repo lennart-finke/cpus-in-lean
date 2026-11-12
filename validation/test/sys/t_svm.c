@@ -1411,7 +1411,7 @@ __asm__(
 extern char sap_tramp[], sap_tramp_end[], sap_gdtr[];
 static u8 sap_stack[8192] __attribute__((aligned(16)));
 u32 sap_stack_top;
-static volatile u32 sap_started, sap_phase, sap_code[4], sap_intr, sap_nmi;
+static volatile u32 sap_started, sap_phase, sap_code[4], sap_intr, sap_nmi, sap_got;
 static u8 *ap_vmcb, *ap_hsave, *ap_gcode, *ap_gstack;
 static volatile u32 *gcount;
 
@@ -1461,6 +1461,7 @@ void svm_ap_main(void) {
 		sap_phase = k + 1;
 		ap_vmrun();
 		sap_code[k] = *(u32 *)(ap_vmcb + C_CODE);
+		sap_got = k + 1;
 		__asm__ volatile(".byte 0x0f,0x01,0xdc" ::: "memory");   /* STGI: the pending event is taken here */
 		for (volatile int d = 0; d < 200; d++) {}
 		__asm__ volatile("cli");
@@ -1477,6 +1478,7 @@ void test_svm_smp(void) {
 	gcount = (volatile u32 *)page_alloc(1);
 	static const u8 gc[] = { 0xff, 0x01, 0xf3, 0x90, 0xeb, 0xfa };   /* 1: inc dword [ecx]; pause; jmp 1b */
 	for (u32 k = 0; k < sizeof gc; k++) ap_gcode[k] = gc[k];
+	int (*old_hook)(struct frame *) = trap_hook;
 	trap_hook = sap_hook;
 	sap_stack_top = (u32)sap_stack + sizeof sap_stack;
 	memcpy((void *)SAP_TRAMP, sap_tramp, sap_tramp_end - sap_tramp);
@@ -1497,13 +1499,13 @@ void test_svm_smp(void) {
 		if (k < 2) sap_wait(&sap_phase, 10 + k);
 		else for (volatile int d = 0; d < 200000; d++) {}
 	}
+	sap_wait(&sap_got, 3);   /* the AP has stored the INIT exit code (then takes the INIT at STGI) */
 	kprintf("svm.smp: started=%d intr_exit=%x nmi_exit=%x init_exit=%x ap_intr=%d ap_nmi=%d phase=%d\n", sap_started,
 	        sap_code[0], sap_code[1], sap_code[2], sap_intr, sap_nmi, sap_phase);
-	/* the INIT was taken after the AP's STGI: it waits for STARTUP; hand it back to t_smp.c's
-	   trampoline (8000h), whose AP loop the model-only SMP tests use */
-	trap_hook = 0;
-	ipi(1, 0x600 | 0x08);
-	for (volatile int d = 0; d < 200000; d++) {}
+	/* the INIT was taken after the AP's STGI: hand the AP back to t_smp.c's AP loop, which the
+	   model-only SMP tests use */
+	trap_hook = old_hook;
+	smp_restart_ap();
 }
 
 /* ---------------- model-only: what TCG lacks ---------------- */
@@ -1702,9 +1704,10 @@ static void m_inject(void) {
 		VM64(C_NRIP) = rip + k[i].nrip_add;
 		u32 top = (u32)gstack + 4096 - 16;
 		run();
-		u32 sp = (u32)VM64(S_RSP), depth = top - sp;
+		/* the depth on the guest stack (a CPL-3 guest's #GP is taken on the ring-0 stack: 0 here) */
+		u32 sp = (u32)VM64(S_RSP), depth = k[i].cpl3 ? 0 : top - sp;
 		kprintf("%s: code=%x rax=%x depth=%x", nm3("svmm.inject.", k[i].n, ""), (u32)VM64(C_CODE), (u32)VM64(S_RAX), depth);
-		if (VM64(C_CODE) == 0x81 && (depth == 12 || depth == 16)) {
+		if (VM64(C_CODE) == 0x81 && !k[i].cpl3 && (depth == 12 || depth == 16)) {
 			u32 *f = (u32 *)sp;
 			int e = depth == 16;
 			kprintf(" err=%x eip=%x", e ? f[0] : 0, f[e] - rip);
@@ -1879,8 +1882,37 @@ static void m_smi(void) {
 	kprintf("svmm.smi.icpt: code=%x i1=%x rip=%x smm_before_stgi=%d smm=%d\n", code, i1, (u32)VM64(S_RIP) - (u32)gcode, n0, *cnt);
 	*cnt = 0;
 	vmcb_flat(G(0xe6, 0xb2, 0x90, 0x90));
+	VM32(C_VINT) = 0x00030005; VM32(C_VVEC) = 0x41;   /* V_TPR 5, V_INTR_PRIO 3 (no V_IRQ) */
 	run();
 	kprintf("svmm.smi.guest: code=%x smm=%d\n", (u32)VM64(C_CODE), *cnt);
+	/* the SVM fields of the AMD64 state-save map (SMBASE A0000h; APM vol. 2, table 10-1, 15.22): SVM
+	   Guest, VMCB address, virtual interrupt, and the nested-paging context (guest PAT, host EFER, CR4,
+	   nCR3, CR0), 0 outside guest mode; SMM entry and RSM keep EFER.SVME */
+#define SV(o) (*(volatile u32 *)(0xA0000 + (o)))
+	kprintf("svmm.smi.save.guest: guest=%x:%x vmcb_ok=%d vint=%x:%x efer=%x hefer=%x hcr0=%x hcr4=%x gpat=%x ncr3=%x\n",
+	        SV(0xFED8), SV(0xFEDC), SV(0xFEE0) == (u32)vmcb && SV(0xFEE4) == 0, SV(0xFEE8), SV(0xFEEC), SV(0xFED0),
+	        SV(0xFF28), SV(0xFF40), SV(0xFF30), SV(0xFF20), SV(0xFF38));
+	*cnt = 0;
+	clgi();
+	outb(0xB2, 0);
+	stgi();
+	settle();
+	kprintf("svmm.smi.save.host: smm=%d guest=%x vmcb=%x hefer=%x efer_svme=%x\n", *cnt, SV(0xFED8), SV(0xFEE0),
+	        SV(0xFF28), (u32)rdmsr(EFER_MSR) & SVME);
+	/* nested paging (host 32-bit paging, identity nested tables): the SMM handler runs on physical
+	   addresses (nested paging is off in SMM) and RSM resumes the guest under nested paging */
+	*cnt = 0;
+	host_paging(1);
+	build_nested(0);
+	vmcb_flat(G(0xe6, 0xb2, 0x90, 0x90));
+	VM64(C_NP) = 1; VM64(C_NCR3) = (u32)npd32; VM64(S_GPAT) = 0x0007040600070406ULL;
+	run();
+	u32 hcr4 = RDCR(4);
+	host_paging(0);
+	kprintf("svmm.smi.save.np: code=%x smm=%d guest=%x gpat=%x:%x ncr3_ok=%d hefer=%x hcr0=%x hcr4_ok=%d\n",
+	        (u32)VM64(C_CODE), *cnt, SV(0xFED8), SV(0xFF20), SV(0xFF24), SV(0xFF38) == (u32)npd32 && SV(0xFF3C) == 0,
+	        SV(0xFF28), SV(0xFF40), SV(0xFF30) == hcr4);
+#undef SV
 }
 
 /* SKINIT (15.27.6): the INIT-like state, EAX = SLB base, EDX = signature, ESP = SLB + 64 KiB, EFER = 0,
