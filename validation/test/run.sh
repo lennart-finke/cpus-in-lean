@@ -1,8 +1,8 @@
 #!/bin/sh
 # Differential test: generate N vectors (seed S), run them on QEMU and on the Lean model.
 #   test/run.sh [N] [SEED]
-# QEMU runs an EPYC-Rome CPU (test/qemu-cpu.sh); forms that it executes but the model does not
-# implement yet are not generated (test/isa_forms.py, NOT_YET_IMPLEMENTED).
+# QEMU runs an EPYC-Rome CPU (test/qemu-cpu.sh). gen.py prints the 'ud' family's distinct undefined
+# encodings per map (test/isa_forms.py decides which forms are defined).
 set -e
 N=${1:-10000}; SEED=${2:-1}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

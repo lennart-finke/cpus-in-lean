@@ -21,8 +21,9 @@ Record formats (shared with test/harness/harness.c and TestMain.lean):
   XOP register forms, ...), 'len' (such encodings padded with prefixes to 15 bytes (#UD) or 16
   bytes (#GP(0)); for 16 bytes QEMU reports #UD, see TestMain.lean) and 'ext' (forms in
   isa_forms.IMPLEMENTED: gen_gpr.py for the general-purpose extensions, xsave_gen.py for the XSAVE
-  forms, gen_crypto.py, gen_sse.py (via ext_form) for SSE3..SSE4a). Forms listed in
-  isa_forms.NOT_YET_IMPLEMENTED (which QEMU's EPYC-Rome CPU executes) are never generated.
+  forms, gen_crypto.py, gen_sse.py (via ext_form) for SSE3..SSE4a, gen_avx.py, gen_avx2.py,
+  gen_sys.py, gen_svm.py). With --v2, main prints how many distinct undefined encodings per map the
+  'ud' family emitted (ud_stats) to stderr; run.sh shows it.
 """
 import os, random, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -207,9 +208,7 @@ def gen_one():
         rep = random.choice([0xF2, 0xF3])
         prefixes.append(rep)
     if random.random() < 0.05:
-        # (v2: LOCK MOV CR is MOV CR8 on CPUs with AltMovCr8; not generated until implemented)
-        if not (V2 and two and isa_forms.not_yet_implemented('legacy-lock', 1, 0, op)):
-            prefixes.append(0xF0)
+        prefixes.append(0xF0)   # (LOCK MOV CR0 is MOV CR8 with AltMovCr8, which the model implements)
     random.shuffle(prefixes)
     opsz = 2 if p66 else 4
     a16 = p67
@@ -523,6 +522,61 @@ def ud_form(g, a16, force=None):
     # 8F with ModRM.reg != 0: XOP on CPUs with XOP, #UD on Zen 2 (POP r/m needs reg = 0)
     return bytes([0x8F]) + modrm(random.randint(1, 7)), kind
 
+# Coverage of the 'ud' family: the distinct undefined encodings emitted in a run, per map. A distinct
+# encoding is a combination of the fields that isa_forms.defined() and the model's decoder tell
+# apart: (map, mandatory prefix pp, opcode byte, ModRM.mod class (register / memory / no ModRM),
+# ModRM.reg, VEX.L, VEX.W); for 'vexpfx' also the legacy prefix before the VEX; for the one-byte
+# opcodes 62 (EVEX) and 8F (XOP) (opcode, ModRM.mod class, ModRM.reg). Not told apart: ModRM.rm,
+# SIB, displacement, VEX.vvvv/R/X/B, the immediate, and the 67/segment prefixes of gen_v2_family.
+# 'vexnb' vectors are counted on their own, and also as the isa_forms.vex_neighbours() entries
+# (map, pp, opcode, VEX.L) they cover.
+UD_BUCKETS = ['62/8F', '0F', '0F38', '0F3A', 'VEX.0F', 'VEX.0F38', 'VEX.0F3A', 'VEX map 0/4-31',
+              'pfx+VEX', 'vexnb']
+_ud_seen = {'n': 0, 'keys': {b: set() for b in UD_BUCKETS}, 'nb': set()}
+
+def ud_key(kind, body):
+    """(bucket, distinct-encoding key) of the bytes `body` of ud_form's kind `kind`."""
+    def mrm(j):
+        return ('reg' if body[j] >> 6 == 3 else 'mem', body[j] >> 3 & 7) if j < len(body) else (None, None)
+    if kind in ('evex', 'xop'):
+        return '62/8F', (body[0],) + mrm(1)
+    if kind in ('map2', 'map3', '0f'):
+        pp = {0x66: 1, 0xF3: 2, 0xF2: 3}.get(body[0], 0)
+        m = {'0f': 1, 'map2': 2, 'map3': 3}[kind]
+        i = (1 if pp else 0) + (1 if m == 1 else 2)   # the opcode byte
+        has_modrm = m != 1 or body[i] in MODRM_0F
+        return ['0F', '0F38', '0F3A'][m - 1], (pp, body[i]) + (mrm(i + 1) if has_modrm else (None, None))
+    pre = body[0] if kind == 'vexpfx' else None
+    i = 1 if kind == 'vexpfx' else 0
+    if body[i] == 0xC5:
+        m, W, L, pp, i = 1, 0, body[i + 1] >> 2 & 1, body[i + 1] & 3, i + 2
+    else:
+        m, W, L, pp, i = body[i + 1] & 0x1F, body[i + 2] >> 7, body[i + 2] >> 2 & 1, body[i + 2] & 3, i + 3
+    op = body[i]
+    if kind == 'vexmap':
+        return 'VEX map 0/4-31', (m, pp, op, L, W)
+    lay = vex_layout(m, op, pp)
+    key = (m, pp, op, L, W) + (mrm(i + 1) if lay[0] else (None, None))
+    if kind == 'vexpfx':
+        return 'pfx+VEX', (pre,) + key
+    if kind == 'vexnb':
+        return 'vexnb', key
+    return ['VEX.0F', 'VEX.0F38', 'VEX.0F3A'][m - 1], key
+
+def ud_record(kind, body):
+    bucket, key = ud_key(kind, body)
+    _ud_seen['n'] += 1
+    _ud_seen['keys'][bucket].add(key)
+    if kind == 'vexnb':
+        _ud_seen['nb'].add(key[:4])
+
+def ud_stats():
+    """One line: the 'ud' vectors of the run and their distinct encodings per map (ud_key)."""
+    k = _ud_seen['keys']
+    nbs = [t for t in isa_forms.vex_neighbours() if t[:3] != (1, 0, 0xC4)]   # (as vexnb_next)
+    return 'ud family: %d vectors; distinct encodings: %s (covering %d of %d VEX neighbours)' % (
+        _ud_seen['n'], ', '.join('%s %d' % (b, len(k[b])) for b in UD_BUCKETS), len(_ud_seen['nb']), len(nbs))
+
 def gen_v2_family(g):
     """A vector of a v2-only family ('ud', 'len'), or None to use the integer generator."""
     r = random.random()
@@ -537,6 +591,7 @@ def gen_v2_family(g):
         if len(insn) > 15:
             return None
         g.desc = 'ud-%s:%s' % (kind, insn.hex())
+        ud_record(kind, body)
         return insn
     if r < 0.22:
         # length limit: a #UD form whose last byte (ModRM or imm8) is 0xCC, the code buffer's
@@ -599,11 +654,9 @@ def main():
     seed = int(args[1]) if len(args) > 1 else 1
     out = args[2] if len(args) > 2 else 'vectors'
     random.seed(seed)
-    # bit 0: CR4.OSXSAVE and XCR0 = 7, once the model implements XSAVE (with the AVX state component;
-    # the AVX instructions are #UD in both until implemented, VEX forms are only generated as #UD) (or
-    # forced with GEN_FORCE_OSXSAVE=1 to exercise the harness's YMM path)
+    # bit 0: CR4.OSXSAVE and XCR0 = 7 (x87, SSE and AVX state), as Zen 2 has XSAVE
     global VFLAGS
-    vflags = 1 if isa_forms.model_has('xsave') or os.environ.get('GEN_FORCE_OSXSAVE') == '1' else 0
+    vflags = 1 if isa_forms.model_has('xsave') else 0
     VFLAGS = vflags
     with open(out + '.bin', 'wb') as vb, open(out + '.meta', 'w') as mf:
         if v2:
@@ -640,6 +693,8 @@ def main():
                 mxcsr &= getattr(g, 'mxcsr_and', 0xFFFFFFFF)   # (a generator may clear bits, gen_avx.py)
                 vb.write(struct.pack('<II', mxcsr, vflags))
             mf.write('%08x %s\n' % (g.fmask, g.desc))
+    if v2:
+        print(ud_stats(), file=sys.stderr)
 
 if __name__ == '__main__':
     main()
