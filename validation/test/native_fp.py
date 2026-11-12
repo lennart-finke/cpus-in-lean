@@ -144,7 +144,7 @@ def classify(meta,diff):
     if meta.get('policy')!='observe':return 'strict_mismatches'
     for d in diff:
         if meta['family'].startswith('x87_') and d['field'].startswith('st'):continue
-        if meta['family']=='sse_random' and d['field'] in ('xmm0.lo','xmm0.hi'):continue
+        if meta['family'] in ('sse_random','sse_rcp_sweep') and d['field'] in ('xmm0.lo','xmm0.hi'):continue
         if d['field']=='fsw' and (int(d['hardware'],16)^int(d['model'],16))&~0x23f==0:continue
         return 'strict_mismatches'
     return 'observations'

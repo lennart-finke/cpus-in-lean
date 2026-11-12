@@ -339,3 +339,7 @@ FAMILIES += native_longmode.FAMILIES
 # "Open questions for the EPYC").
 import native_openq  # noqa: E402
 FAMILIES += native_openq.FAMILIES
+
+# EPYC 7742 hardware triage: the RCPPS/RSQRTPS table sweep (test/native_rcp.py, open question S5).
+import native_rcp  # noqa: E402
+FAMILIES += [(native_rcp.rcp_sweep, ())]
