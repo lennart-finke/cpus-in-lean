@@ -167,6 +167,12 @@ void sys_main(void) {
 		test_smp_model();
 		sys_exit();
 	}
+	if (param("svm", 0)) {   /* SVM workstream: only the SVM tests (development runs) */
+		test_svm();
+		kputs("MODEL-ONLY\n");
+		test_svm_model();
+		sys_exit();
+	}
 	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
 		test_long();
 		kputs("MODEL-ONLY\n");
@@ -202,6 +208,7 @@ void sys_main(void) {
 	test_ioapic();
 	test_x2apic();
 	test_avx2();
+	test_svm();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -223,5 +230,6 @@ void sys_main(void) {
 	test_ioapic_model();
 	test_x2apic_model();
 	test_avx2_model();
+	test_svm_model();
 	sys_exit();
 }

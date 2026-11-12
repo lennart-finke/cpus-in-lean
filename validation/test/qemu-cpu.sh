@@ -8,3 +8,8 @@ QEMU_CPU=${QEMU_CPU:-EPYC-Rome,-fxsr-opt,-lm,-misalignsse,-osvw,-topoext,-perfct
 # SMP workstream: the 7742 has x2APIC (CPUID 1:ECX[21]), which the model reports; TCG implements x2APIC mode
 # but its EPYC-Rome model leaves the bit clear, so it is requested explicitly.
 QEMU_CPU="$QEMU_CPU,+x2apic"
+# SVM workstream: the 7742 has SVM with nested paging (CPUID 8000_0001:ECX[2], 8000_000A:EDX[0]), which
+# the model reports and TCG implements (VMRUN/#VMEXIT, intercepts, event injection, nested paging for
+# PAE and long-mode hosts, vGIF; no NRIPS, decode assists, PAUSE filter or TSC ratio): requested
+# explicitly.
+QEMU_CPU="$QEMU_CPU,+svm,+npt"

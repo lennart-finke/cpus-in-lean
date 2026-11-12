@@ -153,5 +153,8 @@ void test_avx(void);
 void test_avx_model(void);
 void test_avx2(void);
 void test_avx2_model(void);
+/* SVM (t_svm.c) */
+void test_svm(void);
+void test_svm_model(void);
 
 #endif
