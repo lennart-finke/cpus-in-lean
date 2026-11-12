@@ -78,13 +78,14 @@ the integration step flips `identity` to `.epyc7742`; with `.legacy`, an impleme
 ## Tests
 
 1. **Random single instructions** (`validation/test/gen.py`, run by `test/run.sh`, format v2):
-   remove your rows from `NOT_YET_IMPLEMENTED` in `validation/test/isa_forms.py` (one row per
-   line; the list must end empty) and add rows to `IMPLEMENTED` plus a generator for them in
-   gen.py (`gen_v2_family`, an 'ext' family; vector state XMM0–7/YMM-high/MXCSR is compared).
-   Never generate a form still listed in `NOT_YET_IMPLEMENTED`: QEMU (EPYC-Rome, `test/qemu-cpu.sh`)
-   executes it. The 'ud' family generates encodings outside both lists and expects #UD, so a new
-   row also stops the #UD tests for its form. QEMU deviations: as in `TestMain.qemuAsHardware`
-   (rewrite only the TCG signature, cite the manual) or not generated, documented.
+   add rows to `IMPLEMENTED` in `validation/test/isa_forms.py` (one row per line) plus a
+   generator for them in gen.py (`gen_v2_family`, an 'ext' family; vector state
+   XMM0–7/YMM-high/MXCSR is compared). The 'ud' family generates encodings outside `IMPLEMENTED`
+   and expects #UD (QEMU runs EPYC-Rome, `test/qemu-cpu.sh`), so a new row also stops the #UD
+   tests for its form; gen.py prints how many distinct undefined encodings per map a run emitted.
+   `test_isa_forms.py` checks every row against LLVM's disassembler (`-mcpu=znver2`). QEMU
+   deviations: as in `TestMain.qemuAsHardware` (rewrite only the TCG signature, cite the manual)
+   or not generated, documented.
 2. **System tests** (`validation/test/sys/`): SIMD rows go into `xops` in `t_simd.c`
    (`{pfx, op, flags, map, vex, l, w}`, flags `ALLX`/`YMMD`); other features get their own `t_*.c`
    or lines. Probes of optional features follow CPUID (`has_feature`, `feat()` in `t_simdx.c`).

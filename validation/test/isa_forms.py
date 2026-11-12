@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Instruction forms of the Zen 2 ISA beyond the core model, for test generation.
 
-QEMU runs the tests with an EPYC-Rome CPU (test/run.sh, test/sys/run.sh), so it executes
-instructions (SSE3, POPCNT, AVX, ...) that the model still raises #UD for. Every such form is listed
-in NOT_YET_IMPLEMENTED below, and the generators (gen.py, sys/t_simd.c tables) never emit a
-form that matches it: no mismatch is accepted silently, the forms are simply not tested yet.
-
-THIS LIST MUST SHRINK TO EMPTY. A workstream that implements a feature removes its rows here
-(one row per line, grouped by owner, so parallel edits merge cleanly) and adds generator rows for
-the forms in IMPLEMENTED (gen.py's 'ext' family) and/or sys/t_simd.c.
+IMPLEMENTED lists the 0F / 0F 38 / 0F 3A / VEX forms of the EPYC 7742 (Zen 2) beyond the core model
+(x86_32/X86/Exec.lean), grouped by the x86_32/X86/Ext/ module that implements them; the model
+implements every row. Their 'ext' generators (gen_<owner>.py, xsave_gen.py, gen.py's ext_form) and the system tests
+(sys/t_simd.c) test them against QEMU's EPYC-Rome CPU (test/qemu-cpu.sh); gen.py's 'ud' family
+generates encodings that match no row and expects #UD from both. test_isa_forms.py cross-checks the
+rows against LLVM's disassembler (-mcpu=znver2).
 
 A form is (encoding, map, pp, opcode byte) plus an optional ModRM constraint:
   encoding  'legacy', 'vex', or 'legacy-lock' (the legacy form with a LOCK prefix)
@@ -18,8 +16,9 @@ A form is (encoding, map, pp, opcode byte) plus an optional ModRM constraint:
   modrm     None, or (mod, reg) with mod in {'mem', 'reg', None} and reg 0..7 or None, or
             (mod, reg, rms) with the tuple of allowed ModRM.rm values
   L, W      (VEX only, optional) the required VEX.L / VEX.W (0 or 1), None = any
-Rows may be broader than the exact set of Zen 2 forms (e.g. a whole VEX opcode range); they must
-not be narrower, or the '#UD' family would generate a form that QEMU executes.
+Rows may be broader than the exact set of Zen 2 forms (e.g. a whole VEX opcode range; the 'ud' family
+then does not test the difference); they must not be narrower, or the 'ud' family would generate a
+form that Zen 2 (and QEMU) executes.
 """
 from collections import namedtuple
 
@@ -31,18 +30,7 @@ def F(feature, owner, encoding, map_, pp, ops, modrm=None, L=None, W=None):
 def rng(a, b):
     return list(range(a, b + 1))
 
-# Zen 2 forms the model does not implement yet (owner = module in x86_32/X86/Ext/).
-NOT_YET_IMPLEMENTED = [
-    # --- Gpr --- (all implemented: see IMPLEMENTED)
-    # --- Sse --- (all implemented: see IMPLEMENTED)
-    # --- Crypto ---
-    # --- Xsave ---
-    # --- Avx2 --- (all implemented: see IMPLEMENTED)
-    # --- Svm --- (all implemented: see IMPLEMENTED)
-]
-
-# Forms the model implements and gen.py's 'ext' family generates. A row is a Form plus generator
-# hints; see gen.py (ext_form). Empty until a workstream adds its forms.
+# The Zen 2 forms beyond the core model (owner = module in x86_32/X86/Ext/, which implements them).
 IMPLEMENTED = [
     # --- Avx (x86_32/X86/Ext/Avx.lean; generator: gen_avx.py) --- exactly the AVX forms of Zen 2
     # (mandatory prefix, VEX.L, VEX.W, ModRM.mod/reg), so the 'ud' family tests their neighbours as #UD
@@ -226,36 +214,29 @@ def _matches(f, encoding, map_, pp, op, mod, reg, rm=None, L=None, W=None):
     return True
 
 
-def not_yet_implemented(encoding, map_, pp, op, mod=None, reg=None, rm=None, L=None, W=None):
-    """The form (with ModRM mod/reg/rm and VEX.L/W if known) is a Zen 2 form the model does not
-    implement yet."""
-    return any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in NOT_YET_IMPLEMENTED)
-
-
 def defined(encoding, map_, pp, op, mod=None, reg=None, rm=None, L=None, W=None):
-    """The form may be defined on Zen 2 (listed as implemented or not yet implemented)."""
-    return not_yet_implemented(encoding, map_, pp, op, mod, reg, rm, L, W) or \
-        any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in IMPLEMENTED)
+    """The form (with ModRM mod/reg/rm and VEX.L/W if known; None = unknown) may be defined on Zen 2."""
+    return any(_matches(f, encoding, map_, pp, op, mod, reg, rm, L, W) for f in IMPLEMENTED)
 
 
 def vex_neighbours():
     """The undefined neighbours of the VEX forms: (map, pp, opcode, L) for every opcode byte that has a
-    VEX row (IMPLEMENTED or NOT_YET_IMPLEMENTED) and every mandatory prefix and VEX.L under which the
-    opcode is not defined for any VEX.W, ModRM.mod or ModRM.reg (#UD on Zen 2), in a fixed order."""
-    ops = sorted({(f.map, op) for f in IMPLEMENTED + NOT_YET_IMPLEMENTED if f.encoding == 'vex' for op in f.ops})
+    VEX row and every mandatory prefix and VEX.L under which the opcode is not defined for any VEX.W,
+    ModRM.mod or ModRM.reg (#UD on Zen 2), in a fixed order."""
+    ops = sorted({(f.map, op) for f in IMPLEMENTED if f.encoding == 'vex' for op in f.ops})
     return [(m, pp, op, L) for (m, op) in ops for pp in range(4) for L in range(2)
             if not defined('vex', m, pp, op, None, None, None, L, None)]
 
 
 def model_has(feature):
-    """The model implements `feature` (no NOT_YET_IMPLEMENTED row carries it)."""
-    return all(f.feature != feature for f in NOT_YET_IMPLEMENTED)
+    """`feature` (a Form.feature name) is a Zen 2 feature with forms in IMPLEMENTED."""
+    return any(f.feature == feature for f in IMPLEMENTED)
 
 
 if __name__ == '__main__':
     by = {}
-    for f in NOT_YET_IMPLEMENTED:
-        by.setdefault(f.owner, []).append(f.feature)
+    for f in IMPLEMENTED:
+        by.setdefault(f.owner, set()).add(f.feature)
     for owner, feats in by.items():
-        print('%-8s %s' % (owner, ' '.join(sorted(set(feats)))))
-    print('%d not-yet-implemented rows' % len(NOT_YET_IMPLEMENTED))
+        print('%-8s %s' % (owner, ' '.join(sorted(feats))))
+    print('%d rows, %d VEX neighbours' % (len(IMPLEMENTED), len(vex_neighbours())))
