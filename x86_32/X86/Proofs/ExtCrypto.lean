@@ -605,7 +605,7 @@ theorem map2?_forms (i : Inst) (h : i.vex = false) :
     (i.byte = 0xDD → map2? i = some (xmmOp i 1 (implemented .aes) aesenclast)) ∧
     (i.byte = 0xDE → map2? i = some (xmmOp i 1 (implemented .aes) aesdec)) ∧
     (i.byte = 0xDF → map2? i = some (xmmOp i 1 (implemented .aes) aesdeclast)) ∧
-    (i.byte = 0xC8 → map2? i = some (xmmOp i 0 shaAvail sha1nexte)) ∧
+    (i.byte = 0xC8 → map2? i = some (shaOp i sha1nexte)) ∧
     (i.byte = 0xCB → map2? i = some (sha256rnds2Op i)) ∧
     (i.byte < 0xC8 → map2? i = none) ∧ (0xCD < i.byte → i.byte < 0xDB → map2? i = none) := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intro hb <;> (try intro hb2) <;>

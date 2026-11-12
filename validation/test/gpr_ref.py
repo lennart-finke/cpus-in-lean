@@ -228,7 +228,11 @@ def case(rng, name):
         return code, regs, fl, out, flags, ARITH
     if name == 'rorx':
         n = rng.choice([0, 1, 31, 32, 33, rng.randrange(256)])
-        code = vex3(3, 3, rng.choice([0, v])) + bytes([0xF0, 0xC0 | (d << 3) | s, n])   # vvvv != 1111b too
+        vv = rng.choice([0, v])
+        code = vex3(3, 3, vv) + bytes([0xF0, 0xC0 | (d << 3) | s, n])   # vvvv != 1111b too
+        if vv != 0:
+            # VEX.vvvv != 1111b: #UD (SDM RORX; the APM lists no #UD, the EPYC 7742 raises it)
+            return code, regs, fl, None, flags, ARITH
         x, c = regs[s], n & 31
         out[d] = ((x >> c) | (x << (32 - c))) & M32
         return code, regs, fl, out, flags, ARITH
@@ -279,6 +283,10 @@ def check(n=200, seed=1, exe=X86TEST):
     bad = []
     for (name, code, regs, fl, out, flags, mask), row in zip(cases, rows):
         v = [int(x, 16) for x in row]
+        if out is None:   # #UD expected, nothing changed
+            if v[1] != 6 or v[4:12] != regs:
+                bad.append('%s %s: model vec=%x, reference #UD' % (name, code.hex(), v[1]))
+            continue
         if v[1] != 3 or v[4:12] != out or (v[12] & mask) != (flags & mask):
             bad.append('%s %s in=%s: model vec=%x regs=%s flags=%x, reference regs=%s flags=%x (mask %x)' % (
                 name, code.hex(), [hex(r) for r in regs], v[1], [hex(r) for r in v[4:12]], v[12],

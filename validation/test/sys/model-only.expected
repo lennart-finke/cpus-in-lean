@@ -23,8 +23,14 @@ x87m.ovf.wrap: sw=0000b8a8 st0=00005ffe_fffffffffffffffe
 x87m.c1: sw=00003a20 st0=00003ffd_aaaaaaaaaaaaaaab
 x87m.fprem1: sw=00007300
 x87m.fscale.nan: snan_qnan: sw=00003001 st0=00007fff_c000000000000001 qnan_qnan: sw=00003000 st0=0000ffff_e000000000000000
-x87m.env: cw=0000037f sw=00003800 tw=00003fff fip_ok=1 fcs_fop=00050008 fdp_ok=1 fds=00000010
+x87m.env: cw=ffff037f sw=ffff3800 tw=ffff3fff fip_ok=1 fcs_fop=00050008 fdp_ok=1 fds=ffff0010
 x87m.ferr: fwait=0000ffff
+x87m.epyc.fcomi: eflags=00000045 sw=000080c1 fcom_sw=0000c5c1
+x87m.epyc.fld: sw=00003841 st0=0000ffff_c000000000000000
+x87m.epyc.fcw: 00001f7f 00000040
+x87m.epyc.f2xm1: sw=00003820 st0=00004000_c000000000000000
+x87m.epyc.fst: sw=00003830 m64=0000000000000000
+x87m.epyc.fscale: sw=0000b2a8 st0=00007fff_8000000000000000
 x87t.table: n=1540 bad=0
 x87t.fptan.overflow: sw=00003a41 0000ffff_c000000000000000 0000ffff_c000000000000000
 x87t.fsincos.underflow: sw=00003841 0000ffff_c000000000000000 0000ffff_c000000000000000

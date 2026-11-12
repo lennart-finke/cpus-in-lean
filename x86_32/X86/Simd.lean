@@ -33,7 +33,12 @@ specific (relative error ≤ 1.5·2^-12, SDM). This model defines them as the ro
 values RNE(1/x) and RNE(1/RNE(√x)) (what QEMU computes in that rounding mode), independent of
 MXCSR.RC/DAZ/FTZ and without flags, with the SDM's special cases: ±0 and denormal inputs give ±∞,
 results below the normal range are flushed to ±0, RSQRT of a negative number is the QNaN
-indefinite, NaNs are returned quieted.
+indefinite, NaNs are returned quieted. This is a deliberate deviation from the EPYC 7742, whose
+results come from a table (12 fraction bits; on the 601 lanes of the first native run with a normal
+result every value differs from the model's, relative error to 1/x at most 1.0·2^-12, to 1/√x at
+most 0.83·2^-12; the special cases and the flushed results agree). The native family
+`sse_rcp_sweep` (`validation/test/native_rcp.py`) measures the whole table so that a later round can
+reproduce it.
 
 **FXSAVE/FXRSTOR** use the 512-byte 32-bit format. MXCSR_MASK is 0x2FFFF (all MXCSR bits
 including DAZ, and MM, bit 17, of AMD's Misaligned SSE mode; `mxcsrMask`). With CR4.OSFXSR = 0,
@@ -311,8 +316,10 @@ for a store a write check of the whole range before anything is written. A misal
 raises #GP(0); with MXCSR.MM = 1 (Misaligned SSE mode), except for `alignStrict` instructions, it
 raises #AC(0) instead when alignment checking is enabled (CR0.AM, EFLAGS.AC, CPL 3) and nothing
 otherwise (AMD APM vol. 1, 4.2.2 and 4.3.2). -/
-def vecAddr (i : Inst) (n : UInt32) (write align : Bool) : M UInt32 := do
+def vecAddr (i : Inst) (n : UInt32) (write align : Bool) (acFirst : UInt32 := 0) : M UInt32 := do
   let lin ← segAddr i.seg (← fpEa i) n write
+  -- `acFirst`: an #AC check at this alignment that comes before the 16-byte #GP check (FXSAVE)
+  if acFirst != 0 then acChk lin acFirst (← isUser)
   if align && lin &&& 15 != 0 then
     match misalignExc (← cpu) i with
     | some v => exc v (some 0)
@@ -566,9 +573,10 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
   let s := if i.segOvr != 0xFF then i.segOvr else SegN.DS
   let di := if i.adsz == 2 then c.edi &&& 0xFFFF else c.edi
   let sel := (List.range n).filter fun k => mask.lane 8 k &&& 0x80 != 0
-  -- #AC as for a 64-bit (MASKMOVQ) or 128-bit (MASKMOVDQU) media operand at DS:(E)DI, whatever the
-  -- mask (the APM's table 8-7 does not single out the masked stores; real hardware not confirmed)
-  acChk (((← cpu).getSeg s).base + di) n.toUInt32 (← isUser)
+  -- #AC for DS:(E)DI not 8-byte aligned, for MASKMOVQ and MASKMOVDQU alike, whatever the mask (EPYC
+  -- 7742, native `alignment_check`: MASKMOVDQU at offset 8 stores without #AC, offsets 1..6 and 12
+  -- raise it; the APM's table 8-7 does not single out the masked stores)
+  acChk (((← cpu).getSeg s).base + di) 8 (← isUser)
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr s (di + k.toUInt32) 1 true
@@ -601,15 +609,19 @@ def fxsaveEnv (c : Cpu) (lin : UInt32) : M Unit := do
   linWr (lin + 16) 4 c.fdp u
   linWr (lin + 20) 4 c.fds.toUInt32 u
 
-/-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots (bytes 10..15 of a
-slot are not written). -/
-def fxsaveRegs (c : Cpu) (lin : UInt32) : M Unit := do
+/-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots. With `pad` (FXSAVE)
+bytes 10..15 of a slot are written as zero, as the EPYC 7742 does (the FXSAVE images of the native
+`alignment_check` family); the XSAVE family leaves them alone (not observed on hardware yet). -/
+def fxsaveRegs (c : Cpu) (lin : UInt32) (pad : Bool := false) : M Unit := do
   let u ← isUser
   for k in [0:8] do
     let v := c.st k
     let a := lin + 32 + 16 * k.toUInt32
     wrLin a 8 { lo := v.sig }
     linWr (a + 8) 2 v.se.toUInt32 u
+    if pad then
+      linWr (a + 10) 2 0 u
+      linWr (a + 12) 4 0 u
 
 /-- Bytes 160..287 of the FXSAVE image: XMM0..XMM7. -/
 def fxsaveXmm (c : Cpu) (lin : UInt32) : M Unit := do
@@ -646,7 +658,7 @@ def Cpu.loadFxX87 (c : Cpu) (env : UInt32 × UInt32 × UInt32 × UInt32 × UInt3
   let fsw := (w0 >>> 16).toUInt16
   let top := ((fsw >>> 11) &&& 7).toNat
   let fpr := (List.range 8).foldl (fun fpr k => fpr.set! ((top + k) % 8) regs[k]!) c.fpr
-  let c := { c with fcw := w0.toUInt16, fsw, fempty := ~~~(w1.toUInt8), fpr,
+  let c := { c with fcw := fcwLoad w0, fsw, fempty := ~~~(w1.toUInt8), fpr,
                     fop := ((w1 >>> 16) &&& 0x7FF).toUInt16, fip, fcs := fcs.toUInt16,
                     fdp, fds := fds.toUInt16 }
   if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then { c with fsw := c.fsw &&& 0x7F7F } else c
@@ -654,14 +666,18 @@ def Cpu.loadFxX87 (c : Cpu) (env : UInt32 × UInt32 × UInt32 × UInt32 × UInt3
 def fxsave (i : Inst) : M Unit := do
   let c ← cpu
   if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
-  let lin ← vecAddr i 512 true true
+  -- with alignment checking (CPL 3, CR0.AM, EFLAGS.AC) an operand that is not 4-byte aligned raises
+  -- #AC before the 16-byte #GP(0) check; a 4-byte aligned misaligned one still raises #GP(0) (EPYC
+  -- 7742, native `alignment_check`: offsets 1, 2, 3, 6 #AC, offsets 4, 8, 12 #GP; AMD APM vol. 2,
+  -- table 8-7 does not list FXSAVE). FXRSTOR keeps #GP(0) first (not observed).
+  let lin ← vecAddr i 512 true true (acFirst := 4)
   let u ← isUser
   fxsaveEnv c lin
   let sse := c.cr4 &&& CR4.OSFXSR != 0
   if sse then
     linWr (lin + 24) 4 c.mxcsr u
     linWr (lin + 28) 4 mxcsrMask u
-  fxsaveRegs c lin
+  fxsaveRegs c lin (pad := true)
   if sse then fxsaveXmm c lin
 
 def fxrstor (i : Inst) : M Unit := do

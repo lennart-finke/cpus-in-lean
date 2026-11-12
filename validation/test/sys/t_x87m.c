@@ -16,6 +16,10 @@ __attribute__((used)) f80 XQB = { 0x803CE00000000000ULL, 0x4001 };
 __attribute__((used)) f80 XQNAN = { 0xC000000000000001ULL, 0x7FFF };   /* QNaN, small significand */
 __attribute__((used)) f80 XSNAN = { 0xA000000000000000ULL, 0x7FFF };   /* SNaN, larger significand */
 __attribute__((used)) f80 XQNAN2 = { 0xE000000000000000ULL, 0xFFFF };  /* QNaN, larger significand */
+__attribute__((used)) f80 XP62 = { 0x8000000000000000ULL, 0x403D };      /* 2^62 */
+__attribute__((used)) f80 XDEN = { 0x0000000000000001ULL, 0x0000 };      /* smallest denormal */
+__attribute__((used)) u64 XM64;
+__attribute__((used)) u32 XFL;
 extern char x87_fadd_at[], x87_fdivp_at[];
 
 static void p80(const char *k, const f80 *x) { kprintf(" %s=%x_%x%x", k, (u32)x->se, (u32)(x->sig >> 32), (u32)x->sig); }
@@ -51,6 +55,41 @@ void test_x87_env(void) {
 	kprintf("x87.fnstenv16: cw=%x sw=%x tw=%x next=%x\n", XENV[0] & 0xFFFF, XENV[0] >> 16, XENV[1] & 0xFFFF,
 	        XENV[3] >> 16);
 	__asm__ volatile("fninit");
+}
+
+/* Behaviour the AMD EPYC 7742 showed in the native campaign (validation/README.md, "Hardware tests"),
+   where the model used to follow the SDM's pseudocode or QEMU: only non-waiting instructions run while
+   an unmasked exception is pending, and FNINIT clears it. */
+static void test_x87_epyc(void) {
+	/* FCOMI with an empty stack and IE unmasked: ZF = PF = CF = 1 are written all the same */
+	XCW = 0x37E;
+	__asm__ volatile("fninit\n fldcw XCW\n xorl %%eax, %%eax\n incl %%eax\n .byte 0xdb,0xf1\n pushfl\n popl XFL\n"
+	                 " fnstsw XSW\n fninit" ::: "eax", "memory");
+	kprintf("x87m.epyc.fcomi: eflags=%x sw=%x", XFL & 0x8D5, XSW);
+	/* FCOM likewise sets C3, C2, C0 = 111 */
+	__asm__ volatile("fninit\n fldcw XCW\n .byte 0xd8,0xd1\n fnstsw XSW\n fninit" ::: "memory");
+	kprintf(" fcom_sw=%x\n", XSW);
+	/* FLD ST(1) with ST(1) empty and ST(7) in use: stack underflow (C1 = 0), the indefinite pushed */
+	__asm__ volatile("fninit\n fld1\n fincstp\n fld %%st(1)\n fnstsw XSW\n fstpt XR\n fninit" ::: "memory");
+	kprintf("x87m.epyc.fld: sw=%x", XSW); p80("st0", &XR); kputc('\n');
+	/* FLDCW: reserved bits 7 and 13..15 read as 0, bit 6 as 1 */
+	XCW = 0xFFFF;
+	__asm__ volatile("fninit\n fldcw XCW\n fnstcw XCW\n fninit" ::: "memory");
+	kprintf("x87m.epyc.fcw: %x", XCW);
+	XCW = 0x0000;
+	__asm__ volatile("fninit\n fldcw XCW\n fnstcw XCW\n fninit" ::: "memory");
+	kprintf(" %x\n", XCW);
+	/* F2XM1 of 3.0 (outside [-1, 1]): 3.0 with PE */
+	__asm__ volatile("fninit\n fldt XTHREE\n f2xm1\n fnstsw XSW\n fstpt XR\n fninit" ::: "memory");
+	kprintf("x87m.epyc.f2xm1: sw=%x", XSW); p80("st0", &XR); kputc('\n');
+	/* FST m64 of a denormal: UE and PE, no DE */
+	__asm__ volatile("fninit\n fldt XDEN\n fstl XM64\n fnstsw XSW\n fninit" ::: "memory");
+	kprintf("x87m.epyc.fst: sw=%x m64=%x%x\n", XSW, (u32)(XM64 >> 32), (u32)XM64);
+	/* FSCALE with OE unmasked and a massive overflow: +inf with OE, PE, C1 */
+	XCW = 0x377;
+	__asm__ volatile("fninit\n fldcw XCW\n fldt XP62\n fldt XBIG\n fscale\n fnstsw XSW\n fnsave XENV\n fninit" ::: "memory");
+	f80 s0 = env_st(0);
+	kprintf("x87m.epyc.fscale: sw=%x", XSW); p80("st0", &s0); kputc('\n');
 }
 
 void test_x87_model(void) {
@@ -113,4 +152,5 @@ void test_x87_model(void) {
 	__asm__ volatile("fninit");
 	WRCR(0, RDCR(0) | 0x20);
 	kprintf("x87m.ferr: fwait=%x\n", f);
+	test_x87_epyc();
 }

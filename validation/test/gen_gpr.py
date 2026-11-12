@@ -129,6 +129,8 @@ def gen_bmi(g):
     L = 1 if random.random() < 0.05 else 0
     W = random.getrandbits(1)
     vvvv = random.randint(0, 7)
+    if map_ == 3 and random.random() < 0.7:
+        vvvv = 0    # RORX: VEX.vvvv = 1111b; otherwise #UD (EPYC 7742; TCG executes it, qemuAsHardware)
     a16 = random.random() < 0.1
     pre = (b'\x67' if a16 else b'') + (bytes([random.choice(SEGS)]) if random.random() < 0.15 else b'')
     reg = None

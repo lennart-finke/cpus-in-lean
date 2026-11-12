@@ -163,6 +163,10 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option
   -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
   if !i.vex && i.pp != 0 && ((0x2C8 ≤ i.op && i.op ≤ 0x2CD) || i.op == 0x3CC) && lo.vec == 6 then
     return lo
+  -- (Gpr) RORX (VEX.F2.0F3A F0) with VEX.vvvv ≠ 1111b is #UD: the SDM says so and the AMD EPYC 7742
+  -- raises it (native campaign family gpr_bmi, 40 cases; the APM lists no #UD). TCG executes it.
+  if i.vex && i.map == 3 && i.byte == 0xF0 && !Vex.noV i && lo.vec == 6 then
+    return lo
   -- (Avx) VEX encodings TCG executes although they are #UD (QEMU's completion or fault, or the
   -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
   -- `tcgVexUd`)

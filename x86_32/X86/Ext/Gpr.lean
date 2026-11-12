@@ -31,14 +31,18 @@ Every hook returns `none` for a form whose feature is not `implemented`, so that
 ## Modelling decisions
 
 * **Undefined flags.** LZCNT/TZCNT (OF, SF, AF, PF), ANDN/BLSx/BZHI (AF, PF) and BEXTR (SF, AF, PF)
-  leave flags undefined (APM rFLAGS tables). The model writes OF = AF = 0, SF = the result's top bit
-  and PF = the parity of the result's low byte, as TCG does; what Zen 2 hardware writes is not known
-  (the native campaign records them; the differential tests mask them).
+  leave flags undefined (APM rFLAGS tables). The model writes what the EPYC 7742 writes (native
+  `gpr_bitcount`, `gpr_bmi`: the raw flags of every case, open question G1): LZCNT/TZCNT keep OF and
+  clear SF, AF, PF; ANDN/BLSI/BLSMSK/BLSR/BZHI clear AF and set PF from the result's low byte; BEXTR
+  sets AF, clears SF and sets PF from the result. TCG writes OF = AF = 0, SF = the result's top bit
+  and PF = parity for all of them (the differential tests against QEMU mask the undefined flags).
 * **BZHI with index ≥ 32** copies the source unchanged and sets CF: the pseudo-code of the SDM.
   The APM's prose ("index is set to op_size − 1") would also clear bit 31; it is read as the same
   saturation and not as a cleared top bit (UNCONFIRMED on hardware).
-* **RORX with VEX.vvvv ≠ 1111b** executes: the APM lists no #UD for it (the SDM does); TCG executes
-  it too. UNCONFIRMED on hardware (a native campaign family checks it).
+* **RORX with VEX.vvvv ≠ 1111b** is #UD, as the SDM says (the APM lists no #UD for it, and TCG
+  executes it): the EPYC 7742 raises #UD (native `gpr_bmi`, 40 cases with vvvv = 0000b, 0010b,
+  0001b; open question G3). Bit 3 of vvvv is ignored outside 64-bit mode, as for the other VEX forms
+  (`noV`; not observed).
 * **CRC32** is gated on nothing: the instruction belongs to SSE4.2, whose CPUID bit the SSE
   workstream reports; until then CRC32 executes although CPUID does not advertise SSE4.2.
 * **RDRAND/RDSEED** draw from a deterministic entropy source that is machine state: SplitMix64
@@ -240,14 +244,15 @@ def bitCount (i : Inst) (kind : Nat) : M Unit := do
     let r := popcount32 v
     wrReg sz i.reg r
     setArith (if v == 0 then ZF else 0)
+  -- LZCNT/TZCNT: CF, ZF defined; OF kept, SF = AF = PF = 0 (EPYC 7742, see "Undefined flags")
   | 1 =>
     let r := lzcnt bits v
     wrReg sz i.reg r
-    setArith (bmiFlags sz r (v == 0))
+    setFlags (arith &&& ~~~OF) ((if v == 0 then CF else 0) ||| (if r == 0 then ZF else 0))
   | _ =>
     let r := tzcnt bits v
     wrReg sz i.reg r
-    setArith (bmiFlags sz r (v &&& sz.mask == 0))
+    setFlags (arith &&& ~~~OF) ((if v &&& sz.mask == 0 then CF else 0) ||| (if r == 0 then ZF else 0))
 
 /-- MONITOR (`x = false`) / MONITORX: ECX must be 0 (#GP(0)); DS:rAX is checked like a one-byte
 read and its physical 64-byte line armed. -/
@@ -461,7 +466,8 @@ def vexBody? (i : Inst) : Option (M Unit) :=
     | 0xF7, 0 => run .bmi1 do   -- BEXTR r, r/m, vvvv
       let r := bextr (← rdE i 4) (← getReg i.vvvv)
       wr i.reg r
-      setArith (bmiFlags 4 r false)
+      -- ZF defined, CF = OF = 0; the undefined AF = 1, SF = 0, PF = parity (EPYC 7742, see above)
+      setArith ((bmiFlags 4 r false &&& ~~~SF) ||| AF)
     | 0xF7, pp => run .bmi2 do  -- SHLX (66), SARX (F3), SHRX (F2): r, r/m, vvvv
       let s ← rdE i 4
       let n := (← getReg i.vvvv) &&& 31
@@ -473,7 +479,8 @@ def vexBody? (i : Inst) : Option (M Unit) :=
     | _, _ => none
   else if i.map == 3 && i.byte == 0xF0 then
     if i.pp != 3 then (if implemented .bmi2 then some ud else none) else
-    run .bmi2 do               -- RORX r, r/m, imm8 (VEX.vvvv not checked, see above)
+    run .bmi2 do               -- RORX r, r/m, imm8 (VEX.vvvv ≠ 1111b: #UD, see above)
+      if !Vex.noV i then ud
       let s ← rdE i 4
       let n := i.imm &&& 31
       wr i.reg (if n == 0 then s else (s >>> n) ||| (s <<< (32 - n)))

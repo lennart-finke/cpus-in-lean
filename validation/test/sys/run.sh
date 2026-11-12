@@ -33,7 +33,9 @@ if [ -n "$CMDLINE" ]; then
   tr -d '\r' < "$OUT/qemu.txt" > "$OUT/qemu.raw.txt"
   python3 "$DIR/x87ref.py" qemu "$OUT/qemu.raw.txt" > "$X87T" 2> "$OUT/x87t.summary"
   if grep -v '^#' "$X87T" | grep -v -e '# [a-z0-9]*: denormal operand: ' -e '# [a-z0-9]*: NaN operands: ' -e "# fyl2x: denormal ST(1): TCG's FYL2X returns about twice" \
-       -e '# [a-z0-9]*: QEMU result is not correctly rounded: error [0-9.]* ulp (within ' > "$OUT/x87t.unexplained"; then
+       -e '# [a-z0-9]*: QEMU result is not correctly rounded: error [0-9.]* ulp (within ' \
+       -e '# [a-z0-9]*: outside the documented domain' -e '# [a-z0-9]*: F2XM1 of +-inf: ' \
+       -e '# [a-z0-9]*: exact result reported inexact: ' > "$OUT/x87t.unexplained"; then
     echo "system tests: QEMU differs from the exact x87 reference for an unexplained reason:"; head -5 "$OUT/x87t.unexplained"
     exit 1
   fi

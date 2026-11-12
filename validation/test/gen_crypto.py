@@ -2,8 +2,8 @@
 
 `gen(g)` returns the bytes of one random instruction of isa_forms.IMPLEMENTED's crypto rows, with
 register or memory source operand (several addressing forms, mostly 16-byte aligned so that most
-cases execute; misaligned AES/PCLMULQDQ operands raise #GP(0), SHA ones are not generated, see
-`gen`), random destination/source registers, every imm8 (PCLMULQDQ: all four quadword selectors
+cases execute; misaligned AES/PCLMULQDQ operands raise #GP(0), misaligned SHA ones execute, as on
+the EPYC 7742), random destination/source registers, every imm8 (PCLMULQDQ: all four quadword selectors
 and the ignored bits), and occasionally a segment override or LOCK prefix (#UD). XMM0..7 come from
 the vector's seed (gen.vec_pattern), memory from the data area. The description 'crypto-<name>:<reg>:<x<rm>|m<address>>:<hex>:<imm decimal>' lets
 `cryptoref.py vectors` recompute the expected destination from the vector with the independent
@@ -33,7 +33,7 @@ def _memory(g, reg, misalign):
     """ModRM (+SIB, displacement) for a memory operand at a chosen address; sets the registers."""
     ea = DATA + 16 * random.randint(0x10, 0x1F0)
     if misalign and random.random() < 0.15:
-        ea += random.randint(1, 15)          # misaligned: #GP(0)
+        ea += random.randint(1, 15)          # misaligned: #GP(0) (AES/PCLMULQDQ)
     kind = random.choice(['base', 'disp8', 'disp32', 'sib', 'abs'])
     if kind == 'abs':
         return bytes([(reg << 3) | 5]) + struct.pack('<I', ea), ea
@@ -78,10 +78,9 @@ def gen(g):
         body += bytes([0xC0 | (reg << 3) | rm])
         src = 'x%d' % rm
     else:
-        # TCG does not check the alignment of the SHA instructions' memory operands (its decoder
-        # entries lack the SSE exception class), where the SDM's exception class 4 raises #GP(0):
-        # misaligned SHA operands are tested by the system tests (crypto.exc lines) instead
-        mrm, ea = _memory(g, reg, misalign=not name.startswith('sha'))
+        # misaligned operands: #GP(0) for AES/PCLMULQDQ; the SHA instructions execute them (the EPYC
+        # 7742, native campaign family `sha`, and TCG alike, although the SDM lists exception class 4)
+        mrm, ea = _memory(g, reg, misalign=True)
         body += mrm
         src = 'm%x' % ea
     imm = 0
