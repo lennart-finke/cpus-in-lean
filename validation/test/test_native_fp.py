@@ -144,4 +144,295 @@ class FormatV2(unittest.TestCase):
             self.assertEqual(json.loads((result/'comparison.json').read_text())['skipped'],1)
 
 
+import argparse  # noqa: E402
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import fp_cases  # noqa: E402
+import native_fp  # noqa: E402
+
+HERE=Path(__file__).resolve().parent
+CC=shutil.which(os.environ.get('HOST_CC','cc'))
+
+
+def compiled_checker(tmp):
+    return native_fp.build_checker(Path(tmp))
+
+
+class OracleInputValidation(unittest.TestCase):
+    """native/record_check.h is the oracle's own validation; prepare runs its host build on every campaign."""
+
+    @unittest.skipUnless(CC,'no host C compiler')
+    def test_every_generated_record_is_accepted(self):
+        # all families (small count): no record the oracle would refuse on the EPYC
+        with tempfile.TemporaryDirectory() as d:
+            checker=compiled_checker(d);groups=collections.defaultdict(list)
+            for raw,m in cases(123,100):groups[tuple(m.get('requires',()))].append(raw)
+            for requires,records in groups.items():
+                p=Path(d)/'c.bin';p.write_bytes((len(records)|1<<63).to_bytes(8,'little')+b''.join(records))
+                self.assertEqual(native_fp.check_records(checker,p,len(records),requires),[],requires)
+
+    @unittest.skipUnless(CC,'no host C compiler')
+    def test_each_rule(self):
+        base=bytearray(fp_cases.record('90'))
+        def code(c):
+            r=bytearray(base);c=bytes.fromhex(c);r[0]=len(c);r[1:16]=c.ljust(15,b'\xcc');return r
+        def put(fmt,off,v):
+            r=bytearray(base);struct.pack_into(fmt,r,off,v);return r
+        probes=[(base,None),(put('<Q',160,0x45),'unsupported data permission'),(put('<Q',168,0x47),'unsupported data permission'),
+                (put('<Q',160,0),None),(put('<Q',168,0x65),None),(put('B',0,0),'bad instruction length'),
+                (put('B',0,16),'bad instruction length'),(put('<Q',144,0x3202),'EFLAGS'),(put('<Q',144,0x200),'EFLAGS'),
+                (put('<Q',144,0x40ed7),None),(put('<I',432,0x41f80),'reserved MXCSR'),(put('<I',432,0x21f80),'reserved MXCSR'),
+                (put('<I',436,5),'memory kind'),(put('<I',436,4),None),(put('<H',444,0x100),'FTW'),
+                (code('cd80'),'INT 80h'),(code('cd03'),None),(code('cd21'),None),(code('0f05'),'SYSCALL'),
+                (code('660f05'),'SYSCALL'),(code('0f34'),None),(code('0f07'),None),(code('ea00000000 2300'.replace(' ','')),'far'),
+                (code('9a000000002300'),'far'),(code('cb'),'far'),(code('cf'),'far'),(code('ff2b'),'far'),(code('ff6b00'),'far'),
+                (code('ff23'),None),(code('8ed8'),'DS/ES/FS/GS'),(code('8ed0'),None),(code('1f'),'DS/ES/FS/GS'),(code('17'),None),
+                (code('0fa1'),'DS/ES/FS/GS'),(code('c503'),'DS/ES/FS/GS'),(code('c5f877'),None),(code('c4e27850'),None),
+                (code('0fb203'),None),(code('0fb403'),'DS/ES/FS/GS')]
+        with tempfile.TemporaryDirectory() as d:
+            checker=compiled_checker(d)
+            p=Path(d)/'c.bin';p.write_bytes((len(probes)|1<<63).to_bytes(8,'little')+b''.join(bytes(r) for r,_ in probes))
+            got={r['index']:r['reason'] for r in native_fp.check_records(checker,p,len(probes),())}
+            for i,(_,why) in enumerate(probes):
+                if why is None:self.assertNotIn(i,got,probes[i][0][:8].hex())
+                else:self.assertIn(why,got.get(i,''),i)
+            # the target's processor: SYSENTER refused unless AMD, MXCSR.MM only with MisalignSse
+            out=subprocess.run([str(checker)],input=p.read_text('latin-1'),capture_output=True,text=True,encoding='latin-1')
+            self.assertIn('SYSENTER',{r['index']:r['reason'] for r in native_fp.parse_check(out.stdout,len(probes))}[20])
+            self.assertEqual(out.returncode,3)
+            got=native_fp.check_records(checker,p,len(probes),('misalignSse',))
+            self.assertNotIn(11,{r['index'] for r in got})
+            p.write_bytes(p.read_bytes()+b'x')
+            with self.assertRaises(ValueError):native_fp.check_records(checker,p,len(probes),())
+
+    def test_oracle_source_runs_the_shared_check(self):
+        oracle=(HERE/'native/signal_oracle.c').read_text()
+        header=(HERE/'native/record_check.h').read_text()
+        self.assertIn('#include "record_check.h"',oracle)
+        # validated in the per-record loop before the record's memory is set up and it runs
+        loop=oracle[oracle.rindex('for(u64 index=0;index<count;index++)'):]
+        self.assertLess(loop.index('record_check('),loop.index('memory_prepare();'))
+        self.assertIn('check_input()',oracle)
+        # the PTE values the generators may use are exactly the ones both checks accept
+        accepted={int(x,16) for x in re.findall(r'pte != (0x[0-9a-f]+|0)\b',header)}
+        self.assertEqual(accepted,set(fp_cases.ORACLE_PTES))
+        self.assertIn('input.pte[p]==0x65',oracle);self.assertIn('input.pte[p]!=0x67',oracle)
+        # every vector the comparison maps has its Linux signal handled by the oracle
+        handled={int(x) for x in re.search(r'int signals\[\]=\{([0-9,]+)\}',oracle)[1].split(',')}
+        self.assertTrue(set(native_fp.VECTOR_SIGNAL.values())<=handled-{10})
+
+    def test_generator_refuses_unsupported_pte(self):
+        with self.assertRaises(AssertionError):fp_cases.record('90',permissions=(0x45,0x67))
+        perms={m.get('permissions') for _,m in cases(5,10) if m['family']=='gpr_cache'}
+        self.assertEqual(perms,{(0x67,0x67),(0x65,0x67),(0,0x67)})
+
+    def test_model_problems(self):
+        meta=[dict(index=0),dict(index=1),dict(index=2)]
+        m=[[0,3,0,0x20101],[1,2,0,0x20100],[2,3,0,0x30000]]
+        self.assertEqual([p['index'] for p in native_fp.model_problems(meta,m)],[1,2])
+
+
+# A stand-in for the oracle (the runner's tests run anywhere): `cpuid`, `check` (refuses PTE 0x45) and
+# `i386`, whose behaviour per record follows its seed: 0xDEAD the process fails, 0xBEEF it hangs,
+# 0xCA1B (first record) it fails before its first case; PTE 0x45 it stops with the oracle's message.
+FAKE_ORACLE=r'''#!/usr/bin/env python3
+import struct,sys,time
+mode=sys.argv[1]
+if mode=='cpuid':
+    print('BEGIN CPUID');print(' '.join('%016x'%v for v in (0,0,1,0,0,0)));print(' '.join('%016x'%v for v in (1,0,0,0,0,1)));print('END');sys.exit(0)
+data=sys.stdin.buffer.read();n=struct.unpack_from('<Q',data)[0]&~(1<<63)
+recs=[data[8+i*776:8+(i+1)*776] for i in range(n)]
+seed=lambda r:struct.unpack_from('<I',r,152)[0];pte=lambda r:struct.unpack_from('<Q',r,160)[0]
+if mode=='check':
+    bad=[i for i,r in enumerate(recs) if pte(r)==0x45]
+    print('CHECK %016x '%n)
+    for i in bad:print('REJECT %016x %016x unsupported data permission'%(i,0x45))
+    print('END %016x '%len(bad));sys.exit(3 if bad else 0)
+if seed(recs[0])==0xCA1B:sys.stderr.write('ERROR: NOP mode/IP/trap calibration\n');sys.exit(1)
+sys.stderr.write('PASS: calibration\n')
+print('BEGIN %016x '%n,flush=True)
+for i,r in enumerate(recs):
+    if pte(r)==0x45:sys.stderr.write('ERROR: unsupported data permission (value/negative errno: 0000000000000045 )\n');sys.exit(1)
+    if seed(r)==0xDEAD:sys.stderr.write('ERROR: signal outside instruction buffer\n');sys.exit(1)
+    if seed(r)==0xBEEF:time.sleep(60)
+    h=[0]*100;h[0]=i;h[1]=5;h[3]=0x20102;h[4]=0x23;h[55]=3;h[6]=seed(r)
+    print(' '.join('%016x'%v for v in h)+' ',flush=True)
+print('END')
+'''
+# A stand-in for x86fp: the model row of each record (EAX = the seed, as the fake oracle), or with
+# EAX + 1 for seed 7 (a model change).
+FAKE_MODEL=r'''#!/usr/bin/env python3
+import struct,sys
+data=open(sys.argv[-1],'rb').read();n=struct.unpack_from('<Q',data)[0]&~(1<<63)
+print('BEGIN %016x'%n)
+for i in range(n):
+    s=struct.unpack_from('<I',data,8+i*776+152)[0]
+    row=[i,3,0,0x20101,0]+[s+(DELTA if s==7 else 0)]+[0]*65
+    print(' '.join('%016x'%v for v in row))
+print('END')
+'''
+
+
+def model_row(i,seed):
+    h=[0]*100;h[0]=i;h[1]=5;h[3]=0x20102;h[4]=0x23;h[55]=3;h[6]=seed
+    return [0 if v is None else v for v in normalize(h)]
+
+
+def make_bundle(root,campaigns,included=None):
+    """campaigns: [(requires, [(seed, pte0), ...]), ...]; a bundle as prepare writes it, with the fake oracle."""
+    root.mkdir();manifest=dict(kind='ia32-fp-v2',seed=1,count=1,model_sha256='fake',campaigns=[],sha256={})
+    for k,(requires,recs) in enumerate(campaigns):
+        name=f'campaign-{k:03d}'
+        raw=[fp_cases.record('90',seed=s,permissions=(0x67,0x67)) for s,_ in recs]
+        raw=[r[:160]+struct.pack('<Q',p)+r[168:] for r,(_,p) in zip(raw,recs)]
+        data=(len(raw)|1<<63).to_bytes(8,'little')+b''.join(raw)
+        entry=dict(name=name,count=len(raw),bin_sha256=native_fp.hashlib.sha256(data).hexdigest(),
+                   **(dict(requires=requires) if requires else {}))
+        if included is not None and k not in included:
+            entry['included']=False
+        else:
+            (root/(name+'.bin')).write_bytes(data)
+            write_json(root/(name+'.json'),[dict(index=i,family='fake',instruction=f'seed{s}',code='90',flags_mask=0x8d5,sw_mask=0xb8ff)
+                                            for i,(s,_) in enumerate(recs)])
+            (root/(name+'.model')).write_text(f'BEGIN {len(raw):016x}\n'+''.join(' '.join(f'{v:016x}' for v in model_row(i,s))+'\n'
+                                                                             for i,(s,_) in enumerate(recs))+'END\n')
+        manifest['campaigns'].append(entry)
+    (root/'oracle').write_text(FAKE_ORACLE);(root/'oracle').chmod(0o755)
+    for p in sorted(root.iterdir()):manifest['sha256'][p.name]=digest(p)
+    write_json(root/'manifest.json',manifest)
+    return root
+
+
+def run_fake(bundle,result,timeout=5):
+    args=argparse.Namespace(directory=bundle,result=result,timeout=timeout)
+    with mock.patch('platform.system',return_value='Linux'),mock.patch('platform.machine',return_value='x86_64'):
+        return native_fp.run(args)
+
+
+class Runner(unittest.TestCase):
+    """The runner keeps going: refused records are skipped, a failing or hanging case is recorded and the
+    oracle restarted after it, a campaign that fails before its first case is recorded; compare lists all."""
+
+    def test_partial_run_and_comparison(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            bundle=make_bundle(root/'b',[
+                ((),[(1,0x67),(2,0x67)]),                                                    # clean
+                ((),[(1,0x67),(2,0x67),(3,0x45),(4,0x67),(0xDEAD,0x67),(6,0x67),(0xBEEF,0x67),(8,0x67)]),
+                ((),[(0xCA1B,0x67),(2,0x67)]),                                               # fails at start
+                (['avx'],[(1,0x67)]),                                                        # CPUID gated
+                ((),[(1,0x67),(2,0x67),(3,0x67)])])                                          # after the failures
+            with contextlib.redirect_stdout(io.StringIO()):
+                code=run_fake(bundle,root/'r',timeout=3)
+            self.assertEqual(code,1)
+            host=json.loads((root/'r/hardware.json').read_text())
+            r=host['results']
+            self.assertEqual(r['campaign-000']['status'],'ok');self.assertEqual(r['campaign-004']['status'],'ok')
+            self.assertEqual(r['campaign-000']['returncode'],0)
+            self.assertEqual(r['campaign-003'],dict(skipped='missing CPUID features: avx'))
+            b=r['campaign-001'];self.assertEqual(b['status'],'partial')
+            self.assertEqual([x['index'] for x in b['rejected']],[2])
+            self.assertEqual([(x['index'],x['returncode'],x['timeout']) for x in b['failed_cases']],[(4,1,False),(6,None,True)])
+            self.assertIn('signal outside instruction buffer',b['failed_cases'][0]['message'])
+            self.assertEqual(r['campaign-002']['status'],'failed');self.assertEqual(r['campaign-002']['not_run'],[[0,1]])
+            self.assertIn('calibration',r['campaign-002']['error'])
+            # the stitched output: the five executed rows of campaign-001 with their campaign indices
+            self.assertEqual([v[0] for v in rows(root/'r/campaign-001.out',8,100,frozenset({2,4,6}))],[0,1,3,5,7])
+            c=json.loads((root/'r/comparison.json').read_text())
+            self.assertEqual((c['cases'],c['total_cases'],c['not_compared'],c['skipped']),(10,16,5,1))
+            self.assertEqual(c['incomplete_campaigns'],['campaign-001','campaign-002'])
+            self.assertEqual(c['campaigns']['campaign-001']['not_compared'],
+                             {'oracle failed on this case (exit 1)':[[4,4]],'oracle failed on this case (timeout)':[[6,6]],
+                              'rejected by the oracle: unsupported data permission':[[2,2]]})
+            self.assertEqual(c['strict_mismatches'],0)
+            self.assertTrue((root/'r.tar.gz').exists())
+            self.assertIn('NOT COMPARED: 5 cases',(root/'r/summary.txt').read_text())
+            # damage is still refused
+            with (root/'r/campaign-004.out').open('a') as f:f.write('x\n')
+            with contextlib.redirect_stdout(io.StringIO()),self.assertRaises(ValueError):
+                compare(bundle,root/'r')
+
+    def test_legacy_failed_campaign_salvages_complete_rows(self):
+        # results of the first runner: a batch that ended with exit 1 after three rows
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);bundle=make_bundle(root/'b',[((),[(1,0x67),(2,0x67),(3,0x67),(4,0x67),(5,0x67)])])
+            res=root/'r';res.mkdir()
+            (res/'campaign-000.out').write_text('BEGIN 0000000000000005 \n'+''.join(
+                ' '.join(f'{v:016x}' for v in [i,5,0,0x20102,0x23]+[s]+[0]*94)+' \n' for i,s in enumerate((1,2,3))))
+            write_json(res/'hardware.json',dict(kind='ia32-fp-v2',manifest_sha256=digest(bundle/'manifest.json'),
+                results={'campaign-000':dict(returncode=1,output_sha256=digest(res/'campaign-000.out'))}))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(compare(bundle,res,out=root/'c'),1)
+            c=json.loads((root/'c/comparison.json').read_text())
+            self.assertEqual((c['cases'],c['not_compared']),(3,2))
+            self.assertEqual(c['campaigns']['campaign-000']['not_compared'],
+                             {'not run (batch ended)':[[4,4]],'oracle exited 1 on this case (see campaign-000.log)':[[3,3]]})
+
+    def test_resume_merge_and_recompare(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            first=[((),[(1,0x67),(2,0x67)]),((),[(3,0x67),(0xDEAD,0x67),(5,0x67)]),((),[(6,0x67),(7,0x67)])]
+            base=make_bundle(root/'base',first)
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_fake(base,root/'base-r')
+                s,done=native_fp.completed(base,root/'base-r')
+            self.assertEqual(sorted(done),['campaign-000','campaign-002'])
+            # campaign-001 fixed (the failing case replaced); the others must regenerate identically
+            fixed=[first[0],((),[(3,0x67),(4,0x67),(5,0x67)]),first[2]]
+            plan=[]
+            for k,(req,recs) in enumerate(fixed):
+                raw=[fp_cases.record('90',seed=x,permissions=(0x67,0x67)) for x,_ in recs]
+                data=(len(raw)|1<<63).to_bytes(8,'little')+b''.join(raw)
+                plan.append(native_fp.include_campaign(f'campaign-{k:03d}',k,len(raw),native_fp.hashlib.sha256(data).hexdigest(),done,None))
+            self.assertEqual(plan,[False,True,False])
+            with self.assertRaises(ValueError):native_fp.include_campaign('campaign-000',0,2,'0'*64,done,None)
+            self.assertEqual(native_fp.include_campaign('campaign-005',5,1,'0'*64,{},native_fp.parse_only('003-005,9')),True)
+            self.assertEqual(native_fp.parse_only('035-037,40'),{35,36,37,40})
+            resume=make_bundle(root/'resume',fixed,included={1})
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_fake(resume,root/'resume-r'),0)   # campaigns of the base run: listed, not counted
+            alone=json.loads((root/'resume-r/comparison.json').read_text())
+            self.assertEqual((alone['cases'],alone['not_included'],alone['not_compared']),(3,4,0))
+            self.assertEqual(json.loads((root/'resume-r/hardware.json').read_text())['results'].keys(),{'campaign-001'})
+            # one comparison over both runs: every campaign from its complete run
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(compare(resume,root/'resume-r',merge=[(base,root/'base-r')]),0)
+            c=json.loads((root/'resume-r-combined/comparison.json').read_text())
+            self.assertEqual((c['cases'],c['total_cases'],c['not_compared'],c['not_included']),(7,7,0,0))
+            self.assertEqual(c['campaigns']['campaign-001']['source'],str((root/'resume-r').resolve()))
+            self.assertEqual(c['campaigns']['campaign-000']['source'],str((root/'base-r').resolve()))
+            self.assertTrue(c['campaigns']['campaign-001']['inputs_differ_between_sources'])
+            # recompare: the current model on the stored inputs; nothing in the bundles/results changes
+            model=root/'x86fp';model.write_text(FAKE_MODEL.replace('DELTA','0'));model.chmod(0o755)
+            before={p:digest(p) for p in root.rglob('*') if p.is_file() and 'recompare' not in str(p) and p!=model}
+            args=argparse.Namespace(directory=resume,result=root/'resume-r',merge=[(base,root/'base-r')],model=model,
+                                    out=None,jobs=2)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(native_fp.recompare(args),0)
+            model.write_text(FAKE_MODEL.replace('DELTA','1'))
+            args.out=root/'again'
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(native_fp.recompare(args),1)
+            bad=[json.loads(l) for l in (root/'again/mismatches.jsonl').read_text().splitlines()]
+            self.assertEqual([(b['campaign'],b['index'],b['differences'][0]['field']) for b in bad],[('campaign-002',1,'r0')])
+            self.assertIn('fake/seed7: strict 1',(root/'again/summary.txt').read_text())
+            self.assertEqual(before,{p:digest(p) for p in before})
+            # the paste script carries the exact bundle
+            _,script=native_fp.package(resume)
+            with contextlib.redirect_stdout(io.StringIO()):
+                native_fp.unpack(argparse.Namespace(directory=script,out=root/'unpacked'))
+            self.assertEqual({p.name:digest(p) for p in (root/'unpacked/resume').iterdir()},{p.name:digest(p) for p in resume.iterdir()})
+            # an input that no longer matches its manifest hash is refused
+            with (base/'campaign-000.bin').open('ab') as f:f.write(b'x')
+            with contextlib.redirect_stdout(io.StringIO()),self.assertRaises(ValueError):
+                native_fp.recompare(args)
+
+
 if __name__=='__main__':unittest.main()

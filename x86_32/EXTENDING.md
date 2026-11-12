@@ -104,7 +104,10 @@ MSR 8Bh (`patchLevelMsr`) and the Intel MSRs of `Exec.msrInfo`; Linux's vendor p
 3. **Native hardware campaign** (`validation/test/fp_cases.py`): user-mode-visible behaviour gets a
    family in `FAMILIES` with the CPUID features it needs (names in `native_fp.FEATURES`); records
    carry YMM upper halves; cases whose hardware outcome the manuals leave open are `policy='observe'`
-   and get an entry in "Open questions for the EPYC" (`validation/README.md`).
+   and get an entry in "Open questions for the EPYC" (`validation/README.md`). Records must be ones
+   the native oracle can run as the model does (`validation/test/native/record_check.h`: data-page
+   PTEs 0/0x65/0x67 only, no system calls, far transfers or DS/ES/FS/GS loads, ...); `native_fp.py
+   prepare` and `test_native_fp.py` refuse anything else (`validation/test/FP-HARDWARE.md`).
 4. **Theorems** in `X86/Proofs/` (one file per module, `Ext<Owner>.lean`) for the key properties.
 5. Anything computed (crypto, FMA, F16C, PCMPxSTRx, topology, ...): an independent reference in
    Python, run by `validation/test/refs.py` or a unit test.
