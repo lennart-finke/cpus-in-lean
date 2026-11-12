@@ -79,6 +79,12 @@ structure MachineExt where
   /-- The running CPU has an NMI, INIT or STARTUP message pending or waits for STARTUP (cached from
   `apic` and `cpu`, see `Machine.syncXev`): `step` then takes the slow path `smpEvent?`. -/
   xev : Bool := false
+  /-- Multiprocessor: the physical 64-byte lines monitored by MWAITs in progress on the CPUs that are
+  not running (`MpMachine.switchTo`), and the lines of those a store has written since (`physWr`):
+  any store to the monitored line ends the wait (APM vol. 3 MWAIT), also one that leaves its
+  contents unchanged or is undone before the waiting CPU runs again. -/
+  watch : Array UInt64 := #[]
+  watchHit : Array UInt64 := #[]
   deriving Inhabited
 
 structure Machine extends MachineExt where
@@ -191,6 +197,18 @@ def modApicAt (m : Machine) (k : Nat) (f : Apic → Apic) : Machine :=
   else if k < m.peers.size then { m with peers := m.peers.modify k fun p => { p with apic := f p.apic } }
   else m
 
+/-- The local APIC timers of the CPUs that are not running fire if they are due by now. A local APIC
+keeps time while its CPU does not run; its CPU takes the interrupt when it next runs (the scheduler
+fires due timers at every quantum boundary, `MpMachine.resched`), but other CPUs see that APIC's
+IRR and arbitration priority at once: this is called before every lowest-priority arbitration and
+remote read, so that their outcome does not depend on the scheduling quantum. -/
+def peersTimers (m : Machine) : Machine :=
+  if m.peers.isEmpty then m else
+  let now := m.icount
+  if m.peers.all (fun p => p.apic.timerNext > now) then m else
+  { m with peers := m.peers.mapIdx fun k p =>
+      if k != m.cur && p.apic.timerNext ≤ now then { p with apic := p.apic.timerDue now } else p }
+
 /-- CPU `k` waits for a STARTUP IPI. -/
 def waitSipiAt (m : Machine) (k : Nat) : Bool :=
   if k == m.cur then m.cpu.smpx.waitSipi else (m.peers[k]?.map (·.waitSipi)).getD false
@@ -206,7 +224,10 @@ def latchNmi (m : Machine) (k : Nat) : Machine := m.modApicAt k fun a => { a wit
 /-- Lowest-priority arbitration among `cands` for vector `v` (APM 16.6.2): a focus CPU (the vector
 in its ISR or IRR, with focus checking enabled by its SVR bit 9 = 0) accepts it, the one with the
 highest APIC ID if there are several (the APM leaves this open); otherwise the APIC with the lowest
-arbitration priority (APR), ties going to the highest APIC ID. -/
+arbitration priority, ties going to the highest APIC ID. The arbitration compares the Arbitration
+Priority field, APR bits 7:4 ("the local APIC with the lowest arbitration priority, as indicated by the
+Arbitration Priority field in the Arbitration Priority Register"; figure 16-22: AP = bits 7:4, APS =
+bits 3:0 the sub-class), not the sub-class; the Intel SDM (13.6.2.4) compares the whole APR. -/
 def lowestPri (m : Machine) (v : UInt32) (cands : List Nat) : Option Nat :=
   let higherId := fun (j k : Nat) => (m.apicAt j).physId > (m.apicAt k).physId
   let focus := cands.filter fun k =>
@@ -217,8 +238,8 @@ def lowestPri (m : Machine) (v : UInt32) (cands : List Nat) : Option Nat :=
   | [] =>
     match cands with
     | c :: cs => some (cs.foldl (fun b k =>
-        let x := (m.apicAt k).apr
-        let y := (m.apicAt b).apr
+        let x := (m.apicAt k).apr >>> 4
+        let y := (m.apicAt b).apr >>> 4
         if x < y || (x == y && higherId k b) then k else b) c)
     | [] => none
 
@@ -244,6 +265,7 @@ def deliver (m : Machine) (msg : Msg) : Machine × Bool :=
   let ts := (List.range m.ncpu).filter fun k => msg.targets k (m.apicAt k)
   if ts.isEmpty then (m, false) else
   if msg.mode == 1 then
+    let m := m.peersTimers
     match m.lowestPri msg.vec (ts.filter fun k => (m.apicAt k).swEnabled) with
     | some k => (m.modApicAt k (·.acceptFixed msg.vec msg.level), true)
     | none => (m, true)
@@ -260,6 +282,7 @@ def icrMsg (a : Apic) (src : Nat) : Msg :=
 physical destination is copied to the remote read register; ICR.RRS = 10b (valid) or 00b (no such
 APIC, a broadcast, shorthand or logical destination, or an unimplemented register). -/
 def remoteRead (m : Machine) (msg : Msg) : Machine :=
+  let m := m.peersTimers
   let tgt := if msg.sh != 0 || msg.logical || msg.dest &&& 0xFF == 0xFF then none
     else (List.range m.ncpu).find? fun k => msg.targets k (m.apicAt k)
   let v := tgt.bind fun k => (m.apicAt k).read (msg.vec <<< 4) m.icount
@@ -281,11 +304,11 @@ def sendIcr (m : Machine) : Machine :=
 
 /-! ### I/O APIC -/
 
-/-- Redirection entry `p` sends its message; a level-triggered entry sets remote IRR. -/
+/-- Redirection entry `p` sends its message; a level-triggered entry (`levelEntry`) sets remote IRR. -/
 def ioapicSend (m : Machine) (p : Nat) : Machine :=
   let s := m.ioapic
   let e := s.entry p
-  let m := if e &&& 0x8000 != 0 then { m with ioapic := { s with redir := s.redir.set! p (e ||| 0x4000) } } else m
+  let m := if IoApic.levelEntry e then { m with ioapic := { s with redir := s.redir.set! p (e ||| 0x4000) } } else m
   (m.deliver (s.msg p)).1.syncApic
 
 /-- A level-triggered entry sends its message while its pin is asserted, it is unmasked and its
@@ -293,7 +316,7 @@ remote IRR is clear. -/
 def ioapicService (m : Machine) (p : Nat) : Machine :=
   let s := m.ioapic
   let e := s.entry p
-  if e &&& 0x10000 == 0 && e &&& 0x8000 != 0 && e &&& 0x4000 == 0 && s.asserted p then m.ioapicSend p else m
+  if e &&& 0x10000 == 0 && IoApic.levelEntry e && e &&& 0x4000 == 0 && s.asserted p then m.ioapicSend p else m
 
 /-- Input pin `p` of the I/O APIC goes to `level`. -/
 def ioapicPin (m : Machine) (p : Nat) (level : Bool) : Machine :=
@@ -305,7 +328,7 @@ def ioapicPin (m : Machine) (p : Nat) (level : Bool) : Machine :=
   let m := { m with ioapic := s }
   let e := s.entry p
   if e &&& 0x10000 != 0 then m
-  else if e &&& 0x8000 == 0 then (if !was && s.asserted p then m.ioapicSend p else m)
+  else if !IoApic.levelEntry e then (if !was && s.asserted p then m.ioapicSend p else m)
   else m.ioapicService p
 
 /-- EOI message for vector `v` from a local APIC: every level-triggered entry with that vector and
@@ -468,12 +491,22 @@ def mmioWr (a n v : UInt32) : M Unit := fun m =>
   else match m.tso with
     | none => .ok (rdBytes m.mem a n) m
     | some l => .ok (rdBytes m.mem a n) { m with tso := some { l with reads := l.reads.push (a, n) } }
+/-- A store of `n` bytes at physical address `a` to a line in `Machine.watch` (an MWAIT of a CPU that
+is not running) records the line in `watchHit`. -/
+def Machine.watchStore (m : Machine) (a n : UInt32) : Machine :=
+  let l0 := (a &&& ~~~63).toUInt64
+  let l1 := ((a + n - 1) &&& ~~~63).toUInt64
+  let hit := m.watch.filter fun l => l == l0 || l == l1
+  if hit.isEmpty then m else { m with watchHit := m.watchHit ++ hit }
+
 /-- Physical write (device pages: `mmioWr`). -/
 @[inline] def physWr (p : UInt64) (n v : UInt32) : M Unit := fun m =>
   if p >>> 32 != 0 then .ok () m else
   let a := p.toUInt32
   if isMmio m a then mmioWr a n v m
-  else match m.tso with
+  else
+  let m := if m.watch.isEmpty then m else m.watchStore a n
+  match m.tso with
     | none => .ok () { m with mem := wrBytes m.mem a n v }
     | some l => .ok () { m with mem := wrBytes m.mem a n v,
                                 tso := some { l with writes := l.writes.push ⟨a, n, v⟩ } }

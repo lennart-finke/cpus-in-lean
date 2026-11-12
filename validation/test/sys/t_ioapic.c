@@ -125,6 +125,15 @@ void test_ioapic(void) {
 	uart_irq(0, mcr0);
 	io_show("ioapic.level.unmasked");
 	ioapic_entry(4, 0x10000, 0);
+	/* TMR (vector 62h: register 1B0h, bit 2) is updated only when an interrupt is accepted into IRR:
+	   set for a level-triggered one and kept after its EOI, cleared by the next edge-triggered one
+	   (AMD APM vol. 2, 16.6.3; SDM vol. 3, 13.8.4) */
+	kprintf("ioapic.tmr.level: %x\n", (LR(0x1B0) >> 2) & 1);
+	ioapic_entry(2, 0x62, 0);
+	pit_wait(500);
+	io_show("ioapic.tmr.edge");
+	kprintf("ioapic.tmr.edge: %x\n", (LR(0x1B0) >> 2) & 1);
+	ioapic_entry(2, 0x10000, 0);
 	LR(0x350) = 0x700;
 	trap_hook = 0;
 }
@@ -146,6 +155,17 @@ void test_ioapic_model(void) {
 	ioapic_wr(0x22, 0x12000 | 0x6F);
 	kprintf("ioapicm.rirr.edge: %x\n", ioapic_rd(0x22));
 	ioapic_entry(9, 0x10000, 0);
+	/* an NMI entry programmed level-triggered is edge-triggered (82093AA, delivery mode NMI: "treated as an
+	   edge triggered interrupt, even if it is programmed as a level triggered interrupt"): no remote IRR,
+	   an NMI on every rising edge of the PIT output. TCG sets remote IRR and sends only the first. */
+	ioapic_entry(2, 0x8000 | 0x400, 0);
+	for (u32 n = 1; n <= 2; n++) {
+		pit_oneshot(500);
+		for (int k = 0; k < 200 && io_n < n; k++) __asm__ volatile("sti\n hlt\n cli" ::: "memory");
+	}
+	io_show("ioapicm.nmi.level");
+	kprintf("ioapicm.nmi.level.rirr: %x\n", (ioapic_rd(0x14) >> 14) & 1);
+	ioapic_entry(2, 0x10000, 0);
 	/* ExtINT: the PIC supplies the vector (master base 30h, IRQ 0 -> 30h) */
 	outb(0x20, 0x11); outb(0x21, 0x30); outb(0x21, 0x04); outb(0x21, 0x01); outb(0x21, 0xFE);
 	ioapic_entry(2, 0x700, 0);

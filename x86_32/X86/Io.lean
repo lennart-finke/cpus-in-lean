@@ -95,6 +95,9 @@ def out8 (m : Machine) (port : UInt32) (v : UInt8) : Machine :=
   | 0x70 => { m with cmosIdx := v }
   | 0x71 => let i := (m.cmosIdx &&& 0x7F).toNat
             if i ≥ 0x0E then { m with cmos := m.cmos.set! i v } else m
+  -- APM control port: an SMI to the CPU that executes the OUT. Which CPUs a chipset signals is the
+  -- chipset's choice and not settled by a source for the 7742's FCH (open question): QEMU's PIIX4
+  -- raises it on the first CPU, its ICH9 on the writing CPU unless firmware negotiated broadcast SMIs.
   | 0xB2 => { m with apmCnt := v, smiPending := true }
   | 0xB3 => { m with apmSts := v }
   | 0x4D0 => { m with pic0 := { m.pic0 with elcr := v &&& 0xF8 } }.syncIntr

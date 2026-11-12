@@ -8,7 +8,10 @@
 /* Handler results in normal RAM at 0x6000 (word index): 0 count, 1 saved EAX, 2 saved EIP,
    3 saved CR0, 4 revision, 5 SMBASE, 6 CS in SMM, 7 CR0 in SMM, 8 EFLAGS in SMM, 9 relocation
    request (input), 10 saved CS selector, 11 saved CS attributes, 12 saved CR4, 13 saved ESP,
-   14 saved CR3, 15 ESP in SMM, 16 DS selector in SMM */
+   14 saved CR3, 15 ESP in SMM, 16 DS selector in SMM, 17 saved EFER (AMD64 map only).
+   The handler reads the 32-bit map of qemu-system-i386 or the AMD64 map (AMD APM vol. 2, table 10-1,
+   which AMD64 processors use in every mode: the model, qemu-system-x86_64), told apart by the
+   revision identifier's low word (0064h for the AMD64 map). */
 #define S ((volatile u32 *)0x6000)
 
 __asm__(
@@ -19,10 +22,11 @@ __asm__(
 	" movl %esp, %eax\n movl %eax, 0x3c(%ebx)\n movw %ds, %ax\n movzwl %ax, %eax\n movl %eax, 0x40(%ebx)\n"
 	" movl $0x7000, %esp\n pushfl\n popl %eax\n movl %eax, 0x20(%ebx)\n"
 	" movw %cs, %si\n movzwl %si, %esi\n shll $4, %esi\n addl $0x8000, %esi\n"
+	" movl 0x7efc(%esi), %eax\n movl %eax, 0x10(%ebx)\n cmpw $0x64, %ax\n je 7f\n"
+	/* Intel's 32-bit map (qemu-system-i386) */
 	" movl 0x7fd0(%esi), %eax\n movl %eax, 0x04(%ebx)\n"
 	" movl 0x7ff0(%esi), %eax\n movl %eax, 0x08(%ebx)\n"
 	" movl 0x7ffc(%esi), %eax\n movl %eax, 0x0c(%ebx)\n"
-	" movl 0x7efc(%esi), %eax\n movl %eax, 0x10(%ebx)\n"
 	" movl 0x7ef8(%esi), %eax\n movl %eax, 0x14(%ebx)\n"
 	" movl 0x7fac(%esi), %eax\n movl %eax, 0x28(%ebx)\n"
 	" movl 0x7f90(%esi), %eax\n movl %eax, 0x2c(%ebx)\n"
@@ -30,7 +34,21 @@ __asm__(
 	" movl 0x7fe0(%esi), %eax\n movl %eax, 0x34(%ebx)\n"
 	" movl 0x7ff8(%esi), %eax\n movl %eax, 0x38(%ebx)\n"
 	" movl $0x5a5a5a5a, 0x7fd0(%esi)\n"
-	" movl 0x24(%ebx), %eax\n testl %eax, %eax\n jz 1f\n movl %eax, 0x7ef8(%esi)\n 1:\n"
+	" movl 0x24(%ebx), %eax\n testl %eax, %eax\n jz 8f\n movl %eax, 0x7ef8(%esi)\n jmp 8f\n"
+	/* the AMD64 map (AMD APM vol. 2, table 10-1; revision xx64h) */
+	"7: movl 0x7ff8(%esi), %eax\n movl %eax, 0x04(%ebx)\n"
+	" movl 0x7f78(%esi), %eax\n movl %eax, 0x08(%ebx)\n"
+	" movl 0x7f58(%esi), %eax\n movl %eax, 0x0c(%ebx)\n"
+	" movl 0x7f00(%esi), %eax\n movl %eax, 0x14(%ebx)\n"
+	" movzwl 0x7e10(%esi), %eax\n movl %eax, 0x28(%ebx)\n"
+	" movzwl 0x7e12(%esi), %eax\n movl %eax, 0x2c(%ebx)\n"
+	" movl 0x7f48(%esi), %eax\n movl %eax, 0x30(%ebx)\n"
+	" movl 0x7fd8(%esi), %eax\n movl %eax, 0x34(%ebx)\n"
+	" movl 0x7f50(%esi), %eax\n movl %eax, 0x38(%ebx)\n"
+	" movl 0x7ed0(%esi), %eax\n movl %eax, 0x44(%ebx)\n"
+	" movl $0x5a5a5a5a, 0x7ff8(%esi)\n"
+	" movl 0x24(%ebx), %eax\n testl %eax, %eax\n jz 8f\n movl %eax, 0x7f00(%esi)\n"
+	"8:\n"
 	" rsm\n"
 	".globl smi_h_end\nsmi_h_end:\n.code32\n");
 extern char smi_h[], smi_h_end[];

@@ -282,8 +282,9 @@ static void t_smx(void) {
 	int li = TRY(__asm__ volatile("movl %1, %%eax\n movl %%eax, %%fs\n movl %%fs, %0" : "=r"(fs) : "i"(7) : "eax"));
 	u32 el = last.err, cl = last.cr2;
 	sa_restore = 0;
-	clac();
-	WRCR(4, cr4);
+	/* CLAC and the CR4 restore in one asm block: with SMAP on and AC = 0 any compiler-generated access to
+	   the stack (a user page here) would be a #PF on a CPU that let the LDT load succeed (TCG) */
+	__asm__ volatile(".byte 0x0F, 0x01, 0xCA\n mov %0, %%cr4" :: "r"(cr4) : "memory");
 	__asm__ volatile("movl %0, %%fs" :: "r"((u32)KDATA));
 	kprintf("sysa.smap.implicit: vec=%x err=%x cr2_ok=%d fs=%x\n", li, li == 14 ? el : 0, li == 14 && cl == (u32)ldt, fs);
 	pg_off();

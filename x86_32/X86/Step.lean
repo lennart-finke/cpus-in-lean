@@ -170,16 +170,55 @@ taken at an instruction boundary by `smpEvent?`, before everything else in `step
   target APIC is responsive only to the STARTUP IPI. All other interrupts (including SMI and NMI) are
   held pending until the STARTUP IPI has been accepted"); a STARTUP IPI with vector VV starts it in real
   mode at VV00:0000 (CS base VV000h);
-* a STARTUP IPI outside the INIT state is ignored;
+* a STARTUP IPI outside the INIT state is ignored; one that arrives while an INIT is still pending
+  (the target has not reached an instruction boundary since) is accepted and taken right after the
+  INIT (`Machine.initCpu`), so INIT and STARTUP sent back to back start the CPU whatever the schedule;
 * NMI: the APIC's `nmi` message (an NMI IPI, an LVT or I/O APIC entry in NMI mode: `Machine.latchNmi`)
   enters the CPU's NMI latch (`Cpu.latchNmi`, `SysBState.nmiPending`) at the CPU's next instruction
   boundary outside the INIT state (`takeNmi`), from where `nextEvent` delivers it with the NMI
   blocking rules of system B. A CPU in the INIT state holds it pending in the APIC. -/
 
-/-- The CPU state after INIT (AMD APM vol. 2, table 14-1 "Value after INIT", table 14-2 attributes):
-real mode at F000:FFF0 with CS base FFFF_0000h, CR0 = 10h with CD and NW kept, CR2–CR4, EFER, the
-general registers (EDX = processor signature `sig`), DR0–DR3, DR6, DR7 at their reset values; x87,
-MMX and SSE state, MSRs, TSC, SMBASE and XCR0 are not modified. -/
+/-- The CPU state after INIT (AMD APM vol. 2, rev. 3.39, §14.1.3, table 14-1 "Initial Processor
+State", column "after INIT"; segment attributes from table 14-2). `sig` is the processor signature
+(CPUID 1:EAX), `bsp` selects the boot processor (which starts at the reset vector; an application
+processor waits for STARTUP, §16.5). Every piece of state the model has, with the row of table 14-1
+it follows:
+
+| state (model field) | after INIT | table 14-1 row / source |
+|---|---|---|
+| CR0 (`cr0`) | CD, NW unchanged, bit 4 (ET) = 1, all others 0 | CR0 |
+| CR2, CR3, CR4 | 0 | CR2, CR3, CR4 |
+| CR8 = TPR[7:4] (`Apic.tpr`) | 0 (`Apic.reset`, `Machine.initCpu`) | CR8; table 16-2 |
+| RFLAGS (`eflags`) | 2 | RFLAGS |
+| EFER (`efer`, so LME = LMA = 0) | 0 | EFER |
+| RIP (`eip`, `lmx.ripHi`) | FFF0h, bits 63:32 = 0 | RIP |
+| CS | F000h, base FFFF_0000h, limit FFFFh, P, DPL 0, S, type 1010b | CS; table 14-2 |
+| DS, ES, FS, GS, SS | 0, base 0, limit FFFFh, P, DPL 0, S, type 0010b; FS/GS bases bits 63:32 = 0 (`lmx.fsBase`, `gsBase`) | DS, ES, FS, GS, SS; table 14-2 |
+| GDTR, IDTR | base 0, limit FFFFh | GDTR, IDTR |
+| LDTR, TR | 0, base 0, limit FFFFh, LDT (type 0010b), busy 16-bit TSS (0011b) | LDTR, TR; table 14-2 |
+| RAX, RBX, RCX, RBP, RSP, RDI, RSI | 0 (RSP bits 63:32: `lmx.rspHi` = 0) | RAX ("0" after INIT, no BIST), RBX..RSI |
+| RDX (`edx`) | family/model/stepping (`sig`) | RDX |
+| R8–R15 | 0: R11 (`lmx.r11`), the only one the model keeps | R8–R15 |
+| x87 state (`fpr`, `fcw`, `fsw`, `fempty`, `fip`, `fcs`, `fop`, `fdp`, `fds`) | not modified | x87 floating-point state; §14.2.3 |
+| MMX registers (aliases of `fpr`) | not modified | 64-bit media state |
+| XMM, YMM bits 255:128, MXCSR (`sse`) | not modified (YMM: no row; the SDM's table 12-1 leaves YMM_H unchanged) | SSE state |
+| XCR0 (`xcr0`), IA32_XSS (`xss`), XINUSE tracking (`xsx`) | not modified | XCR0; other MSRs |
+| DR0–DR3, DR6, DR7 | 0, FFFF_0FF0h, 400h (breakpoints off: `bpOn`) | DR0–DR3, DR6, DR7 |
+| TSC (`sysx.tscOff`) | not modified | Time-Stamp Counter |
+| performance counters (`gprx.perfCtr`/`perfEvtSel`, MPERF/APERF, IRPerf `sysbx.irBase`/`notRetired`) | not modified | Performance-Monitor Resources |
+| MTRRs, PAT, MCA banks, SYSCFG and the other MSRs (`msrs`), SYSENTER/STAR/LSTAR/CSTAR/SFMASK (`sysx`), TSC_AUX, HWCR bits (`gprx`, `sysbx.hwcr`), KernelGSbase (`lmx.kernelGsBase`), SVM MSRs (`svmx`), PATCH_LEVEL | not modified | Memory-Type Range Registers, Machine-Check Registers, Other Model-Specific Registers |
+| SMBASE (`smbase`) | not modified | SMBASE |
+| local APIC | reset except base, AE, EXTD and ID (`Apic.reset` in `Machine.initCpu`) | APIC "Enabled, see Table 16-2"; §16.10 |
+| TLB (`Machine.tlb*`) and PAE PDPTE registers (`pdpte`) | not modified (the table: caches and TLBs not modified by INIT; with CR0.PG = 0 neither is used, and enabling paging reloads them) | Instruction and Data TLBs |
+| halted, waiting for STARTUP (`halted`, `smpx.waitSipi`) | an application processor waits for STARTUP, the BSP runs | §16.5 |
+| MWAIT in progress (`smpx.mwait`) | ended | APM vol. 3 MWAIT: INIT ends the monitor event pending state |
+| interrupt shadow (`shadow`) | cleared | no row: the INIT state executes nothing before its first instruction |
+| NMI latch and blocking (`sysbx.nmiPending`, `nmiBlocked`), SMM (`smm`) | not modified (a pending NMI is held until STARTUP, §16.5; INIT is not recognized in SMM, §10.3.3) | no row: neither the APM nor the SDM's table 12-1 says whether INIT ends NMI blocking (QEMU's TCG clears it) — an open question, the model leaves it |
+| armed MONITOR (`gprx.monLine`) | not modified | no row (open: not specified) |
+| pending debug traps (`Machine.dbPend`) | discarded (`Machine.initCpu`) | no row |
+
+RESET differs in CR0 (6000_0010h), the x87 state, the SSE state, XCR0, the TSC, SMBASE, the MSRs
+and the caches/TLBs (`Cpu.atReset`). -/
 def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
   let seg : SegReg := { sel := 0, base := 0, limit := 0xFFFF, attr := 0x92 }
   { c with
@@ -192,16 +231,30 @@ def Cpu.afterInit (c : Cpu) (sig : UInt32) (bsp : Bool) : Cpu :=
     cr0 := 0x10 ||| (c.cr0 &&& (CR0.CD ||| CR0.NW)), cr2 := 0, cr3 := 0, cr4 := 0,
     dr0 := 0, dr1 := 0, dr2 := 0, dr3 := 0, dr6 := 0xFFFF0FF0, dr7 := 0x400, bpOn := false,
     efer := 0, halted := !bsp, shadow := false,
-    -- long mode: EFER = 0 (LME, LMA); RIP/RSP bits 63:32 = 0, FS/GS base 0 (the segment loads clear
-    -- the 64-bit bases); R11 and KernelGSbase (an MSR) are not modified
-    lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none, entry := "" },
+    -- long mode: RIP/RSP bits 63:32 = 0, R8–R15 = 0 (R11 is the one the model keeps), FS/GS base
+    -- 63:32 = 0 (the segment loads clear the 64-bit bases); KernelGSbase (an MSR) is not modified
+    lmx := { c.lmx with ripHi := 0, rspHi := 0, r11 := 0, fsBase := none, gsBase := none, entry := "" },
     smpx := { c.smpx with waitSipi := !bsp, mwait := none } }
 
-/-- INIT of the running CPU. -/
+/-- The state of a CPU after RESET where it differs from `afterInit` (AMD APM vol. 2, table 14-1,
+column "after RESET"): CR0 = 6000_0010h (CD = NW = 1), the x87 state FPR0–7 = 0, control word 0040h,
+status word 0, tag word 5555h (every register holds a zero: none is empty), pointers and opcode 0;
+MMX 0; XMM 0, MXCSR 1F80h; XCR0 = 1; TSC = 0; SMBASE = 3_0000h; the MSRs at their reset values. The
+model's default `Cpu` has these except CR0 and the x87 control and tag words (its defaults are the
+FNINIT values, as the firmware leaves the boot processor). Applying `afterInit` to it gives the RESET
+state of every row (the two columns agree elsewhere). -/
+def Cpu.atReset : Cpu := { ({} : Cpu) with cr0 := 0x60000010, fcw := 0x0040, fsw := 0, fempty := 0 }
+
+/-- The local APIC's part of INIT (`Machine.initCpu`). A STARTUP IPI the APIC accepted while the INIT was pending (`Machine.recv`:
+the APIC accepts STARTUP in, or while entering, the INIT state, APM vol. 2, 16.5) survives the APIC
+reset and is taken at the next boundary: a CPU that does not run while INIT and STARTUP arrive (it is
+not scheduled, or still finishing an instruction) ends up started, as one that took the INIT at once.
+QEMU likewise keeps a pending SIPI across INIT (`do_cpu_init` preserves `CPU_INTERRUPT_SIPI`). -/
+def Apic.afterInit (a : Apic) : Apic := { ({ a with init := false } : Apic).reset with sipi := a.sipi }
+
 def Machine.initCpu (m : Machine) : Machine :=
   let sig := (cpuid m.cpu 1 0).1
-  { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := { m.apic with init := false }.reset,
-           dbPend := 0 }.syncTimer.syncApic
+  { m with cpu := m.cpu.afterInit sig m.apic.bsp, apic := m.apic.afterInit, dbPend := 0 }.syncTimer.syncApic
 
 /-- A STARTUP IPI with vector `v` ends the INIT state: real mode at `v`00:0000. -/
 def Machine.startCpu (m : Machine) (v : UInt32) : Machine :=
@@ -259,7 +312,10 @@ POP SS are held past the next instruction (it executes in the interrupt shadow).
     addNotRetired { m with icount := t } (t - m.icount)
   else
     let c := m.cpu
-    let ibp := if c.bpOn && c.eflags &&& Flag.RF == 0 then
+    -- in 64-bit mode (CS.L = 1 with LMA) the instruction is the 64-bit executor's, and so is its
+    -- instruction-breakpoint check against the 64-bit RIP (the CS base is ignored there): the model stops
+    -- in `decode` without checking (it would compare CS.base + EIP, inventing or losing a #DB)
+    let ibp := if c.bpOn && c.eflags &&& Flag.RF == 0 && !LongMode.in64 c then
       bpHits c (c.cs.base + c.eip) 1 (· == 0) else 0
     if ibp != 0 then
       dbTrap (addNotRetired { m with icount := m.icount + 1, cpu := { c with shadow := false } } 1) ibp

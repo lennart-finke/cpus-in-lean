@@ -33,4 +33,5 @@ void test_x2apic(void);
 void test_x2apic_model(void);
 void test_smp(void);
 void test_smp_model(void);
+void test_smpn(u32 n);
 #endif

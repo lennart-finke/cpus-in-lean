@@ -468,9 +468,14 @@ def farRet (opsz : Sz) (imm : UInt32) : M Unit := do
       let nss := (← peek opsz (o + opsz.toUInt32)).toUInt16
       let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
       if !LongMode.limitOk c cs ip then gp 0
-      -- a 16-bit outer stack receives only SP: ESP[31:16] keep their value, as for IRET
+      -- to 64-bit code the stack pointer is 64 bits wide and SS.B is ignored (AMD APM vol. 2, 2.4.5;
+      -- vol. 3 RET (Far) "RSP.s = temp_RSP + temp_IMM"): RSP = the popped (zero-extended) value + imm;
+      -- otherwise a 16-bit outer stack receives only SP: ESP[31:16] keep their value, as for IRET
+      let r := nsp.toUInt64 + imm.toUInt64
+      let to64 := LongMode.lma c && LongMode.lBit cs
       modCpu fun c => { c with cs, eip := ip, ss,
-                               esp := if ss.big then nsp + imm else (c.esp &&& 0xFFFF0000) ||| ((nsp + imm) &&& 0xFFFF) }
+                               esp := if ss.big || to64 then nsp + imm else (c.esp &&& 0xFFFF0000) ||| ((nsp + imm) &&& 0xFFFF),
+                               lmx := if to64 then { c.lmx with rspHi := (r >>> 32).toUInt32 } else c.lmx }
       nullInaccessible rpl
     if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "far RET"
 
@@ -720,64 +725,95 @@ def iret (opsz : Sz) : M Unit := do
     let nsp ← peek opsz (3 * opsz.toUInt32)
     let nss := (← peek opsz (4 * opsz.toUInt32)).toUInt16
     let ss ← if LongMode.nullSsOk c cs nss rpl then pure (LongMode.nullSs nss rpl) else segFor SegN.SS nss rpl
+    -- to 64-bit code RSP is the popped value, whatever SS.B (APM vol. 3 IRET "RSP.s = temp_RSP"; in 64-bit
+    -- mode the stack size is 64 bits, vol. 2, 2.4.5); otherwise a 16-bit stack receives only SP
+    let to64 := LongMode.lma c && LongMode.lBit cs
     modCpu fun c => { c with cs, eip := ip, eflags := newFlags, ss,
-                             esp := if ss.big then nsp else (c.esp &&& 0xFFFF0000) ||| (nsp &&& 0xFFFF) }
+                             esp := if ss.big || to64 then nsp else (c.esp &&& 0xFFFF0000) ||| (nsp &&& 0xFFFF),
+                             lmx := if to64 then { c.lmx with rspHi := 0 } else c.lmx }
     nullInaccessible rpl
   if LongMode.lma c && LongMode.lBit cs then LongMode.enter64 0 "IRET"
 
 /-! ## System-management mode
 
 An SMI (here: a write to the APM control port 0xB2, as on PIIX4/ICH chipsets with APMC SMIs
-enabled) is taken at an instruction boundary. The processor saves its state in the 32-bit SMRAM
-state-save map at `smbase + 0xFE00..0xFFFF` and enters SMM at `smbase:8000` in a real-mode-like
-environment with 4 GiB segment limits; RSM restores the saved state (SDM 32.4-32.5). The SDM leaves
-the save locations of hidden state (descriptor caches, table registers, CR4) implementation-specific;
-they follow QEMU's 32-bit layout, with descriptor attributes stored like `SegReg.attr`. SMRAM
-protection belongs to the chipset and is not modelled. SMM entry blocks NMIs; RSM restores the NMI
-blocking state of the interrupted context, and an IRET in SMM unblocks them. -/
+enabled) is taken at an instruction boundary. The processor saves its state in the SMRAM state-save
+area at `smbase + FE00h..FFFFh` and enters SMM at `smbase:8000` in a real-mode-like environment with
+4 GiB segment limits (AMD APM vol. 2, table 10-3: CR0.PE/EM/TS/PG, CR4, EFER and DR7 cleared or
+reset); RSM restores the saved state. SMRAM protection belongs to the chipset and is not modelled.
+SMM entry blocks NMIs; RSM restores the NMI blocking state of the interrupted context, and an IRET in
+SMM unblocks them.
 
-/-- SMM revision identifier: SMBASE relocation supported (bit 17), no I/O instruction restart. -/
-def smmRevision : UInt32 := 0x00020000
+**State-save map.** AMD64 processors use the AMD64 save-state map of APM vol. 2, table 10-1 in every
+mode ("This 64-bit save-state map is used in all modes, regardless of mode", vol. 3 RSM; "the legacy
+SMM state-save area format ... Implementations of the AMD64 architecture do not use this format",
+vol. 2, 10.2.3), so the model, an AMD64 processor, uses it also for SMIs from legacy mode, and SMM can
+be entered from long mode. Offsets from SMBASE: ES, CS, SS, DS, FS, GS at FE00h + 10h·k (selector
+word, attributes word, limit dword, base qword), GDTR FE64h/FE68h, LDTR FE70h, IDTR FE84h/FE88h, TR
+FE90h, EFER FED0h, revision FEFCh, SMBASE FF00h, CR4 FF48h, CR3 FF50h, CR0 FF58h, DR7 FF60h, DR6
+FF68h, RFLAGS FF70h, RIP FF78h, R15..R8 FF80h..FFB8h, RDI, RSI, RBP, RSP, RBX, RDX, RCX, RAX FFC0h..FFF8h.
+The attribute word holds descriptor bits 47:40 and 55:52 as `SegReg.attr` (the APM does not define
+its layout; QEMU's AMD64 map uses this one). Not saved (10.2): CR2, CR8, DR0–DR3, x87/SSE state,
+MSRs. The I/O-restart fields, the auto-halt restart byte and the SVM fields are written as 0 (the
+model's SMIs come from an OUT that has completed, and HLT is not restarted). The model keeps no
+high halves of the general registers in compatibility mode: RAX..R15 are saved zero-extended, except
+R11 (`LongModeState.r11`) and RIP/RSP (`ripHi`, `rspHi`). QEMU's qemu-system-i386, which has no long
+mode, uses Intel's 32-bit map instead; `qemu-system-x86_64` with a long-mode CPU uses the AMD64 map
+(with revision 20064h). -/
 
-/-- Offset in the state-save map of the cache (attr, limit, base) of segment register `k`. -/
-@[inline] def smmSegOff (k : UInt32) : UInt32 := if k < 3 then 0x7F84 + 12 * k else 0x7F2C + 12 * (k - 3)
+/-- SMM revision identifier (APM vol. 2, 10.2.4): bits 15:0 = 0064h (the AMD64 map), bit 16 I/O
+instruction restart and bit 17 SMBASE relocation ("always set to 1" by AMD64 implementations). -/
+def smmRevision : UInt32 := 0x00030064
 
-/-- Enter SMM: save the state and load the SMM execution environment. -/
+/-- Offset (from SMBASE + 8000h) of the save-map slot of segment register `k` (ES, CS, SS, DS, FS, GS). -/
+@[inline] def smmSegOff (k : UInt32) : UInt32 := 0x7E00 + 0x10 * k
+
+/-- The 64-bit base of FS (`k` = 4) or GS (5): bits 63:32 from FS_BASE/GS_BASE if the cache is the one
+WRMSR produced (`LongModeState.fsBase`), else the cache's 32-bit base. -/
+def segBase64 (c : Cpu) (k : UInt8) (sr : SegReg) : UInt64 :=
+  let saved := if k == SegN.FS then c.lmx.fsBase else if k == SegN.GS then c.lmx.gsBase else none
+  match saved with
+  | some (cache, b) => if cache == sr then b else sr.base.toUInt64
+  | none => sr.base.toUInt64
+
+/-- Enter SMM: save the state and load the SMM execution environment (APM vol. 2, 10.3, table 10-3). -/
 def smmEnter : M Unit := do
   let c ← cpu
-  -- the AMD64 SMRAM state-save format of long mode (with EFER) is not modelled
-  if LongMode.lma c then unsupported "SMM entry in long mode"
   let sb := c.smbase + 0x8000
   let w := fun (o v : UInt32) => physWr (sb + o).toUInt64 4 v
-  w 0x7FFC c.cr0
-  w 0x7FF8 c.cr3
-  w 0x7FF4 c.eflags
-  w 0x7FF0 c.eip
-  for k in [0:8] do w (0x7FD0 + 4 * k.toUInt32) (c.getReg k.toUInt8)
-  w 0x7FCC c.dr6
-  w 0x7FC8 c.dr7
-  w 0x7FC4 c.tr.sel.toUInt32
-  w 0x7F64 c.tr.base
-  w 0x7F60 c.tr.limit
-  w 0x7F5C c.tr.attr
-  w 0x7FC0 c.ldtr.sel.toUInt32
-  w 0x7F80 c.ldtr.base
-  w 0x7F7C c.ldtr.limit
-  w 0x7F78 c.ldtr.attr
-  w 0x7F74 c.gdtBase
-  w 0x7F70 c.gdtLimit
-  w 0x7F58 c.idtBase
-  w 0x7F54 c.idtLimit
+  let w2 := fun (o v : UInt32) => physWr (sb + o).toUInt64 2 (v &&& 0xFFFF)
+  let w8 := fun (o : UInt32) (v : UInt64) => do w o v.toUInt32; w (o + 4) (v >>> 32).toUInt32
   for k in [0:6] do
     let s := c.getSeg k.toUInt8
-    let k32 := k.toUInt32
-    w (0x7FA8 + 4 * k32) s.sel.toUInt32
-    w (smmSegOff k32) s.attr
-    w (smmSegOff k32 + 4) s.limit
-    w (smmSegOff k32 + 8) s.base
-  w 0x7F14 c.cr4
+    let o := smmSegOff k.toUInt32
+    w2 o s.sel.toUInt32
+    w2 (o + 2) s.attr
+    w (o + 4) s.limit
+    w8 (o + 8) (segBase64 c k.toUInt8 s)
+  w 0x7E60 0; w2 0x7E64 c.gdtLimit; w2 0x7E66 0; w8 0x7E68 c.gdtBase.toUInt64
+  w2 0x7E70 c.ldtr.sel.toUInt32; w2 0x7E72 c.ldtr.attr; w 0x7E74 c.ldtr.limit; w8 0x7E78 c.ldtr.base.toUInt64
+  w 0x7E80 0; w2 0x7E84 c.idtLimit; w2 0x7E86 0; w8 0x7E88 c.idtBase.toUInt64
+  w2 0x7E90 c.tr.sel.toUInt32; w2 0x7E92 c.tr.attr; w 0x7E94 c.tr.limit; w8 0x7E98 c.tr.base.toUInt64
+  -- I/O restart RIP/RCX/RSI/RDI, I/O restart dword and bytes, auto-halt: none
+  for k in [0:12] do w (0x7EA0 + 4 * k.toUInt32) 0
+  w8 0x7ED0 c.efer.toUInt64
+  -- SVM guest fields (no guest is interrupted)
+  for k in [0:8] do w (0x7ED8 + 4 * k.toUInt32) 0
   w 0x7EFC smmRevision
-  w 0x7EF8 c.smbase
+  w 0x7F00 c.smbase
+  w8 0x7F48 c.cr4.toUInt64
+  w8 0x7F50 c.cr3.toUInt64
+  w8 0x7F58 c.cr0.toUInt64
+  w8 0x7F60 c.dr7.toUInt64
+  w8 0x7F68 c.dr6.toUInt64
+  w8 0x7F70 c.eflags.toUInt64
+  w8 0x7F78 (LongMode.rip c)
+  -- R15 .. R8 (only R11 is kept by the model)
+  for k in [0:8] do w8 (0x7F80 + 8 * k.toUInt32) (if k == 4 then c.lmx.r11 else 0)
+  -- RDI, RSI, RBP, RSP, RBX, RDX, RCX, RAX
+  let regs : List UInt64 := [c.edi.toUInt64, c.esi.toUInt64, c.ebp.toUInt64, LongMode.rsp c, c.ebx.toUInt64,
+                             c.edx.toUInt64, c.ecx.toUInt64, c.eax.toUInt64]
+  for (v, k) in regs.zip (List.range 8) do w8 (0x7FC0 + 8 * k.toUInt32) v
   let flat (sel : UInt16) (base : UInt32) : SegReg := { sel, base, limit := 0xFFFFFFFF, attr := 0x8093 }
   modCpu fun c => { c with
     smm := true, halted := false, shadow := false,
@@ -785,56 +821,112 @@ def smmEnter : M Unit := do
     sysbx := { c.sysbx with smmNmiBlocked := c.sysbx.nmiBlocked, nmiBlocked := true },
     eflags := 2, eip := 0x8000,
     cr0 := c.cr0 &&& ~~~(CR0.PE ||| CR0.EM ||| CR0.TS ||| CR0.PG), cr4 := 0, dr7 := 0x400, bpOn := false,
+    -- EFER = 0 (table 10-3), so LMA = 0: SMM code runs in legacy real or protected mode
+    efer := 0,
     cs := flat (c.smbase >>> 4).toUInt16 c.smbase,
-    ds := flat 0 0, es := flat 0 0, ss := flat 0 0, fs := flat 0 0, gs := flat 0 0 }
+    ds := flat 0 0, es := flat 0 0, ss := flat 0 0, fs := flat 0 0, gs := flat 0 0,
+    lmx := { c.lmx with ripHi := 0, rspHi := 0, fsBase := none, gsBase := none } }
   flushTlbAll
 
-/-- RSM: #UD outside SMM; otherwise restore the saved state (a relocated SMBASE takes effect for the
-next SMI). An inconsistent saved state (paging without protection) shuts the processor down. -/
+/-- EFER after RSM from the saved image `e` (APM vol. 2, 10.4): LMA = the saved LME ∧ CR0.PG ∧
+CR4.PAE ("The EFER.LMA register bit is set to the value obtained by logically ANDing the SMRAM values
+of EFER.LME, CR0.PG, and CR4.PAE"), and SVME stays as it is (`cur`; vol. 3 RSM: "RSM cannot modify
+EFER.SVME"). -/
+def rsmEfer (e cur cr0 cr4 : UInt32) : UInt32 :=
+  -- LMA (bit 10) = LME (bit 8) ∧ PG (CR0 bit 31) ∧ PAE (CR4 bit 5)
+  let lma := ((e >>> 8) &&& (cr0 >>> 31) &&& (cr4 >>> 5) &&& 1) <<< 10
+  (e &&& ~~~(EFER.LMA ||| EFER.SVME)) ||| (cur &&& EFER.SVME) ||| lma
+
+/-- The saved state is invalid and RSM shuts the processor down (APM vol. 2, 10.4): CR0.PE = 0 with
+PG = 1, CR0.NW = 1 with CD = 0, CR0 bits 63:32, a reserved CR4 bit (every bit MOV CR4 accepts is valid:
+an SMI taken while it is set must be able to return), DR6/DR7 bits 63:32, an unsupported EFER bit,
+EFER.LME ∧ CR0.PG with CR4.PAE = 0, or with CS.L = CS.D = 1. -/
+def rsmInvalid (cr0 cr4 dr6 dr7 efer : UInt64) (csAttr : UInt32) : Bool :=
+  let c0 := cr0.toUInt32
+  (c0 &&& CR0.PG != 0 && c0 &&& CR0.PE == 0) || (c0 &&& CR0.NW != 0 && c0 &&& CR0.CD == 0) ||
+  cr0 >>> 32 != 0 || cr4 &&& ~~~Cpuid.cr4Writable.toUInt64 != 0 || dr6 >>> 32 != 0 || dr7 >>> 32 != 0 ||
+  efer &&& ~~~(Cpuid.eferWritable ||| EFER.LMA).toUInt64 != 0 ||
+  (efer.toUInt32 &&& EFER.LME != 0 && c0 &&& CR0.PG != 0 &&
+    (cr4.toUInt32 &&& CR4.PAE == 0 || csAttr &&& 0x6000 == 0x6000))
+
+/-- Canonical form of a 48-bit virtual address (bits 63:48 copies of bit 47). -/
+@[inline] def canon48 (v : UInt64) : UInt64 :=
+  if v &&& 0x800000000000 != 0 then v ||| 0xFFFF000000000000 else v &&& 0x0000FFFFFFFFFFFF
+
+/-- RSM: #UD outside SMM; otherwise restore the saved state of the AMD64 map (a relocated SMBASE takes
+effect for the next SMI). An invalid saved state (`rsmInvalid`, or a changed revision identifier)
+shuts the processor down; EFER.LMA is recomputed (`rsmEfer`), RFLAGS.VM = VM ∧ CR0.PE ∧ ¬LMA, FS/GS
+bases are canonicalized, and the PDPTEs are reloaded for legacy PAE paging (10.4). -/
 def rsm : M Unit := do
   let c ← cpu
   if !c.smm then ud
   let sb := c.smbase + 0x8000
   let r := fun (o : UInt32) => physRd (sb + o).toUInt64 4
-  let cr0 := ((← r 0x7FFC) &&& 0xE005003F) ||| CR0.ET
-  let cr4 ← r 0x7F14
-  if cr0 &&& CR0.PG != 0 && cr0 &&& CR0.PE == 0 then throw (.shutdown "RSM: invalid saved CR0")
-  -- the 32-bit save map has no EFER: returning to paging with EFER.LME = 1 would need EFER.LMA from it
-  if cr0 &&& CR0.PG != 0 && c.efer &&& EFER.LME != 0 then unsupported "RSM to paging with EFER.LME = 1"
-  -- a reserved CR4 bit in the saved state shuts the processor down (SDM vol. 3, RSM: "any reserved bit of
-  -- CR4 is set to 1"; AMD APM vol. 3 RSM: an invalid saved state causes shutdown);
-  -- every bit MOV CR4 accepts is valid: an SMI taken while it is set must be able to return
-  if cr4 &&& ~~~Cpuid.cr4Writable != 0 then throw (.shutdown "RSM: invalid saved CR4")
-  let cr3 ← r 0x7FF8
-  let efl ← r 0x7FF4
-  let eip ← r 0x7FF0
-  let mut regs : Array UInt32 := #[]
-  for k in [0:8] do regs := regs.push (← r (0x7FD0 + 4 * k.toUInt32))
-  let dr6 ← r 0x7FCC
-  let dr7 ← r 0x7FC8
-  let seg := fun (sel base limit attr : UInt32) =>
-    ({ sel := sel.toUInt16, base, limit, attr := attr &&& 0xF0FF } : SegReg)
-  let tr := seg (← r 0x7FC4) (← r 0x7F64) (← r 0x7F60) (← r 0x7F5C)
-  let ldtr := seg (← r 0x7FC0) (← r 0x7F80) (← r 0x7F7C) (← r 0x7F78)
-  let gdtBase ← r 0x7F74
-  let gdtLimit := (← r 0x7F70) &&& 0xFFFF
-  let idtBase ← r 0x7F58
-  let idtLimit := (← r 0x7F54) &&& 0xFFFF
-  let mut segs : Array SegReg := #[]
-  for k in [0:6] do
-    let k32 := k.toUInt32
-    segs := segs.push (seg (← r (0x7FA8 + 4 * k32)) (← r (smmSegOff k32 + 8)) (← r (smmSegOff k32 + 4))
-                            (← r (smmSegOff k32)))
+  let r2 := fun (o : UInt32) => physRd (sb + o).toUInt64 2
+  let r8 := fun (o : UInt32) => do
+    let lo ← r o
+    let hi ← r (o + 4)
+    return (hi.toUInt64 <<< 32) ||| lo.toUInt64
+  let cr0q ← r8 0x7F58
+  let cr4q ← r8 0x7F48
+  let cr3q ← r8 0x7F50
+  let dr6q ← r8 0x7F68
+  let dr7q ← r8 0x7F60
+  let eferq ← r8 0x7ED0
+  let csAttr ← r2 (smmSegOff 1 + 2)
   let rev ← r 0x7EFC
-  let nsb ← if rev &&& 0x20000 != 0 then r 0x7EF8 else pure c.smbase
+  if rsmInvalid cr0q cr4q dr6q dr7q eferq csAttr || rev != smmRevision then
+    throw (.shutdown "RSM: invalid saved state")
+  -- CR3 above 4 GiB (bits 51:32) cannot be held by the model's 32-bit CR3
+  if cr3q >>> 32 != 0 then unsupported "RSM: CR3 above 4 GiB"
+  let cr0 := cr0q.toUInt32 ||| CR0.ET
+  let cr4 := cr4q.toUInt32
+  let cr3 := cr3q.toUInt32
+  let efer := rsmEfer eferq.toUInt32 c.efer cr0 cr4
+  let lma := efer &&& EFER.LMA != 0
+  let rfl ← r8 0x7F70
+  let rip ← r8 0x7F78
+  let mut regs : Array UInt64 := #[]
+  for k in [0:8] do regs := regs.push (← r8 (0x7FC0 + 8 * k.toUInt32))
+  let r11 ← r8 0x7FA0
+  let seg := fun (sel attr limit : UInt32) (base : UInt64) =>
+    ({ sel := sel.toUInt16, base := base.toUInt32, limit, attr := attr &&& 0xF0FF } : SegReg)
+  let tr := seg (← r2 0x7E90) (← r2 0x7E92) (← r 0x7E94) (← r8 0x7E98)
+  let ldtr := seg (← r2 0x7E70) (← r2 0x7E72) (← r 0x7E74) (← r8 0x7E78)
+  let gdtLimit ← r2 0x7E64
+  let gdtBase := (← r8 0x7E68).toUInt32
+  let idtLimit ← r2 0x7E84
+  let idtBase := (← r8 0x7E88).toUInt32
+  let mut segs : Array (SegReg × UInt64) := #[]
+  for k in [0:6] do
+    let o := smmSegOff k.toUInt32
+    let b ← r8 (o + 8)
+    segs := segs.push (seg (← r2 o) (← r2 (o + 2)) (← r (o + 4)) b, b)
+  let nsb ← if rev &&& 0x20000 != 0 then r 0x7F00 else pure c.smbase
+  let fl := (rfl.toUInt32 &&& Flag.valid) ||| 2
+  let fl := if cr0 &&& CR0.PE == 0 || lma then fl &&& ~~~Flag.VM else fl
+  -- RIP/RSP bits 63:32 are kept only for a return to 64-bit mode (the model's invariant: 0 elsewhere)
+  let in64 := lma && segs[1]!.1.attr &&& 0x2000 != 0
+  let fsb := canon48 segs[4]!.2
+  let gsb := canon48 segs[5]!.2
   modCpu fun c => Id.run do
-    let mut c := { c.setDr7 dr7 with smm := false, smbase := nsb, cr0, cr3, cr4, eflags := (efl &&& Flag.valid) ||| 2,
-                                     eip, dr6, tr, ldtr, gdtBase, gdtLimit, idtBase, idtLimit,
-                                     sysbx := { c.sysbx with nmiBlocked := c.sysbx.smmNmiBlocked } }
-    for k in [0:8] do c := c.setReg k.toUInt8 regs[k]!
-    for k in [0:6] do c := c.setSeg k.toUInt8 segs[k]!
+    let c0 := c.setDr7 dr7q.toUInt32
+    let mut c := { c0 with smm := false, smbase := nsb, cr0 := cr0, cr3 := cr3, cr4 := cr4, efer := efer }
+    c := { c with eflags := fl, eip := rip.toUInt32, dr6 := dr6q.toUInt32, tr, ldtr, gdtBase, gdtLimit,
+                  idtBase, idtLimit, sysbx := { c.sysbx with nmiBlocked := c.sysbx.smmNmiBlocked } }
+    -- RDI, RSI, RBP, RSP, RBX, RDX, RCX, RAX
+    let order : List UInt8 := [7, 6, 5, 4, 3, 2, 1, 0]
+    for (reg, k) in order.zip (List.range 8) do c := c.setReg reg regs[k]!.toUInt32
+    for k in [0:6] do c := c.setSeg k.toUInt8 segs[k]!.1
+    -- FS/GS bases above 4 GiB as FS_BASE/GS_BASE would set them
+    c := { c with lmx := { c.lmx with
+      ripHi := if in64 then (rip >>> 32).toUInt32 else 0,
+      rspHi := if in64 then (regs[3]! >>> 32).toUInt32 else 0,
+      r11,
+      fsBase := if fsb >>> 32 != 0 then some (c.fs, fsb) else none,
+      gsBase := if gsb >>> 32 != 0 then some (c.gs, gsb) else none } }
     return c
-  if cr0 &&& CR0.PG != 0 && cr4 &&& CR4.PAE != 0 then
+  if cr0 &&& CR0.PG != 0 && cr4 &&& CR4.PAE != 0 && !lma then
     let p ← tryCatch (readPdptes cr3) fun _ => throw (.shutdown "RSM: invalid PDPTEs")
     modCpu fun c => { c with pdpte := p }
   flushTlbAll

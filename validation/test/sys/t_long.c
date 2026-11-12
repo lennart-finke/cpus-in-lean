@@ -37,6 +37,10 @@
 #define CGBAD 0x168     /* 64-bit call gate whose upper half has type bits set */
 #define CG32T 0x178     /* 64-bit call gate to 32-bit code (KCODE) */
 #define LDTD 0x188      /* LDT descriptor */
+#define KC64D2 0x1A0    /* 64-bit code, DPL 2 */
+#define DS16D2 0x1A8    /* 16-bit data (B = 0), DPL 2 */
+#define SSB 0x1B0       /* 32-bit data, DPL 0, base 0x1000 */
+#define CG4G 0x1C0       /* 64-bit call gate, DPL 0, to KC64:1_0000_0000h + stub(0xE2) */
 #define TSSEND 0x1F8    /* TSS descriptor in the last GDT entry: only 8 bytes within the limit */
 
 static u64 lgdt_[NG] __attribute__((aligned(16)));
@@ -50,6 +54,7 @@ static u8 iststack[4096] __attribute__((aligned(4096))); /* IST1 */
 static u32 tss64[26] __attribute__((aligned(128)));
 static u64 ldt_[4] __attribute__((aligned(8)));
 static u8 code16[64] __attribute__((aligned(16)));
+static u8 ostack[8192] __attribute__((aligned(4096)));   /* stacks of the outer-privilege returns */
 static u64 *pml4, *pdpt, *pd0, *pdw, *ptw;
 static u8 *data;                 /* 4 window pages */
 static u32 big2m;                /* a 2 MiB aligned physical region */
@@ -115,6 +120,17 @@ static void showrec(const char *n, int vec) {
 	        RDCR(2));
 }
 
+/* ---- SMM (the handler of t_smm.c, which reads either save-state map) ---- */
+extern char smi_h[], smi_h_end[];
+#define SMS ((volatile u32 *)0x6000)
+static void lm_pci_w8(u32 dev, u32 reg, u8 v) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); outb(0xCFC + (reg & 3), v); }
+static u8 lm_pci_r8(u32 dev, u32 reg) { outl(0xCF8, 0x80000000 | dev | (reg & 0xFC)); return inb(0xCFC + (reg & 3)); }
+
+/* model-only: an SMM handler that sets LME and LMA in the saved EFER of a state without paging */
+__asm__(".code16\n.globl lm_smi_efer\nlm_smi_efer:\n movw %cs, %si\n movzwl %si, %esi\n shll $4, %esi\n"
+        " movl $0x500, 0xfed0(%esi)\n rsm\n.globl lm_smi_efer_end\nlm_smi_efer_end:\n.code32\n");
+extern char lm_smi_efer[], lm_smi_efer_end[];
+
 /* ---- descriptors ---- */
 static u64 gate64lo(u16 sel, u64 off, u32 access, u32 ist) {
 	u32 lo = ((u32)off & 0xFFFF) | ((u32)sel << 16);
@@ -147,6 +163,10 @@ static void build_tables(void) {
 	gdt_gate(CG32T, KCODE, stub_at[0xF5], 0x8C, 0);
 	lgdt_[LDTD >> 3] = seg_desc((u32)ldt_, sizeof ldt_ - 1, 0x82, 0);
 	lgdt_[TSSEND >> 3] = seg_desc((u32)tss64, 0x67, 0x89, 0);
+	lgdt_[KC64D2 >> 3] = seg_desc(0, 0xFFFFF, 0xDA, 0xA);
+	lgdt_[DS16D2 >> 3] = seg_desc(0, 0xFFFF, 0xD2, 0x0);
+	lgdt_[SSB >> 3] = seg_desc(0x1000, 0xFFFFF, 0x92, 0xC);
+	gdt_gate(CG4G, KC64, 0x100000000ULL | stub_at[0xE2], 0x8C, 0);
 	ldt_[1] = seg_desc(0, 0xFFFFF, 0x92, 0xC);
 	/* 64-bit TSS: RSP0 at +4, IST1 at +0x24, I/O map base beyond the limit */
 	*(u64 *)((u8 *)tss64 + 4) = (u32)kstack64 + sizeof kstack64;
@@ -607,6 +627,47 @@ void test_long(void) {
 	showrec("lm.retf.64", TRY(__asm__ volatile("pushl %0\n pushl %1\n lret" :: "i"(KC64), "r"(stub_at[0xF9]) : "memory")));
 	showrec("lm.iret.64", TRY(__asm__ volatile("pushfl\n pushl %0\n pushl %1\n iret" :: "i"(KC64), "r"(stub_at[0xFA]) : "memory")));
 	{
+		/* IRET and RETF from CPL 0 to 64-bit code at CPL 2: in 64-bit mode RSP is the popped value
+		   (+ RETF's immediate), whatever SS.B (a null SS has none, DS16D2 is a 16-bit segment; APM vol. 3
+		   IRET "RSP.s = temp_RSP", RET (Far) "RSP.s = temp_RSP + temp_IMM", vol. 2 2.4.5). The stack is
+		   reached through the 1 GiB alias at 0x80000000, so its address bits 31:16 differ from ESP's. The
+		   CPL-2 stub's IRETQ to CPL 0 is #GP(KCODE), whose frame (taken on RSP0) holds the stub's RSP. */
+		u32 top = 0x80000000u + (u32)ostack + 0x1F00;
+		showrec("lm.iret.64.outer", TRY(__asm__ volatile("pushl $2\n pushl %0\n pushfl\n pushl %1\n pushl %2\n iret"
+		        :: "r"(top + 6), "i"(KC64D2 | 2), "r"(stub_at[0xE0]) : "memory")));
+		showrec("lm.retf.64.outer16", TRY(__asm__ volatile("pushl %0\n pushl %1\n pushl $0\n pushl $0\n pushl %2\n pushl %3\n lret $8"
+		        :: "i"(DS16D2 | 2), "r"(top + 0x0A), "i"(KC64D2 | 2), "r"(stub_at[0xE1]) : "memory")));
+		/* a same-privilege CALL through a 64-bit call gate pushes CS and RIP on the flat 64-bit stack at
+		   RSP (CS is already 64-bit code: the SS base is not used; APM vol. 3 CALL (Far)); the stub
+		   records them from RSP. SS = SSB has base 0x1000. */
+		u32 esp_b = (u32)ostack + 0x800;
+		for (u32 i = 0; i < 0x40; i++) ostack[0x7C0 + i] = ostack[0x17C0 + i] = 0x5A;
+		showrec("lm.call.cg0.ssbase", TRY(__asm__ volatile("movl %0, %%ss\n movl %1, %%esp\n lcall %2, $0"
+		        :: "r"((u32)SSB), "r"(esp_b), "i"(CG0) : "memory")));
+	}
+	{
+		/* breakpoints and 64-bit linear addresses. Outside 64-bit mode MOV DRn writes 32 bits, so DR0-DR3
+		   hold addresses below 4 GiB, and a breakpoint compares the whole linear address: the first
+		   instruction at RIP = 1_0000_0000h + X does not match DR0 = X, nor does a frame pushed at
+		   4 GiB + Y (an IST stack above 4 GiB) match a write breakpoint at Y. The 1 GiB page at 4 GiB
+		   maps physical 0 (the stub and the IST stack are reached through it). */
+		pdpt[4] = 0x83;
+		WRCR(3, (u32)pml4);
+		WRDR(0, stub_at[0xE2]);
+		WRDR(7, 0x101);                                   /* L0, LE: execution breakpoint at X */
+		showrec("lm.db.rip4g", TRY(lcall(CG4G, 0)));
+		u32 ist = (u32)iststack + sizeof iststack - 8;
+		*(u64 *)((u8 *)tss64 + 0x24) = 0x100000000ULL | ist;
+		WRDR(1, (ist & ~0xF) - 8);                        /* the SS slot of the frame, below 4 GiB */
+		WRDR(7, 0x00900104);                              /* L1, LE: 8-byte write breakpoint */
+		showrec("lm.db.push4g", TRY(__asm__ volatile("int $0x50")));
+		WRDR(7, 0);
+		kprintf("lm.db.dr6: %x\n", RDDR(6) & 0xF);
+		*(u64 *)((u8 *)tss64 + 0x24) = ist;
+		pdpt[4] = 0;
+		WRCR(3, (u32)pml4);
+	}
+	{
 		/* ring 3 -> 64-bit call gate DPL 3 (inner stack RSP0, null SS) */
 		static u8 snip[8] = { 0x9A, 0, 0, 0, 0, (u8)CG3, (u8)(CG3 >> 8), 0xCC };   /* call far CG3:0 */
 		showrec("lm.user.call.cg3", run_user((char *)snip, 0, 0));
@@ -623,10 +684,22 @@ void test_long(void) {
 	        (u32)lmrec[8]);
 	wrmsr(EFER, LME | LMA | NXE);
 	wrmsr(0xC0000081, 0); wrmsr(0xC0000083, 0); wrmsr(0xC0000084, 0);
-	/* a code segment with L = 1 and D = 1 (reserved) as a far JMP target: last, since TCG enters it
-	   and the stub's copy of the stack then differs */
-	v = TRY(ljmp(RSVDC, stub_at[0xF6]));
-	kprintf("lm.jmp.rsvdcode: vec=%x err=%x\n", v, v == 13 ? last.err : 0);
+	/* an SMI in compatibility mode: the AMD64 save-state map (used in every mode) holds EFER with LME
+	   and LMA, SMM runs with EFER = 0, and RSM returns to long mode with LMA = LME & PG & PAE (AMD APM
+	   vol. 2, 10.2.3, table 10-3, 10.4) */
+	{
+		lm_pci_w8(0x0B00, 0x5B, lm_pci_r8(0x0B00, 0x5B) | 0x02);   /* PIIX4: APMC_EN */
+		lm_pci_w8(0x0000, 0x72, 0x4A);                             /* i440FX: D_OPEN */
+		memcpy((void *)0xA8000, smi_h, smi_h_end - smi_h);
+		for (int i = 0; i < 20; i++) SMS[i] = 0;
+		u32 a = 0x1234;
+		__asm__ volatile("outb %%al, $0xb2" : "+a"(a) :: "memory");
+		kprintf("lm.smm: count=%d eax=%x saved_eax=%x eip_ok=%d cr0=%x rev=%x cs_sel=%x cs_attr=%x cr4=%x efer=%x cr3_ok=%d smm_cr0=%x\n",
+		        SMS[0], a, SMS[1], SMS[2] != 0, SMS[3], SMS[4], SMS[10], SMS[11], SMS[12], SMS[17], SMS[14] == (u32)pml4,
+		        SMS[7] & 0x8000000F);
+		kprintf("lm.smm.after: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));
+		lm_pci_w8(0x0000, 0x72, 0x0A);
+	}
 
 	lm_fuzz();
 
@@ -660,7 +733,22 @@ void test_long_model(void) {
 	WRCR(4, RDCR(4) & ~0x20);
 	/* MOV CR4 cannot clear PAE while long mode is active (table 14-5). TCG accepts it (and then walks
 	   the 4-level tables as 32-bit ones), so this comes last. */
+	/* RSM computes EFER.LMA = LME & CR0.PG & CR4.PAE from the saved image (AMD APM vol. 2, 10.4): a
+	   saved EFER with LME and LMA but CR0.PG = 0 returns with LMA = 0. TCG loads LMA from the image. */
+	lm_pci_w8(0x0B00, 0x5B, lm_pci_r8(0x0B00, 0x5B) | 0x02);
+	lm_pci_w8(0x0000, 0x72, 0x4A);
+	memcpy((void *)0xA8000, lm_smi_efer, lm_smi_efer_end - lm_smi_efer);
+	__asm__ volatile("outb %%al, $0xb2" :: "a"(0) : "memory");
+	kprintf("lmm.rsm.lma: efer=%x cr0=%x\n", (u32)rdmsr(EFER), RDCR(0));
+	wrmsr(EFER, 0);
+	lm_pci_w8(0x0000, 0x72, 0x0A);
 	lm_on();
+	/* a code segment with L = 1 and D = 1 (reserved in long mode, AMD APM vol. 2, 4.8.1) as the target of a
+	   far JMP: the model raises #GP(selector) as the Intel SDM's JMP pseudocode does for IA-32e mode; AMD's
+	   pseudocode has no such check and real Zen 2 behaviour is unconfirmed, so this is a model choice,
+	   checked here only (TCG enters the segment as 64-bit code). */
+	vec = TRY(ljmp(RSVDC, stub_at[0xF6]));
+	kprintf("lmm.jmp.rsvdcode: vec=%x err=%x\n", vec, vec == 13 ? last.err : 0);
 	vec = TRY(WRCR(4, RDCR(4) & ~0x20));
 	kprintf("lmm.cr4.pae.clear: vec=%x cr4=%x\n", vec, RDCR(4));
 	lm_off();

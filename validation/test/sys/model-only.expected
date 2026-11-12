@@ -148,6 +148,8 @@ ioapicm.version: 00170011
 ioapicm.polarity.low: n=3 0000006f 0000006f 0000006f
 ioapicm.polarity.entry: 0001a06f
 ioapicm.rirr.edge: 0001206f
+ioapicm.nmi.level: n=2 00000002 00000002
+ioapicm.nmi.level.rirr: 00000000
 ioapicm.extint: n=1 00000030
 x2apicm.cpuid1: ebx=00000800 htt=0 x2apic=1
 x2apicm.cpuidb.0: 00000001 00000001 00000100 00000000

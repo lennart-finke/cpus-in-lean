@@ -500,11 +500,14 @@ def acceptFixed (a : Apic) (v : UInt32) (level : Bool := false) : Apic :=
 def ack (a : Apic) (v : UInt32) : Apic := { a with irr := setBit a.irr v false, isr := setBit a.isr v true }
 
 /-- End of interrupt for in-service vector `v`: returns `v` if it was level-triggered (TMR), for the
-EOI message to the I/O APIC, and clears the remote IRR of a level LINT0/LINT1 entry with vector `v`. -/
+EOI message to the I/O APIC, and clears the remote IRR of a level LINT0/LINT1 entry with vector `v`.
+TMR is not changed: it is updated only when an interrupt is accepted into IRR (`rawAccept`; APM vol. 2,
+16.6.3: "When the interrupt is accepted by the local APIC and the IRR bit is set, the associated TMR
+bit is set for level-sensitive interrupts or reset for edge-triggered interrupts"; SDM vol. 3, 13.8.4). -/
 def eoiVec (a : Apic) (v : UInt32) : Apic × Option UInt32 :=
   if !getBit a.isr v then (a, none) else
   let lvl := getBit a.tmr v
-  let a := { a with isr := setBit a.isr v false, tmr := setBit a.tmr v false }
+  let a := { a with isr := setBit a.isr v false }
   if !lvl then (a, none) else
   let clr := fun (e : UInt32) => if e &&& 0xFF == v then e &&& ~~~0x4000 else e
   ({ a with lvt := (a.lvt.set! 3 (clr a.lvt[3]!)).set! 4 (clr a.lvt[4]!) }, some v)
@@ -535,6 +538,18 @@ def timerFired (a : Apic) : Apic :=
   if a.periodic && a.initCount != 0 then
     { a with timerNext := a.timerNext + a.timerDiv * a.initCount.toUInt64 }
   else { a with timerNext := never }
+
+/-- A timer that expired by instruction count `now` (possibly more than one period ago: the timer of
+a CPU that is not running, `Machine.peersTimers`) fires once; a periodic timer is re-armed for its
+first expiry after `now`. Expirations while the vector is still requested coalesce into the one IRR
+bit, as on hardware, so the missed ones are not raised later. -/
+def timerDue (a : Apic) (now : UInt64) : Apic :=
+  let a := a.timerFired
+  if a.timerNext ≤ now && a.timerNext != never then
+    let per := a.timerDiv * a.initCount.toUInt64
+    if per == 0 then a else
+    { a with timerNext := a.timerNext + ((now - a.timerNext) / per + 1) * per }
+  else a
 
 /-- Register read at offset `off` (16-byte aligned) in xAPIC layout; `none` for an unimplemented
 offset (illegal register address). EOI and SEOI are write-only and read 0. -/
@@ -680,7 +695,8 @@ entries (10h + 2n: bits 31:0, 11h + 2n: bits 63:32) with vector, delivery mode (
 priority, SMI, NMI, INIT, ExtINT), destination mode, delivery status (always 0: messages are
 delivered at once), polarity, remote IRR, trigger mode, mask and destination (bits 63:56).
 
-Inputs (`Machine.setIrq`): ISA IRQ n drives pin n, except IRQ 0 (PIT channel 0), which drives pin 2
+NMI, INIT, SMI and ExtINT entries are edge-triggered whatever their trigger-mode bit
+(`IoApic.levelEntry`). Inputs (`Machine.setIrq`): ISA IRQ n drives pin n, except IRQ 0 (PIT channel 0), which drives pin 2
 (the usual override, also QEMU's wiring); the UART is IRQ 4, the RTC IRQ 8 (the model's RTC raises no
 interrupts). Pin 0 is not connected. A pin is asserted when its level differs from the polarity bit
 (1 = active low). Edge-triggered entries send a message on each assertion while unmasked (masked
@@ -739,6 +755,13 @@ def writeWin (s : IoApic) (v : UInt32) : IoApic × Option Nat :=
       let e := if e &&& 0x8000 == 0 then e &&& ~~~0x4000 else e
       ({ s with redir := s.redir.set! p e }, some p)
     else (s, none)
+
+/-- Entry `e` is level-triggered in effect: trigger mode level with delivery mode fixed or lowest
+priority. NMI and INIT are "treated as edge triggered, even if programmed as level"; SMI and ExtINT
+"require an edge trigger mode" (82093AA datasheet, 3.2.4, delivery mode field): none of them is
+accepted into an IRR, so no EOI would ever clear a remote IRR. The model treats all four as
+edge-triggered. (QEMU's TCG sets remote IRR for them as well and then never sends again.) -/
+@[inline] def levelEntry (e : UInt64) : Bool := e &&& 0x8000 != 0 && (e >>> 8) &&& 7 ≤ 1
 
 /-- The message entry `p` sends (8-bit destination, APM 16.6.1). -/
 def msg (s : IoApic) (p : Nat) : Msg :=
