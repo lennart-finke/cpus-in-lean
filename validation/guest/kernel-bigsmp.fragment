@@ -1,0 +1,4 @@
+# Variant of the SMP kernel for more than 8 CPUs (build.sh bigsmp): a 32-bit kernel needs X86_BIGSMP for
+# NR_CPUS > 8 (at most 64).
+CONFIG_X86_BIGSMP=y
+CONFIG_NR_CPUS=64

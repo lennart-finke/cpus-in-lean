@@ -1,6 +1,14 @@
 # CPUs in Lean 4
 
-Formal models of instruction sets and their implementations in Lean 4. Currently, we mainly implement the behavior of the `x86-32` instruction set on the 32-bit mode in AMD EPYC 7742, but others are in scope as well. We have an experimental version of `x86-64`.
+Formal models of instruction sets and their implementations in Lean 4. The main one, [`x86_32/`](x86_32/README.md), models **32-bit mode on an AMD EPYC 7742** (Zen 2): the processor as 32-bit code sees it, in legacy protected, real and virtual-8086 mode and in compatibility mode under long mode. CPUID reports the 7742's identity and, of its feature bits, exactly the implemented ones ([`x86_32/CPUID.md`](x86_32/CPUID.md): 125 of the 162 feature bits of a real 7742's dump; the masked ones, such as the performance-counter extensions, IBS, SME/SEV, AVIC and scalable MCA, with their reasons). There is an experimental model of 64-bit mode, [`x86_64/`](x86_64/); the 32-bit model stops at the first 64-bit instruction and can hand its state to it.
+
+What the IA-32 model covers:
+- the integer instruction set, x87 (exact 80-bit arithmetic, correctly rounded transcendentals), MMX, SSE, SSE2;
+- the Zen 2 extensions usable from 32-bit code: SSE3, SSSE3, SSE4.1, SSE4.2, SSE4a, MisalignSse, AES-NI, PCLMULQDQ, SHA, AVX, AVX2, FMA3, F16C, POPCNT, LZCNT, BMI1, BMI2, ADX, MOVBE, RDRAND/RDSEED, RDTSCP/RDPID, CLFLUSHOPT/CLWB/CLZERO, MONITOR/MWAIT(X), RDPRU, MCOMMIT, the XSAVE family;
+- the system architecture: segmentation, paging (32-bit, PAE, 4-level with NX, global pages, PSE-36, SMEP, SMAP, UMIP), interrupts and exceptions with AMD's NMI and double-fault rules, task switches, call gates, virtual-8086 mode with VME/PVI, debug registers, alignment checking, SYSENTER/SYSCALL, SMM, MSRs, long-mode entry and compatibility mode, SVM with nested paging;
+- a platform with up to 128 CPUs (local APICs and x2APIC, an I/O APIC, PIC, PIT, UART, RTC) under a deterministic scheduler, and a separate x86-TSO memory model.
+
+Not modelled: 64-bit code, AVX-512 and other ISA the 7742 lacks, machine-check sources, caches and timing, and most devices (see [`x86_32/README.md`](x86_32/README.md)).
 
 For example, to run Linux 6.12.111 on it (the guest images are built by `validation/guest/build.sh`, see [Requirements](#requirements)):
 ```
@@ -36,7 +44,9 @@ To prove correctness of binaries with respect to these formal models. This work 
 
 
 ## Correctness
-It's hard to know whether a formal model actually does what it's supposed to. The main ways we test for correctness are fuzzing against real hardware (`IA-32` using 32-bit mode on an AMD EPYC 7742) and QEMU. Sometimes QEMU deviates from Intel's manual, in which case the manual takes precedence. Sometimes the hardware test differs from either the manual and/or QEMU, in which case the hardware gets precedence (though this is highly debatable of course).
+It's hard to know whether a formal model actually does what it's supposed to. The IA-32 model is tested by random differential testing against QEMU (an EPYC-Rome CPU under TCG; ten runs of 20,000 random instructions with 0 mismatches), a system-test kernel compared with QEMU (≈33,000 lines, plus model-only checks of what QEMU cannot run), independent Python references written from the manuals (crypto, FMA/F16C, PCMPxSTRx, XSAVE, VME, SVM, topology, ...), Linux (UP, and SMP with up to 16 CPUs, with transcripts identical to QEMU's), theorems about key properties, and native runs on a real EPYC 7742. Where QEMU deviates from the manuals (AMD's APM first, then Intel's SDM), the manual takes precedence, with every rule citing its section; where hardware differs from the manual and/or QEMU, the hardware gets precedence (though this is debatable).
+
+The integer, x87 and SSE2 core matched the real 7742 on about 475,000 native observations. The Zen 2 extensions have not run on the real processor yet: a self-contained bundle for it (189,240 user-mode cases, including the open questions the manuals leave unsettled) and a KVM harness for the privileged features are prepared; see [`validation/README.md`](validation/README.md). `./verify.sh` runs the gate (`--full` for everything).
 
 
 ## Requirements

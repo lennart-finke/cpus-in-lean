@@ -124,3 +124,4 @@
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)e	\g<1>f	# (same)
 ^(svm\.smp: .* init_exit=)00000000	\g<1>00000063	# (Svm) an INIT that arrives in a guest with the INIT intercept is a #VMEXIT(INIT) and stays pending until GIF = 1 (AMD APM vol. 2, 15.13.4, table 15-12); TCG resets the CPU in guest mode.
 # --- end Svm ---
+^lm\.compat\.cpuid: max=0000000d$	lm.compat.cpuid: max=00000010	# (Integration) CPUID leaf 0 EAX, the highest standard leaf: 10h on the EPYC 7742 (its CPUID dump, x86_32/CPUID.md), which the model reports; QEMU's EPYC-Rome CPU model reports 0Dh.

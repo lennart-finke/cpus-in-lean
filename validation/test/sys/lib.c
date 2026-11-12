@@ -112,6 +112,14 @@ static void sys_exit(void) {
 	for (;;) __asm__ volatile("cli; hlt");
 }
 
+/* The MODEL-ONLY marker. run.sh passes qemu=1 to QEMU, which then stops here: the part after the marker is
+   compared with model-only.expected for the model only (TCG cannot run it), and QEMU's transcript must
+   still end with END. */
+static void model_only(void) {
+	kputs("MODEL-ONLY\n");
+	if (param("qemu", 0)) sys_exit();
+}
+
 void report(const char *what, int vec) {
 	if (vec == 0xFFFF) kprintf("%s: ok\n", what);
 	else kprintf("%s: vec=%x err=%x eip=%x cr2=%x\n", what, vec, last.err, last.eip, last.cr2);
@@ -168,19 +176,19 @@ void sys_main(void) {
 	if (param("smp", 0)) {   /* the SMP transcript (second run of run.sh) */
 		test_smp();
 		test_svm_smp();   /* SVM: a guest on the AP while the BSP sends it IPIs (t_svm.c) */
-		kputs("MODEL-ONLY\n");
+		model_only();
 		test_smp_model();
 		sys_exit();
 	}
 	if (param("svm", 0)) {   /* SVM workstream: only the SVM tests (development runs) */
 		test_svm();
-		kputs("MODEL-ONLY\n");
+		model_only();
 		test_svm_model();
 		sys_exit();
 	}
 	if (param("long", 0)) {   /* long mode: a pass of its own (test/sys/run.sh, qemu-system-x86_64) */
 		test_long();
-		kputs("MODEL-ONLY\n");
+		model_only();
 		test_long_model();
 		sys_exit();
 	}
@@ -217,7 +225,7 @@ void sys_main(void) {
 	test_review();
 	test_svm();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
-	kputs("MODEL-ONLY\n");
+	model_only();
 	test_task_trap();
 	test_xfer_model();
 	test_x87_model();

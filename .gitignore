@@ -28,3 +28,7 @@ bzImage-smp
 vmlinux-smp
 System.map-smp
 **/guest/config-smp
+bzImage-bigsmp
+vmlinux-bigsmp
+System.map-bigsmp
+**/guest/config-bigsmp

@@ -8,8 +8,8 @@ VEX prefix (two- or three-byte), VEX.L, VEX.W, VEX.vvvv, ModRM (register or memo
 or gen.Gen.modrm's addressing; 16-bit addressing and segment overrides sometimes), imm8/is4, and
 the implicit operands (PCMPESTRx lengths in EAX/EDX, VMASKMOVDQU's DS:EDI, a valid MXCSR image for
 VLDMXCSR). A tenth of the cases break one encoding rule (VEX.L, VEX.W, VEX.vvvv, ModRM.mod or reg)
-to test the #UD conditions, but only where the result is not an AVX2 form (isa_forms.NOT_YET_IMPLEMENTED,
-which QEMU executes). The vector state (XMM0-7, YMM0-7 bits 255:128), MXCSR, EFLAGS and memory are
+to test the #UD conditions (or, e.g. with VEX.L = 1, the AVX2 form, which the model implements too).
+The vector state (XMM0-7, YMM0-7 bits 255:128), MXCSR, EFLAGS and memory are
 compared by x86test.
 
 TCG behaviours that are not generated (the system tests check them, with deviation rules or in their
@@ -310,8 +310,6 @@ def gen(g):
                 vvvv = 9
         else:
             what = None
-        if what and isa_forms.not_yet_implemented('vex', map_, pp, op, 0 if mem else 3, reg, L=L, W=W):
-            return None                  # an AVX2 form: QEMU executes it, the model does not yet
     if key == (1, 0, 0x77):
         mem = None
     two = map_ == 1 and W == 0 and vvvv < 8 and random.random() < 0.5

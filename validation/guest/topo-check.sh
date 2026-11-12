@@ -6,10 +6,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 N=${1:-4}
+KERNEL=${KERNEL:-guest/bzImage-smp}   # guest/bzImage-bigsmp for N > 8
 OUT=${OUT:-${TMPDIR:-/tmp}/topocheck$$}
 mkdir -p "$OUT"
 ./.lake/build/bin/x86run --smp "$N" --max 3000000000 --expect "~ # " \
   --send "grep -E '^(processor|physical id|siblings|core id|cpu cores|apicid|initial apicid)' /proc/cpuinfo; echo TOPO-E''ND\n" \
   --expect "TOPO-END" --send "@exit" \
-  guest/bzImage-smp guest/initramfs-smp.cpio "console=ttyS0 no_timer_check" < /dev/null > "$OUT/model.raw" 2>&1 || true
+  "$KERNEL" guest/initramfs-smp.cpio "console=ttyS0 no_timer_check" < /dev/null > "$OUT/model.raw" 2>&1 || true
 python3 test/topo_ref.py cpuinfo "$N" "$OUT/model.raw"

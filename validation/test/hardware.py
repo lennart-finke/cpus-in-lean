@@ -3,6 +3,17 @@
 
 Only the small generated bundle needs to be copied to the x86 server. No Lean
 installation or credentials are needed there. KVM is mandatory: no TCG fallback.
+
+Architectures (`prepare --arch ...`):
+  i386, x86_64  random single instructions (gen.py v1 vectors) in the ring-3 test harness;
+  sys           the IA-32 system-test kernel (test/sys/, built here with clang) in its three passes
+                (main; smp=2 on two CPUs; long=1), whole transcripts including the MODEL-ONLY parts,
+                compared line by line with x86sys. This is the only way to see privileged behaviour
+                (paging, SMEP/SMAP, #AC, call gates, task switches, VME, long-mode entry, SVM as KVM
+                nests it) on the EPYC: the user-mode campaign (native_fp.py) cannot. Under KVM the local
+                APIC, I/O APIC, PIC/PIT, SMM chipset, NMI delivery and nested SVM are KVM's emulation, not
+                the processor's: differences there are not hardware evidence. No QEMU deviation rule is
+                applied; every difference is listed for review (`compare` exits 1 if there is any).
 """
 import argparse
 import hashlib
@@ -19,18 +30,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]  # validation/: builds x86run and x86test
 REPO = ROOT.parent
-MODEL = {'i386': REPO / 'x86_32', 'x86_64': REPO / 'x86_64'}
+MODEL = {'i386': REPO / 'x86_32', 'x86_64': REPO / 'x86_64', 'sys': REPO / 'x86_32'}
+# The system-test passes (test/sys/run.sh): name, kernel command line, CPUs
+SYS_PASSES = [('main', '', 1), ('smp2', 'smp=2', 2), ('long', 'long=1', 1)]
 
 
 def model_root(arch):
-    """The Lake package that builds the arch's test executable (x86test or x64test)."""
-    return ROOT if arch == 'i386' else MODEL['x86_64']
+    """The Lake package that builds the arch's test executable (x86test, x86sys or x64test)."""
+    return MODEL['x86_64'] if arch == 'x86_64' else ROOT
+
+
+def model_exe(arch):
+    return {'i386': 'x86test', 'x86_64': 'x64test', 'sys': 'x86sys'}[arch]
 
 
 def model_sources(arch):
     """The semantics sources and the test driver whose identity is recorded with the evidence."""
-    src = MODEL[arch] / ('X86' if arch == 'i386' else 'X64')
-    return sorted(src.rglob('*.lean')) + [model_root(arch) / 'TestMain.lean']
+    src = MODEL[arch] / ('X64' if arch == 'x86_64' else 'X86')
+    return sorted(src.rglob('*.lean')) + [model_root(arch) / ('SysMain.lean' if arch == 'sys' else 'TestMain.lean')]
 
 
 def digest(path):
@@ -89,10 +106,18 @@ def prepare(args):
     shutil.copyfile(__file__, out / 'hardware.py')
     for arch in args.arch:
         root = model_root(arch)
-        exe = 'x86test' if arch == 'i386' else 'x64test'
+        exe = model_exe(arch)
         checked(['lake', 'build', exe], cwd=root)
         dest = out / arch
         dest.mkdir()
+        if arch == 'sys':
+            checked(['sh', ROOT / 'test/sys/build.sh'], env=dict(os.environ, OUT=str(dest / 'obj')))
+            shutil.copyfile(dest / 'obj/systest.elf', dest / 'systest.elf')
+            shutil.rmtree(dest / 'obj')
+            manifest['architectures'][arch] = dict(passes=SYS_PASSES, model_sha256=digest(root / '.lake/build/bin' / exe))
+            for source in model_sources(arch) + sorted((ROOT / 'test/sys').glob('*.[chS]')):
+                manifest.setdefault('model_sources', {})[str(source.relative_to(REPO))] = digest(source)
+            continue
         checked([sys.executable, root / 'test/gen.py', args.count, args.seed, dest / 'vectors'])
         if arch == 'x86_64':
             directed_sse(dest / 'vectors')
@@ -139,6 +164,10 @@ def run(args):
     result_file.write_text(json.dumps(host, indent=2) + '\n')
     for arch in manifest['architectures']:
         dest = directory / arch
+        if arch == 'sys':
+            host['results'][arch] = run_sys(dest, manifest['architectures'][arch]['passes'], args.timeout)
+            result_file.write_text(json.dumps(host, indent=2) + '\n')
+            continue
         with (dest / 'build.log').open('w') as log:
             flags = ['gcc', '-m32' if arch == 'i386' else '-m64', '-ffreestanding', '-fno-builtin',
                      '-fno-pic', '-fno-pie', '-fno-stack-protector', '-fno-asynchronous-unwind-tables', '-O2']
@@ -164,6 +193,52 @@ def run(args):
         host['results'][arch]['output_sha256'] = digest(dest / 'hardware.out')
         result_file.write_text(json.dumps(host, indent=2) + '\n')
     print('Hardware execution complete. Copy the directory back and run compare.')
+
+
+def run_sys(dest, passes, timeout):
+    """The system-test kernel under KVM, one QEMU run per pass (whole transcript, no qemu=1)."""
+    results = {}
+    for name, cmdline, cpus in passes:
+        command = ['qemu-system-x86_64', '-accel', 'kvm', '-cpu', 'host', '-smp', f'{cpus},sockets={cpus}', '-m', '64',
+                   '-kernel', 'systest.elf', '-append', cmdline, '-display', 'none', '-serial', f'file:{name}.out',
+                   '-monitor', 'none', '-nic', 'none', '-device', 'isa-debug-exit,iobase=0xf4,iosize=4', '-no-reboot']
+        try:
+            with (dest / f'{name}.qemu.log').open('w') as log:
+                rc = subprocess.run(command, cwd=dest, stdout=log, stderr=subprocess.STDOUT, timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            rc = 'timeout'
+        out = dest / f'{name}.out'
+        complete = out.exists() and 'END' in out.read_text(errors='replace').replace('\r', '').splitlines()
+        results[name] = dict(command=command, returncode=rc, complete=complete,
+                             output_sha256=digest(out) if out.exists() else None)
+        print(f'sys {name}: exit {rc}, transcript {"complete" if complete else "INCOMPLETE"}', flush=True)
+    return results
+
+
+def compare_sys(dest, spec, result, timeout):
+    """x86sys on the same kernel and command lines; every differing line is written out for review."""
+    import difflib
+    exe = ROOT / '.lake/build/bin/x86sys'
+    if digest(exe) != spec['model_sha256']:
+        raise ValueError('sys: model executable changed since preparation')
+    differ = 0
+    for name, cmdline, cpus in spec['passes']:
+        r = result[name]
+        hw_path = dest / f'{name}.out'
+        if r['output_sha256'] is None or digest(hw_path) != r['output_sha256']:
+            raise ValueError(f'sys {name}: missing or changed hardware transcript')
+        model = subprocess.run([str(exe), '--smp', str(cpus), '--cmdline', cmdline, str(dest / 'systest.elf')],
+                               capture_output=True, text=True, timeout=timeout).stdout.splitlines()
+        hw = hw_path.read_text(errors='replace').replace('\r', '').splitlines()
+        (dest / f'{name}.model').write_text('\n'.join(model) + '\n')
+        diff = list(difflib.unified_diff(hw, model, f'{name}.out (KVM)', f'{name}.model (x86sys)', lineterm='', n=0))
+        (dest / f'{name}.diff').write_text('\n'.join(diff) + '\n')
+        split = model.index('MODEL-ONLY') if 'MODEL-ONLY' in model else len(model)
+        changed = sum(1 for d in diff if d.startswith('+') and not d.startswith('+++'))
+        differ += changed + (0 if r['complete'] else 1)
+        print(f'sys {name}: {len(hw)} KVM lines, {len(model)} model lines ({split} before MODEL-ONLY); '
+              f'{changed} model lines differ{"" if r["complete"] else "; KVM transcript INCOMPLETE"}; see sys/{name}.diff')
+    return differ == 0
 
 
 def validate_output(path, count, arch, extra_columns=0):
@@ -193,6 +268,9 @@ def compare(args):
     for arch, spec in manifest['architectures'].items():
         dest = directory / arch
         result = hardware['results'][arch]
+        if arch == 'sys':
+            failed |= not compare_sys(dest, spec, result, args.timeout)
+            continue
         if result['returncode'] != 1 or digest(dest / 'hardware.out') != result['output_sha256']:
             raise ValueError(f'{arch}: failed run or changed hardware output')
         validate_output(dest / 'hardware.out', spec['count'], arch)
@@ -228,7 +306,7 @@ def main():
         p = sub.add_parser(name)
         p.add_argument('directory', type=Path)
         if name == 'prepare':
-            p.add_argument('--arch', choices=['i386', 'x86_64'], nargs='+', default=['i386', 'x86_64'])
+            p.add_argument('--arch', choices=['i386', 'x86_64', 'sys'], nargs='+', default=['i386', 'x86_64', 'sys'])
             p.add_argument('--count', type=int, default=10000)
             p.add_argument('--seed', type=int, default=20261021)
         else:

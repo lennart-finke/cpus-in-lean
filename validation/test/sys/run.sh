@@ -1,6 +1,8 @@
 #!/bin/sh
 # System-level differential test: run the test kernel under QEMU and on the Lean model, diff the transcripts.
 #   test/sys/run.sh          (needs qemu-system-i386, qemu-system-x86_64 (long mode), clang, and `lake build x86sys`)
+# QEMU gets qemu=1 on its command line and stops at the MODEL-ONLY marker (lib.c); every transcript, QEMU's
+# and the model's, must end with END, or the run fails.
 # Environment (used by campaign.sh):
 #   CMDLINE   fuzzing parameters for the kernel, e.g. "seed=123 sse=100000" (default: none, fixed seeds)
 #   OUT       output directory (default test/sys/out)
@@ -19,7 +21,7 @@ mkdir -p "$OUT"
 [ -n "${NOBUILD:-}" ] || "$DIR/build.sh"
 ELF="$DIR/out/systest.elf"
 rm -f "$OUT/qemu.txt"
-qemu-system-i386 -cpu "$QEMU_CPU" -m 64 -kernel "$ELF" -append "$CMDLINE" -display none \
+qemu-system-i386 -cpu "$QEMU_CPU" -m 64 -kernel "$ELF" -append "$CMDLINE qemu=1" -display none \
   -serial file:"$OUT/qemu.txt" -monitor none -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot &
 QPID=$!
 ( sleep "$TIMEOUT"; kill $QPID 2>/dev/null ) &
@@ -53,7 +55,7 @@ fi
 # Second transcript (SMP workstream): the same kernel with two CPUs and "smp=2" runs only the
 # multiprocessor tests (t_smp.c). QEMU: one CPU per package (-smp 2,sockets=2), as SeaBIOS starts.
 rm -f "$OUT/qemu-smp.txt"
-qemu-system-i386 -cpu "$QEMU_CPU" -smp 2,sockets=2 -m 64 -kernel "$ELF" -append "smp=2" -display none \
+qemu-system-i386 -cpu "$QEMU_CPU" -smp 2,sockets=2 -m 64 -kernel "$ELF" -append "smp=2 qemu=1" -display none \
   -serial file:"$OUT/qemu-smp.txt" -monitor none -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot &
 QPID=$!
 ( sleep "$TIMEOUT"; kill $QPID 2>/dev/null ) &
@@ -77,7 +79,7 @@ fi
 # stubs (LongStub.lean). Same deviation rules; model-only part against model-only-long.expected.
 QEMU_CPU_LM=${QEMU_CPU_LM:-$(echo "$QEMU_CPU" | sed 's/,-lm//')}
 rm -f "$OUT/qemu-long.txt"
-qemu-system-x86_64 -cpu "$QEMU_CPU_LM" -m 64 -kernel "$ELF" -append "long=1 $CMDLINE" -display none \
+qemu-system-x86_64 -cpu "$QEMU_CPU_LM" -m 64 -kernel "$ELF" -append "long=1 $CMDLINE qemu=1" -display none \
   -serial file:"$OUT/qemu-long.txt" -monitor none -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot &
 QPID=$!
 ( sleep "$TIMEOUT"; kill $QPID 2>/dev/null ) &
@@ -96,4 +98,9 @@ if diff -u "$DIR/model-only-long.expected" "$OUT/model-long.only.txt" > "$OUT/di
 else
   echo "system tests (long mode): model-only section differs from model-only-long.expected"; cat "$OUT/diff-long.only.txt"; fail=1
 fi
+for t in qemu model qemu-smp model-smp qemu-long model-long; do
+  if ! tr -d '\r' < "$OUT/$t.txt" | grep -q '^END$'; then
+    echo "system tests: $t.txt lacks its END terminator (the run stopped early)"; tail -3 "$OUT/$t.txt"; fail=1
+  fi
+done
 exit $fail
