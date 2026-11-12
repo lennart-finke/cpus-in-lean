@@ -1,18 +1,23 @@
-# IA-32 floating-point hardware campaign
+# IA-32 user-mode hardware campaign (the EPYC bundle)
 
-This suite fills a gap in the documented native campaigns: IA-32 x87, MMX,
-SSE and SSE2, including floating-point state and exceptions. The older native
-IA-32 runner captures integer state; the older focused SSE campaign targets
-the **x86-64 model**. This suite executes in **32-bit compatibility mode** and
-compares with the **IA-32 model**.
+This suite runs single 32-bit instructions natively on an x86-64 Linux machine, in **32-bit
+compatibility mode**, captures the complete user-visible state (GPRs, flags, x87, MMX, XMM, YMM upper
+halves, MXCSR, three memory hashes, the fault) and compares it with the **IA-32 model** run the same
+way (`x86fp --compat`). It started as the x87/MMX/SSE/SSE2 campaign and now carries every user-mode
+family of the Zen 2 work: the GPR extensions, SSE3..SSE4a and MisalignSse, AES/PCLMULQDQ/SHA, the
+XSAVE family, AVX, AVX2/FMA/F16C, alignment checking, the instructions that differ in compatibility
+mode, and the open hardware questions (`validation/README.md`, "Open questions for the EPYC"). The
+older native IA-32 runner captures integer state; the older focused SSE campaign targets the
+**x86-64 model**.
 
 ## Run on the Linux box
 
-The prepared `ia32-fp-linux-paste.sh` is self-contained. Copy it to the Linux
-box and paste:
+The prepared paste script is self-contained. The current one is
+`validation/test/out/ia32-epyc-linux-paste.sh` (22.9 MB; seed 20261112, `--count 10000`; regenerate
+with the command under "Prepare" below). Copy it to the Linux box and run:
 
 ```sh
-bash ia32-fp-linux-paste.sh
+bash ia32-epyc-linux-paste.sh
 ```
 
 Alternatively, paste the entire contents of that script into a Bash terminal.
@@ -25,15 +30,16 @@ network connection. The executable is a freestanding ELF64 process that enters
 If using the smaller `.tar.gz` bundle instead:
 
 ```sh
-tar -xzf ia32-fp-linux.tar.gz
-python3 ia32-fp-linux/native_fp.py run ia32-fp-linux
+tar -xzf ia32-epyc-linux.tar.gz
+python3 ia32-epyc-linux/native_fp.py run ia32-epyc-linux
 ```
 
 The runner prints the results directory and `results.tar.gz` location. Return
 that archive; it includes the CPU identity/microcode information from
 `/proc/cpuinfo`, kernel version, complete raw observations, calibration logs,
-per-case differences and a summary. Allow a few minutes and roughly 400 MB of
-free disk space. The default timeout is 600 seconds **per batch**; override with
+per-case differences and a summary. The bundle holds 189,240 cases in 66 campaigns; allow
+several minutes (the earlier 120,000-case campaign took a few minutes on the 7742) and about 1 GB of
+free disk space (the unpacked bundle is 402 MB, the raw results about as much again). The default timeout is 600 seconds **per batch**; override with
 `--timeout 1800` if needed. A run on a VM records the guest CPU environment;
 use a bare-metal host when collecting physical-CPU evidence.
 
@@ -63,20 +69,25 @@ Before the campaigns, `run` stores every CPUID leaf and subleaf of the machine
 (`oracle cpuid`) as `cpuid.txt` in the results, and the reported features in
 `hardware.json`. A case family may require CPUID features (`fp_cases.FAMILIES`,
 names in `native_fp.FEATURES`); its cases form their own campaigns, which are
-skipped and reported when the machine lacks a feature. The current families
-require none.
+skipped and reported when the machine lacks a feature (the base x87/SSE2 families require
+none; every Zen 2 family requires its feature, e.g. `avx2`, `fma`, `f16c`, `osxsave`).
 
 Run again with a fresh output directory:
 
 ```sh
-python3 ia32-fp-linux/native_fp.py run ia32-fp-linux --result run-2
+python3 ia32-epyc-linux/native_fp.py run ia32-epyc-linux --result run-2
 ```
 
 ## Coverage
 
-The default campaign has over 120,000 independent single-instruction cases,
-split into batches of at most 5,000. It combines deterministic matrices with
-10,000 seeded random x87 cases and 10,000 seeded random SSE cases.
+The bundle has 189,240 independent single-instruction cases in 76 families, split into campaigns
+of at most 5,000 cases that share their CPUID requirements; 10,368 are 'observe' cases (recorded,
+reported, not failed: the outcomes the manuals leave to the implementation). The base campaign
+combines deterministic matrices with 10,000 seeded random x87 cases and 10,000 seeded random SSE
+cases; the Zen 2 families are listed in `validation/README.md` with the layer each belongs to
+(`gpr_*`, `sse3_*` .. `sse4a`, `misalign_sse`, `aes*`, `pclmulqdq*`, `sha*`, `xsave_*`, `avx_*`,
+`avx2_*`, `fma_special`, `f16c`, `alignment_check`, `longmode`, `open_questions*`). The base campaign
+covers:
 
 - x87 arithmetic, reverse/pop forms, square root, rounding, scaling, extraction,
   remainder, comparisons, conditional moves, sign operations, stack moves,
@@ -146,8 +157,9 @@ against this exact model revision and CPU, not a proof of the entire model.
 From `validation/`:
 
 ```sh
-python3 test/native_fp.py prepare test/out/ia32-fp-linux --seed 20261111 --count 10000
+python3 test/native_fp.py prepare test/out/ia32-epyc-linux --seed 20261112 --count 10000
 python3 -m unittest discover -s test -p 'test_native_fp.py'
+python3 test/fp_model_check.py            # the model's side alone: x86fp --compat vs legacy mode
 ```
 
 The first command builds `x86fp`, cross-compiles the freestanding native oracle
@@ -159,10 +171,14 @@ The optional smoke check requires the repository's existing x86-64 Linux guest
 images and QEMU:
 
 ```sh
-python3 test/native_fp.py prepare test/out/fp-smoke --smoke --count 200
-python3 test/fp_smoke.py test/out/fp-smoke test/out/fp-smoke-linux
+python3 test/native_fp.py prepare test/out/ia32-epyc-smoke --smoke --seed 20261112 --count 10000
+python3 test/fp_smoke.py test/out/ia32-epyc-smoke test/out/ia32-epyc-smoke-tcg
 ```
 
-It runs the actual oracle under Linux/TCG, checks calibration and complete output,
-and saves **all** TCG/model differences. This is a runner check, not hardware
-evidence; TCG lacks several floating-point behaviors these probes target.
+It runs the actual oracle under Linux/TCG (`-cpu max`), every campaign in one boot (campaigns whose
+CPUID features TCG lacks are skipped and listed; the cases QEMU aborts on, VEX.L = 1 of VROUNDSS/SD
+and VEX.NP.0F C4, are left out), checks calibration, complete and well-formed output and that the
+YMM upper halves are captured, and saves **all** TCG/model differences with a count per family.
+On this commit: 2,604 cases in 26 campaigns, YMM state captured in every row, 7 campaigns skipped
+(TCG lacks CLZERO, MONITORX, MCOMMIT, RDPRU, MisalignSse, XSAVEC, XSAVES), 527 differences, all in
+families where TCG is known to differ. This is a runner check, not hardware evidence.
