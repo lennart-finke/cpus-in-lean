@@ -20,7 +20,7 @@ import X86.Proofs.Ext
 * `vex_L1_ud`: every BMI1/BMI2 form with VEX.L = 1 raises #UD before touching state.
 * `rdrand_flags`: RDRAND/RDSEED set CF and clear OF, SF, ZF, AF, PF.
 * `cpuid_leaf7_gpr`, `cpuid_ext8_gpr`: what CPUID reports for the Gpr features in leaf 7 and
-  8000_0008h (legacy identity).
+  8000_0008h.
 -/
 namespace X86
 namespace Gpr
@@ -161,24 +161,16 @@ end Gpr
 
 /-! ## CPUID -/
 
-/-- CPUID 7.0 (legacy identity): EBX = BMI1, BMI2, RDSEED, ADX, CLFLUSHOPT, CLWB and SHA (Crypto; reported
-since SSSE3 exists); ECX = RDPID (and system A's SMEP, SMAP in EBX and UMIP in ECX: 0x00100080, 0x4; the
-long-mode work's FSGSBASE in EBX: 0x1; Avx2's AVX2 in EBX: 0x20). -/
+/-- CPUID 7.0: EBX = BMI1, BMI2, RDSEED, ADX, CLFLUSHOPT, CLWB and SHA (Crypto; reported since SSSE3
+exists); ECX = RDPID (and system A's SMEP, SMAP in EBX and UMIP in ECX: 0x00100080, 0x4; the long-mode
+work's FSGSBASE in EBX: 0x1; Avx2's AVX2 in EBX: 0x20). -/
 theorem cpuid_leaf7_gpr (c : Cpu) :
     cpuid c 7 0 = (0, 0x218C0108 ||| 0x00100080 ||| 0x1 ||| 0x20, 0x00400000 ||| 0x4, 0) := by
-  have h0 : Cpuid.maskReg 7 0 0 0 = 0 := by decide
-  have h1 : Cpuid.maskReg 7 0 1 0x219C91A9 = 0x218C0108 ||| 0x00100080 ||| 0x1 ||| 0x20 := by decide
-  have h2 : Cpuid.maskReg 7 0 2 0x00400004 = 0x00400000 ||| 0x4 := by decide
-  have h3 : Cpuid.maskReg 7 0 3 0 = 0 := by decide
-  simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw,
-    h0, h1, h2, h3]
-  decide
+  rw [cpuid_epyc]; simp [epycCpuid, amdTable]; decide
 
-/-- CPUID 8000_0008h EBX (legacy identity): CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of
-the XSAVE work, system A's IBPB, IBRS, STIBP, StibpAlwaysOn, SSBD: 0x0102D000, and IRPERF, bit 1, of system B). -/
+/-- CPUID 8000_0008h EBX: CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of the XSAVE work,
+system A's IBPB, IBRS, STIBP, StibpAlwaysOn, SSBD: 0x0102D000, and IRPERF, bit 1, of system B). -/
 theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x317 ||| 0x0102D000 := by
-  have h1 : Cpuid.maskReg 0x80000008 0 1 0x018EF757 = 0x317 ||| 0x0102D000 := by decide
-  simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf, Cpuid.leafGate, Cpuid.raw, h1]
-  rfl
+  rw [cpuid_epyc]; simp [epycCpuid, amdTable]; decide
 
 end X86

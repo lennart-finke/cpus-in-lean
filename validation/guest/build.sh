@@ -4,12 +4,16 @@
 # `build.sh smp` builds the SMP variant instead (kernel.fragment plus kernel-smp.fragment: SMP, local
 # APIC, I/O APIC, MP-table parsing) in its own source tree: bzImage-smp, initramfs-smp.cpio (the same
 # initramfs plus smp.sh and a few more BusyBox applets). The default build is unchanged.
+# `build.sh bigsmp` builds bzImage-bigsmp: the SMP variant plus kernel-bigsmp.fragment (X86_BIGSMP, NR_CPUS=64,
+# the 32-bit maximum) in its own source tree, for guest/smp-check.sh and topo-check.sh with more than 8 CPUs
+# (KERNEL=guest/bzImage-bigsmp); it uses initramfs-smp.cpio.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 KVER=6.12.111
 VARIANT=${1:-}
 SFX=""; SRC=linux-$KVER
 [ "$VARIANT" = smp ] && { SFX=-smp; SRC=linux-$KVER-smp; }
+[ "$VARIANT" = bigsmp ] && { SFX=-bigsmp; SRC=linux-$KVER-bigsmp; }
 W=~/k
 mkdir -p $W && cd $W
 [ -f linux-$KVER.tar.xz ] || wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz
@@ -17,7 +21,9 @@ mkdir -p $W && cd $W
 cd $SRC
 MK="make ARCH=i386 CROSS_COMPILE=i686-linux-gnu- -j$(nproc)"
 $MK tinyconfig >/dev/null
-if [ -n "$SFX" ]; then
+if [ "$SFX" = -bigsmp ]; then
+  ./scripts/kconfig/merge_config.sh -m .config "$HERE/kernel.fragment" "$HERE/kernel-smp.fragment" "$HERE/kernel-bigsmp.fragment" >/dev/null
+elif [ -n "$SFX" ]; then
   ./scripts/kconfig/merge_config.sh -m .config "$HERE/kernel.fragment" "$HERE/kernel-smp.fragment" >/dev/null
 else
   ./scripts/kconfig/merge_config.sh -m .config "$HERE/kernel.fragment" >/dev/null
@@ -31,6 +37,9 @@ if [ -n "$SFX" ]; then
     grep -q "^CONFIG_$o=y" .config || { echo "missing CONFIG_$o"; exit 1; }
   done
 fi
+if [ "$SFX" = -bigsmp ]; then
+  grep -q '^CONFIG_X86_BIGSMP=y' .config && grep -q '^CONFIG_NR_CPUS=64' .config || { echo 'missing BIGSMP/NR_CPUS=64'; exit 1; }
+fi
 $MK bzImage
 if [ -n "$SFX" ]; then
   cp arch/x86/boot/bzImage "$HERE/bzImage$SFX"; cp System.map "$HERE/System.map$SFX"
@@ -38,6 +47,7 @@ if [ -n "$SFX" ]; then
 else
   cp arch/x86/boot/bzImage System.map vmlinux .config "$HERE/"
 fi
+[ "$SFX" = -bigsmp ] && exit 0   # uses initramfs-smp.cpio
 # initramfs: Debian i386 static busybox + /init
 cd $W
 [ -f bb/usr/bin/busybox ] || { apt-get download busybox-static:i386; dpkg-deb -x busybox-static_*_i386.deb bb; }

@@ -41,7 +41,7 @@ MXCSR, MXCSR_MASK and the XMM registers are neither saved nor restored (the SDM 
 implementation dependent). Reserved fields of the image are not written, apart from the zero
 upper halves of FTW, FCS and FDS.
 
-CLFLUSH raises #UD (CPUID does not report CLFSH). LFENCE, MFENCE, SFENCE and the PREFETCH hints
+CLFLUSH, CLFLUSHOPT and CLWB are `X86/Ext/Gpr.lean`'s. LFENCE, MFENCE, SFENCE and the PREFETCH hints
 are no-ops in this sequential model; non-temporal stores are ordinary stores.
 -/
 namespace X86

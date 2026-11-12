@@ -18,14 +18,22 @@ feature register is masked by the features that are not implemented; registers w
 describe a feature (5 MONITOR, 0xD XSAVE, 0x8000000A SVM, ...) are all zero while the feature is not
 implemented.
 
-**Identity** (`identity`): until the integration step, the vendor, signature and leaf structure stay
-those of the model's former identity (`.legacy`: "GenuineIntel", family 6 model 1 stepping 9,
-0x619, highest leaves 1 and 0x80000001 while no feature needs more, out-of-range leaves return the
-highest basic leaf as on Intel CPUs). With exactly today's features this reproduces the former
-`cpuidVals` bit for bit. `.epyc7742` reports the AMD identity.
+**Identity** (`identity`): `.epyc7742`, the AMD identity of the dump: vendor "AuthenticAMD", signature
+00830F10h, the brand string "AMD EPYC 7742 64-Core Processor", highest leaves 10h and 8000_0020h, zeros
+for leaves in range that the dump has no values for and for every leaf above the maximum (AMD; APM
+vol. 3, E.2). `.legacy` is the model's former identity ("GenuineIntel", family 6 model 1 stepping 9,
+0x619, highest leaves raised only as features need them, out-of-range leaves returning the highest
+basic leaf as on Intel CPUs); it is kept, unused, so that `legacyLeaf_former` (`Proofs/Ext.lean`) still
+pins the former values. `cpuid_epyc` states every leaf and subleaf of the final identity in closed
+form, `cpuid_epyc_dump` that every feature bit it reports is set in the dump.
 
-To add a feature: flip its line in `implemented` to `true` (one line per feature, grouped by the
-owning module; see `x86_32/EXTENDING.md`).
+**Masked features**: every feature of the dump is implemented and reported, or its line in
+`implemented` is `false` with the reason in a comment. The bit-by-bit table (7742 dump → reported /
+masked and why) is `x86_32/CPUID.md`, generated and checked against this module by
+`validation/test/cpuid_table.py` (a unit test).
+
+To add a feature: flip its line in `implemented` to `true`, then regenerate `CPUID.md`
+(`python3 validation/test/cpuid_table.py write`) and restate `cpuid_epyc`.
 -/
 namespace X86
 
@@ -37,8 +45,8 @@ inductive Identity where
   | epyc7742
   deriving DecidableEq, Repr
 
-/-- THE identity switch (flipped to `.epyc7742` by the integration step). -/
-def identity : Identity := .legacy
+/-- THE identity switch: the AMD EPYC 7742 (the integration step flipped it from `.legacy`). -/
+def identity : Identity := .epyc7742
 
 /-- One constructor per CPUID feature bit (or group of bits) of the EPYC 7742. -/
 inductive Feature where
@@ -163,9 +171,8 @@ end Feature
 
 /-! ## Implemented features
 
-ONE LINE PER FEATURE, grouped by the module that implements it (`EXTENDING.md`). A workstream flips
-its own lines to `true` when its feature is complete (and tested); groups are separated by comment
-lines so that parallel edits merge without conflicts. Present-day behaviour: exactly the first group. -/
+One line per feature, grouped by the module that implements it (`EXTENDING.md`). Every `false` line
+carries the reason the feature is masked (summarised per bit in `x86_32/CPUID.md`). -/
 
 /-- The features the model implements; CPUID reports exactly these. -/
 def implemented : Feature → Bool
@@ -251,8 +258,13 @@ def implemented : Feature → Bool
   | .invariantTsc => true
   | .arat => true
   | .effFreq => true
+  -- McaOverflowRecov, SUCCOR, ScalableMca: no machine-check source is modelled (nothing raises #MC) and
+  -- the scalable MCA MSR space (C000_2000h..) is absent; the legacy MCA banks are (MCE, MCA)
   | .mcaRecovery => false
+  -- six core counters at C001_0200h (Gpr can provide them): no performance events are modelled, the
+  -- counters never count; the four legacy counters RDPMC needs are enough
   | .perfCtrExtCore => false
+  -- DR0..DR3 address-mask MSRs (C001_1027h, C001_1019h..101Bh): not modelled, breakpoints match exactly
   | .dataBkptExt => false
   | .adMskExtn => false
   | .ibpb => true
@@ -260,6 +272,9 @@ def implemented : Feature → Bool
   | .stibp => true
   | .stibpAlwaysOn => true
   | .ssbd => true
+  -- INT_WBINVD, IbrsPreferred, IbrsSameMode (hints about WBINVD interruptibility and IBRS use) and
+  -- bits 6, 10 (reserved in APM rev. 3.33): hints the model's timing-free execution cannot honour,
+  -- and two bits without a documented meaning
   | .ext8Misc => false
   -- system B (VME/PVI, NMI)
   | .vme => true
@@ -269,7 +284,7 @@ def implemented : Feature → Bool
   | .lm => true
   | .page1gb => true
   | .lahfsahf => true
-  | .cx16 => false
+  | .cx16 => false   -- (see above: CMPXCHG16B needs 64-bit mode)
   | .fsgsbase => true
   -- X86/Ext/Smp.lean
   | .x2apic => true
@@ -280,18 +295,28 @@ def implemented : Feature → Bool
   -- X86/Ext/Svm.lean
   | .svm => true
   | .svmFeatures => true
+  -- LbrVirt (no LBR stack), AVIC (no AVIC backing page/doorbell), GMET (Zen 3), bit 11 (reserved)
   | .svmUnimpl => false
   | .skinit => true
-  -- integration (no new semantics needed; MMX extensions are part of X86/Simd.lean)
-  | .mmxext => false
-  -- not planned (Zen 2 has them; outside the model's scope)
+  -- integration: AMD's MMX extensions are the integer SSE instructions on MMX registers (PSHUFW,
+  -- PINSRW, PEXTRW, PMOVMSKB, PAVGB/W, PMINUB/SW, PMAXUB/SW, PMULHUW, PSADBW, MASKMOVQ, MOVNTQ,
+  -- PREFETCHh, SFENCE; APM vol. 3, E.4.2), all in X86/Simd.lean
+  | .mmxext => true
+  -- not modelled (Zen 2 has them; outside the model's scope)
+  -- PQM/PQE (L3 QoS monitoring and enforcement, leaves 0Fh, 10h, 8000_0020h): no caches
   | .pqm => false
   | .pqe => false
+  -- instruction-based sampling (leaf 8000_001Bh, IBS MSRs): no sampling hardware
   | .ibs => false
+  -- northbridge and L3 performance counters: no events are modelled
   | .perfCtrExtNb => false
   | .perfCtrExtLlc => false
+  -- TS/TTP/TM/HwPstate/CPB/EffFreqRO/ConnectedStandby/RAPL: no thermal sensor, P-states, boost or power
+  -- reporting (TscInvariant, bit 8, is reported: the TSC runs at the constant virtual rate)
   | .powerMgmt => false
+  -- protected processor inventory number (PPIN MSRs): not modelled
   | .ppin => false
+  -- SME/SEV/SEV-ES (leaf 8000_001Fh): no memory encryption (the C-bit would be a physical-address bit)
   | .memEncrypt => false
 
 /-! ## Control-register masks derived from the features -/
@@ -499,7 +524,7 @@ def leafGate (leaf : UInt32) : Option Feature :=
   | 0x80000020 => some .pqe
   | _ => none
 
-@[inline] private def reg (r : Regs) (k : Nat) : UInt32 :=
+@[inline] def reg (r : Regs) (k : Nat) : UInt32 :=
   match k with | 0 => r.1 | 1 => r.2.1 | 2 => r.2.2.1 | _ => r.2.2.2
 
 /-- Feature bits at (leaf, subleaf, register): all of them, and the implemented ones. -/

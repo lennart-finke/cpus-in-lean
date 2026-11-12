@@ -421,13 +421,17 @@ def MsrImpl.stored (n : UInt32) (mask : UInt64) : MsrImpl where
 
 /-- MSRs of the core model kept in `Cpu.msrs`, with their write masks: 0x17 platform id
 (read-only), 0x8B microcode revision (Intel identity; see `patchLevelMsr`), 0xC1/0xC2 performance
-counters (40 bits), 0x186/0x187 event selects, 0x1D9 debug control. -/
+counters (40 bits), 0x186/0x187 event selects, 0x1D9 debug control. 0x17, 0xC1/0xC2 and
+0x186/0x187 are Intel's (IA32_PLATFORM_ID, IA32_PMCi, IA32_PERFEVTSELi): they exist only with the
+legacy identity; the AMD identity has DebugCtl (0x1D9, AMD APM vol. 2, 13.1.1) and #GP(0) for the
+others (they are not in the MSR cross-reference of AMD APM vol. 2, appendix A; AMD's performance counters are
+C001_0000h.., `Gpr.msr?`). -/
 def msrInfo (n : UInt32) : Option UInt64 :=
   match n with
-  | 0x17 => some 0
+  | 0x17 => if identity == .legacy then some 0 else none
   | 0x8B => some 0xFFFFFFFFFFFFFFFF
-  | 0xC1 | 0xC2 => some 0xFFFFFFFFFF
-  | 0x186 | 0x187 => some 0xFFFFFFFF
+  | 0xC1 | 0xC2 => if identity == .legacy then some 0xFFFFFFFFFF else none
+  | 0x186 | 0x187 => if identity == .legacy then some 0xFFFFFFFF else none
   | 0x1D9 => some 0x7F
   | _ => none
 

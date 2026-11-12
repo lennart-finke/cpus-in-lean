@@ -334,3 +334,8 @@ FAMILIES += [(native_avx2.avx2_ops, ('avx2', 'fma', 'f16c', 'osxsave')), (native
 # Long-mode workstream (test/native_longmode.py): instructions that differ in compatibility mode.
 import native_longmode  # noqa: E402
 FAMILIES += native_longmode.FAMILIES
+
+# Integration: open hardware questions no other family observes (test/native_openq.py; validation/README.md,
+# "Open questions for the EPYC").
+import native_openq  # noqa: E402
+FAMILIES += native_openq.FAMILIES

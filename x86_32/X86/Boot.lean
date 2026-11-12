@@ -37,12 +37,13 @@ entries ExtINT → LINT0 of the boot processor and NMI → LINT1 of every CPU: t
 generates for QEMU. Feature byte 2 bit 7 (IMCRP) = 0: virtual-wire mode, no IMCR. -/
 
 /-- The I/O APIC's ID for `n` CPUs (local APIC IDs 0..n−1): `n` while that fits the 82093AA's 4-bit ID
-register below the serial-bus broadcast ID 15 (n ≤ 14: an ID no local APIC has, which the legacy
-identity's Linux checks, `setup_ioapic_ids_from_mpc`), otherwise 0. With n ≥ 15 no 4-bit ID is free;
+register below the serial-bus broadcast ID 15 (n ≤ 14: an ID no local APIC has), otherwise 0. With n ≥ 15 no 4-bit ID is free;
 on xAPIC systems (the system bus of the 7742) I/O APIC and local APIC IDs are separate name spaces, and
 QEMU/SeaBIOS give the I/O APIC ID 0 for any number of CPUs. The MP table and the ID register always
-agree. Supported: 1 ≤ n ≤ 128 (the threads of one 7742 package, `Cpuid.topo`; xAPIC IDs < 255); Linux
-with the legacy (Intel, APIC version 10h) identity insists on unique 4-bit IDs and boots with n ≤ 14. -/
+agree. Supported: 1 ≤ n ≤ 128 (the threads of one 7742 package, `Cpuid.topo`; xAPIC IDs < 255). Linux
+checks the IDs for uniqueness only on Intel CPUs without xAPIC (`setup_ioapic_ids_from_mpc`): with the
+AMD identity it boots with 16, 32 and 64 CPUs (guest/build.sh bigsmp); the former Intel identity
+needed n ≤ 14. -/
 def ioApicId (n : Nat) : UInt32 := if n ≤ 14 then n.toUInt32 else 0
 
 /-- The largest number of CPUs `MpMachine` supports (one EPYC 7742 package). -/

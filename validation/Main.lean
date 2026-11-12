@@ -8,6 +8,12 @@ model: it only moves bytes between the terminal and the UART model, and paces id
 
     x86run [--mem MB] [--max N] [--smp N] [--quantum Q] [--expect PAT --send TEXT]...
            [--trace-from N --trace-count K] bzImage [initrd] [cmdline]
+    x86run --cpuid [--smp N]
+
+`--cpuid` prints what CPUID reports to CPU 0 of N CPUs (default 1) with CR4.OSXSAVE = 1 and XCR0 = 7
+(the state the 7742 dump was taken in): every leaf and subleaf in range and the first leaf beyond, as
+`cpuid LEAF SUB EAX EBX ECX EDX`, and every feature bit of `X86.Cpuid` as
+`feature NAME LEAF SUB REG MASK implemented|masked` (read by `test/cpuid_table.py`).
 
 `--smp N` boots N logical CPUs (`X86.MpMachine`, MP tables for the kernel); without it the machine
 is the single-CPU one exactly as before.
@@ -26,6 +32,7 @@ structure Opts where
   quiet : Bool := false
   smp : Nat := 0
   quantum : Nat := 1000
+  cpuid : Bool := false
   files : List String := []
 
 partial def parseArgs (o : Opts) : List String → Except String Opts
@@ -38,6 +45,7 @@ partial def parseArgs (o : Opts) : List String → Except String Opts
   | "--quiet" :: r => parseArgs { o with quiet := true } r
   | "--smp" :: n :: r => parseArgs { o with smp := n.toNat! } r
   | "--quantum" :: n :: r => parseArgs { o with quantum := n.toNat! } r
+  | "--cpuid" :: r => parseArgs { o with cpuid := true } r
   | f :: r => if f.startsWith "--" then .error s!"unknown option {f}" else parseArgs { o with files := o.files ++ [f] } r
   | [] => .ok o
 
@@ -58,10 +66,31 @@ partial def traceRun (s : MpMachine) (n : Nat) (err : IO.FS.Stream) : IO MpMachi
   err.putStrLn s!"{m.icount} cpu{m.cur} {hex c.eip} eax={hex c.eax} ebx={hex c.ebx} ecx={hex c.ecx} edx={hex c.edx} esi={hex c.esi} edi={hex c.edi} ebp={hex c.ebp} esp={hex c.esp} fl={hex c.eflags}"
   traceRun s.step (n - 1) err
 
+/-- `--cpuid`: the CPUID table and the feature list (see the module documentation). -/
+def cpuidDump (n : Nat) : IO Unit := do
+  let c : Cpu := { cr4 := CR4.OSXSAVE, xcr0 := 7, smpx := { ncpu := n.toUInt32, apicId := 0 } }
+  let subs (l : UInt32) : List UInt32 :=
+    if l == 7 || l == 0xB || l == 0xD || l == 0xF || l == 0x10 || l == 0x8000001D then
+      (List.range 10).map (·.toUInt32) else [0]
+  let (mb, me) := ((cpuid c 0 0).1, (cpuid c 0x80000000 0).1)
+  let leaves := (List.range (mb.toNat + 2)).map (·.toUInt32) ++
+    (List.range (me.toNat - 0x80000000 + 2)).map (fun i => (0x80000000 + i).toUInt32)
+  for l in leaves do
+    for sub in subs l do
+      let r := cpuid c l sub
+      IO.println s!"cpuid {hex l} {hex sub} {hex r.1} {hex r.2.1} {hex r.2.2.1} {hex r.2.2.2}"
+  for f in Feature.all do
+    let (l, sub, k, mask) := f.loc
+    let name := (reprStr f).replace "X86.Feature." ""
+    IO.println s!"feature {name} {hex l} {hex sub} {k} {hex mask} {if implemented f then "implemented" else "masked"}"
+
 def main (args : List String) : IO UInt32 := do
   let o ← match parseArgs {} args with
     | .ok o => pure o
     | .error e => do IO.eprintln e; return 2
+  if o.cpuid then
+    if o.smp > maxCpus then IO.eprintln s!"--smp: at most {maxCpus} CPUs"; return 2
+    cpuidDump (max 1 o.smp); return 0
   let some (kpath : String) := o.files[0]? | do IO.eprintln "usage: x86run [options] bzImage [initrd] [cmdline]"; return 2
   let kernel ← IO.FS.readBinFile kpath
   let initrd ← match o.files[1]? with

@@ -18,6 +18,7 @@ import sys
 THREADS_PER_CORE = 2      # 7742: SMT2
 APIC_ID_SIZE = 7          # Fn8000_0008_ECX[15:12] on the 7742: 128 logical processors per package
 CLFLUSH_QW = 8            # Fn0000_0001_EBX[15:8]: 64-byte lines
+MAX_EXT = 0x80000020      # Fn8000_0000_EAX of the 7742: 8000_001E (and 8000_001D) are reachable
 
 
 def core_of(k):
@@ -68,9 +69,10 @@ def check(n, path):
         got = {'apic': g[1], 'l1ebx': g[2], 'htt': g[3], 'b0': tuple(g[4:8]), 'b1': tuple(g[8:12]),
                'cmpl': g[12], 'c88': g[13], 'e1e': tuple(g[15:18])}
         maxext = g[14]
+        if maxext != MAX_EXT:
+            bad += 1
+            print(f'cpu {k}: highest extended leaf {maxext:#x}, expected {MAX_EXT:#x}')
         for key in e:
-            if key == 'e1e' and maxext < 0x8000001E:
-                continue   # leaf beyond the reported maximum (legacy identity): not checked
             if got[key] != e[key]:
                 bad += 1
                 print(f'cpu {k}: {key} = {got[key]}, expected {e[key]}')

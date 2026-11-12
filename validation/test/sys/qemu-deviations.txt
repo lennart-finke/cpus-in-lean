@@ -123,3 +123,4 @@
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)c	\g<1>d	# (same)
 ^(npf \d+ .*: code=0000004e i1=00000000:0000000)e	\g<1>f	# (same)
 # --- end Svm ---
+^lm\.compat\.cpuid: max=0000000d$	lm.compat.cpuid: max=00000010	# (Integration) CPUID leaf 0 EAX, the highest standard leaf: 10h on the EPYC 7742 (its CPUID dump, x86_32/CPUID.md), which the model reports; QEMU's EPYC-Rome CPU model reports 0Dh.

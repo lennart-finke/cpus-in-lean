@@ -1,26 +1,46 @@
 # Validation
 
-Evidence that the [IA-32 model](../x86_32/README.md) behaves like real x86, plus the hardware tests for both models. `x86run` boots Linux, `x86test` replays test vectors, `x86sys` runs the system tests, and `x86litmus` explores concurrent executions; nothing here is imported by the model or its proofs.
+Evidence that the [IA-32 model](../x86_32/README.md) behaves like 32-bit mode on an AMD EPYC 7742, plus the hardware tests for both models. `x86run` boots Linux, `x86test` replays single-instruction vectors, `x86sys` runs the system-test kernel, `x86fp` runs the native campaign's cases on the model, `x86bridge` hands the model's stops in 64-bit mode to the x86-64 model, and `x86litmus` explores concurrent executions; nothing here is imported by the model or its proofs.
 
 ```
 $ lake build
-$ ./verify.sh [N]    # N random QEMU tests, the Linux boot and the workload comparison
+$ ./verify.sh [N]          # the gate (N random QEMU vectors, default 20000): steps 1-9 below
+$ ./verify.sh --full [N]   # also the whole native campaign on the model, more reference cases, SMP Linux
 ```
 
-`x86run` options: `--mem MB`, `--max N` (instruction limit), `--smp N` (N CPUs and MP tables; `--quantum Q` steps per scheduling turn), `x86sys` also takes `--smp N`, `--expect PAT --send TEXT` (scripted input; `@exit` stops) and `--trace-from N --trace-count K` (register trace on stderr).
+`../verify.sh` (repository root) runs `x86_32/verify.sh`, the IA-32 steps that need no Linux image and the x86-64 model's checks with separate verdicts (`./verify.sh --full`: everything, including both Linux boots). Each step prints one result line and the first failing step stops the run.
+
+| step | what | current result (this commit, `./verify.sh` / `--full` runs and the commands below) |
+|---|---|---|
+| 1 | build the runners | `x86run x86test x86sys x86litmus x86fp x86bridge` |
+| 1a, 1b | x86-TSO litmus tests; TSO access log on 20,000 vectors | pinned outcome sets, 0 different; 0 failures |
+| 2 | random single instructions against QEMU (`test/run.sh N SEED`) | ten seeds × 20,000 vectors (101..110): 0 mismatches; per run ≈ 270 QEMU deviations accepted by rule and ≈ 465 16-byte encodings checked as #GP(0) (D1 below) |
+| 3 | system tests against QEMU (`test/sys/run.sh`): main, 2-CPU and long-mode passes | 30,669 / 39 / 2,370 lines identical to QEMU after 123 deviation rules (+ 231 x87 transcendental rules); 533 / 18 / 6 model-only lines as expected; all six transcripts end with `END` |
+| 4 | independent references (`test/refs.py`) | 5 regenerated tables identical (xsaveref, vmeref, svmref, cryptoref, x87ref); 4 self-tests; sse_ref 2,330, avx_ref 1,503, avx2_ref 2,500 transcript lines, 0 mismatches; gpr_ref 5,400 cases, 0 differ; topo_ref for 2, 3, 4, 16 CPUs (64, 128 with `--full`), 0 differences |
+| 5 | native campaign on the model (`test/fp_model_check.py`) | smoke sample 2,654 cases in 76 families, `x86fp --compat` and legacy mode complete and identical outside the `longmode` family; `--full`: the whole campaign (189,240 cases) |
+| 6 | long-mode bridge (`x86bridge --cmdline long=1`) | 1,108 stops in 64-bit mode, 1,106 continued identically by the x86-64 model, 2 differences that are the x86-64 model's (below) |
+| 7 | unit tests (`python3 -m unittest discover -s test`) | 113 tests OK, including the CPUID table check (`test_cpuid_table.py`) and the LLVM cross-check of the instruction forms (`test_isa_forms.py`) |
+| 8 | Linux boot | 54,168,236 instructions, ≈ 13 s (machine under load) |
+| 9 | workload against QEMU (`guest/workload.qemu.txt`, `guest/qemu-workload.sh`) | 20 lines byte-identical; 117,169,217 instructions, ≈ 29 s |
+| 10 (`--full`) | SMP Linux against QEMU (`guest/smp-check.sh`) | identical transcripts for 2 CPUs (quanta 100, 1000, 20000, 10⁶), 4 (1000, 20000), 8, and 16 (`bzImage-bigsmp`); 32 CPUs boot on the model (all 32 online, workload identical) but have no QEMU reference (SeaBIOS writes no MP table for 32 CPUs) |
+| 11 (`--full`) | Linux's CPU topology against `topo_ref.py` (`guest/topo-check.sh`) | 4 CPUs, and 16 and 64 CPUs with `bzImage-bigsmp`: 0 differences |
+
+`x86run` options: `--mem MB`, `--max N` (instruction limit), `--smp N` (N CPUs and MP tables; `--quantum Q` steps per scheduling turn), `--cpuid` (print the CPUID table, `test/cpuid_table.py`); `x86sys` also takes `--smp N`, `--quantum Q`, `--cmdline STR`, `--expect PAT --send TEXT` (scripted input; `@exit` stops) and `--trace-from N --trace-count K` (register trace on stderr).
+
+What the evidence is: QEMU's TCG (an EPYC-Rome CPU, `test/qemu-cpu.sh`) where it implements a behaviour as the manuals say, rewritten by a cited rule where it does not; independent Python references written from the manuals; Linux. The integer/x87/SSE2 core was also checked on a real EPYC 7742 (Hardware tests below); the Zen 2 extensions have not run on the real processor yet: the bundle that does it is prepared (Hardware tests), and the questions it should answer are listed under "Open questions for the EPYC".
 
 ## QEMU differential tests
 `test/run.sh N SEED` generates N random single instructions with random prefixes, operands, registers, flags, segment selectors and page-table bits, including page-crossing operands and single-stepping. A small kernel (`test/harness/`) runs each one under `qemu-system-i386` in ring 3. `x86test` then runs the same instruction on the model and compares the exception, CR2, registers, flags, selectors, a memory hash and the page-table entries, and (vector format v2) MXCSR, XMM0–7 and the YMM upper halves. QEMU emulates an EPYC-Rome (Zen 2) CPU minus what TCG lacks (`test/qemu-cpu.sh`); instruction forms it executes that the model does not implement yet are listed in `test/isa_forms.py` and not generated. Encodings that are #UD on Zen 2 (unassigned 0F 38/0F 3A/VEX opcodes, VEX after 66/F2/F3/LOCK, unknown VEX maps, EVEX/XOP register forms) are generated, also padded to the 15-byte limit; TCG raises #UD for a 16-byte unassigned encoding without fetching its last byte, where the model (SDM vol. 3, table 6-2) raises #GP(0), and `x86test` counts these separately. Extending the tests: `../x86_32/EXTENDING.md`.
 
 AES-NI, PCLMULQDQ and SHA vectors (`test/gen_crypto.py`, about 18% of a run; register and memory operands, every imm8, misaligned AES/PCLMULQDQ operands, LOCK) are also checked against an independent reference, `test/cryptoref.py`, written from FIPS-197, FIPS 180-4, the GCM specification and the SDM instruction pages (its self-test checks the published vectors and `hashlib`): `run.sh` prints how many of QEMU's results it checked. TCG deviations: it runs the "NP" SHA instructions with a 66/F2/F3 prefix (the model raises #UD; `qemuAsHardware` accepts the model's #UD for those 'ud' vectors) and does not check the alignment of SHA memory operands (exception class 4 requires it; misaligned SHA operands are not generated, the system tests cover them).
 
-So far 800,000 tests have shown 0 mismatches, covering 226 one-byte and 106 two-byte opcodes.
+Ten runs of 20,000 vectors each (seeds 101..110, this commit) gave 0 mismatches, with 2,674 QEMU deviations accepted by `qemuAsHardware` and 4,667 16-byte encodings checked as #GP(0). Each run also prints how many distinct undefined encodings the 'ud' family emitted per map (e.g. seed 101: 0F 97, 0F 38 255, 0F 3A 243, VEX.0F 156, VEX.0F38 204, VEX.0F3A 208, unknown VEX maps 290, VEX after a legacy prefix 271, 62/8F 22, and 525 of the 1,486 undefined VEX neighbours); `test_isa_forms.py` checks that every `IMPLEMENTED` form (135 rows, 87,834 encodings) disassembles as a valid instruction with LLVM for `-mcpu=znver2` and that none of 194,300 undefined encodings does, apart from 13 listed, cited classes where LLVM decodes instructions of other CPUs or ignores a prefix.
 
 The general-purpose Zen 2 extensions (POPCNT, LZCNT, TZCNT, BMI1/BMI2 including VEX.L = 1, VEX.W and every pp/ModRM.reg neighbour, ADCX/ADOX, MOVBE, CRC32, PREFETCH/PREFETCHW, RDPID, CLFLUSH/CLFLUSHOPT/CLWB with paging off, and the #UD/#GP forms of RDRAND/RDSEED, RDPMC, MONITOR/MWAIT and MCOMMIT) are the 'ext' family of `test/gen_gpr.py` (about 18% of the vectors). Their results are also checked against `test/gpr_ref.py`, a reference written from the APM/SDM (the CRC32 polynomial division, PDEP/PEXT bit by bit, the published SplitMix64 for RDRAND), which runs the model through `x86test --dump` (`python3 test/gpr_ref.py check`, also a unit test). Not compared with QEMU, because TCG lacks them or has no defined value: RDRAND/RDSEED/RDTSCP/RDPRU results, CLZERO, MONITORX/MWAITX, RDPRU, WBNOINVD at CPL 3, CLFLUSH page faults and accessed bits (TCG makes no access), RDPID/RDTSCP with a 66 prefix (TCG writes 16 bits).
 
 The system forms of workstream A (SYSCALL, SYSRET, SYSENTER, SYSEXIT, CLAC, STAC and LOCK MOV CR, with random prefixes) are the 'ext' family of `test/gen_sys.py` (about 2% of the vectors); at CPL 3 in the harness they check the #UD/#GP rules. TCG checks SYSRET's CPL before EFER.SCE (#GP instead of the APM's #UD): `x86test` accepts the APM's order (`qemuAsHardware`). `x86test` fails when not every vector of the input was compared (a stale harness or a record-size mismatch).
 
-AVX (`x86_32/X86/Ext/Avx.lean`, `Vex.lean`) is the 'ext' family of `test/gen_avx.py` (about 10% of the vectors, every AVX form in VEX.128 and VEX.256, two- and three-byte VEX, register and memory operands with all addressing modes, misaligned and page-crossing operands, a tenth of them breaking one encoding rule: VEX.L, VEX.W, VEX.vvvv, ModRM.mod or reg); YMM upper halves are compared. `isa_forms.py` rows carry VEX.L and VEX.W, so the 'ud' family tests every undefined VEX neighbour (prefix, L, W, mod, reg) as #UD; the AVX2/FMA/F16C forms stay in NOT_YET_IMPLEMENTED (owner Avx2). TCG deviations accepted by `qemuAsHardware` (`tcgVexUd`, citing the manuals): TCG executes the VEX-prefixed MMX forms (VEX.pp = 00 of the MMX opcodes, SSSE3 0F 38 00..1E, PALIGNR), legacy-only forms with VEX (66 0F 38 10/14/15, F3/F2 0F 2B, VEX.66/F3/F2.0F 77), VEX.L = 1 of VMOVD r/m32 and VMOVLPx/VMOVHPx stores, and the register forms of VMOVLPD/VMOVHPD/VMOVNTDQ/VMOVNTPx, all #UD on the CPU (also when TCG's #UD comes after a memory access that set an accessed bit); it raises #UD for VEX.L = 1 of the LIG scalar forms; it loads 32 bytes for the m128 source of VCVTDQ2PD/VCVTPS2PD ymm (a #PF at the next page's first byte); and its masked stores (VMASKMOVPS/PD, VMASKMOVDQU) write the selected elements before a #PF on a later one, where the model, like every faulting instruction, leaves memory unchanged (only the hash is replaced). VMIN/VMAX are generated with MXCSR.DAZ clear (TCG returns the unflushed denormal). Not generated (covered by the system tests): VEX.L = 1 of VMOVSS/SD and VCVTSI2Sx (TCG keeps bits 255:128), of VROUNDSS/SD (QEMU 11.1.2 aborts in `gen_VROUNDSx`), VEX.NP.0F C4 (QEMU aborts in `gen_pinsr`), is4 with imm8[7] = 1 (TCG uses it as a register bit), VRCPPS/VRSQRTPS (implementation specific), two NaN sources, and VMASKMOVPS/PD loads with paging (TCG loads masked-out elements).
+AVX (`x86_32/X86/Ext/Avx.lean`, `Vex.lean`) is the 'ext' family of `test/gen_avx.py` (about 10% of the vectors, every AVX form in VEX.128 and VEX.256, two- and three-byte VEX, register and memory operands with all addressing modes, misaligned and page-crossing operands, a tenth of them breaking one encoding rule: VEX.L, VEX.W, VEX.vvvv, ModRM.mod or reg); YMM upper halves are compared. `isa_forms.py` rows carry VEX.L and VEX.W, so the 'ud' family tests every undefined VEX neighbour (prefix, L, W, mod, reg) as #UD (the AVX2/FMA/F16C forms are the rows of owner Avx2). TCG deviations accepted by `qemuAsHardware` (`tcgVexUd`, citing the manuals): TCG executes the VEX-prefixed MMX forms (VEX.pp = 00 of the MMX opcodes, SSSE3 0F 38 00..1E, PALIGNR), legacy-only forms with VEX (66 0F 38 10/14/15, F3/F2 0F 2B, VEX.66/F3/F2.0F 77), VEX.L = 1 of VMOVD r/m32 and VMOVLPx/VMOVHPx stores, and the register forms of VMOVLPD/VMOVHPD/VMOVNTDQ/VMOVNTPx, all #UD on the CPU (also when TCG's #UD comes after a memory access that set an accessed bit); it raises #UD for VEX.L = 1 of the LIG scalar forms; it loads 32 bytes for the m128 source of VCVTDQ2PD/VCVTPS2PD ymm (a #PF at the next page's first byte); and its masked stores (VMASKMOVPS/PD, VMASKMOVDQU) write the selected elements before a #PF on a later one, where the model, like every faulting instruction, leaves memory unchanged (only the hash is replaced). VMIN/VMAX are generated with MXCSR.DAZ clear (TCG returns the unflushed denormal). Not generated (covered by the system tests): VEX.L = 1 of VMOVSS/SD and VCVTSI2Sx (TCG keeps bits 255:128), of VROUNDSS/SD (QEMU 11.1.2 aborts in `gen_VROUNDSx`), VEX.NP.0F C4 (QEMU aborts in `gen_pinsr`), is4 with imm8[7] = 1 (TCG uses it as a register bit), VRCPPS/VRSQRTPS (implementation specific), two NaN sources, and VMASKMOVPS/PD loads with paging (TCG loads masked-out elements).
 
 AVX2, FMA3 and F16C (`x86_32/X86/Ext/Avx2.lean`) are the 'ext' family of `test/gen_avx2.py` (about 9% of the vectors: every form of their `isa_forms.IMPLEMENTED` rows with VEX.L/VEX.W/register/memory/addressing variants, a tenth breaking one encoding rule, and gathers with every VSIB scale, with and without a base, all #UD forms, and data seeds chosen so that the selected elements address the data area, at most one per gather with random 32-bit indices); the rows are exact, so the 'ud' family tests every undefined neighbour (and the FMA4 opcodes) as #UD. TCG deviations: it stores the selected elements of VMASKMOVPS/PD and VPMASKMOVD/Q one by one and leaves the ones before a faulting element written, where the model checks all of them first (`qemuAsHardware` accepts the model's unchanged memory when both raise the same #PF), it loads 16 bytes for the m32/m64 operand of the scalar FMA forms and 32 bytes for the m128 count of the VEX.256 shifts by an XMM count (a #PF at the next page's first byte, or that page's accessed bit, is replaced by the model's outcome). Not generated (covered by the system tests): VPMASKMOV loads with paging (TCG loads masked-out elements), VEX.L = 1 of the scalar FMA forms (TCG keeps bits 255:128), VCVTPS2PH with MXCSR.FTZ (TCG flushes; AMD: no effect) and binary16 denormal inputs of VCVTPH2PS (TCG applies DAZ and reports DE; AMD: DAZ ignored, no DE).
 
@@ -29,6 +49,24 @@ Review fixes (SIMD): the 'ud' family also emits every undefined VEX neighbour of
 `t_avx2.c` and 195 VEX rows of the `xops` table in `t_simd.c` (every AVX2/FMA/F16C form, FMA with VEX.W = 0 and 1, binary16 inputs without denormals) are compared with QEMU: the #UD/#NM matrix (VEX.W/L/vvvv rules of the AVX2-only forms, FMA4 opcodes, VAES/VPCLMULQDQ ymm, the gather rules), every gather form with in-range indices (all scales, negative indices, VEX.128 zeroing), a gather whose fourth selected element is on a not-present page (the loaded elements and cleared mask elements after the #PF, and the restarted instruction), masked-out elements on that page and an all-zero mask, VPMASKMOVD/Q stores beside a read-only page, an FMA special-case table in every rounding mode with DAZ and FTZ and the NaN order of the three forms, 2000 random `avx2k` cases and 300 random gathers (`avx2g`). `test/avx2_ref.py check` recomputes every `avx2k`/`avx2g`/`avx2m` line with an independent reference (exact FMA with `fractions`, binary16 conversions, permutes, variable shifts, per-lane shuffles, gathers; `test_avx2_ref.py` also checks it against Python's `math.fma` and `struct` binary16 packing and runs the round trip over all 65,536 binary16 values). Model-only (`avx2m.*`): VEX.L = 1 of the scalar FMA forms, VCVTPS2PH ignoring FTZ and VCVTPH2PS ignoring DAZ without DE, unmasked #XM of FMA and VCVTPS2PH (destination and memory unchanged), a gather fault with mask elements of mixed value bits, VPMASKMOV loads not touching masked-out elements on a not-present page and stores that fault writing nothing, #AC of VPMASKMOV (16 bytes) and gather elements (element size), #UD before #NM, and 200 F16C cases with binary16 denormals, DAZ and FTZ. The native campaign has families `avx2_ops`, `fma_special`, `f16c`, `avx2_gather`, `avx2_maskmov`, `avx2_encoding` and `avx2_alignment` (`test/native_avx2.py`); the cases whose Zen 2 behaviour the manuals leave open (0·∞ + QNaN, the NaN order, gather mask normalization after a fault, masked-out VPMASKMOV elements, its #AC alignment) are 'observe'.
 
 QEMU deviates from the Intel manual in a few places, which are not generated: AAM/AAD with an immediate ≥ 0x80, INVD/WBINVD at CPL 3, REP INS/OUTS with a zero count, REP with TF, and the read order of CMPS. Where QEMU deviates from hardware, `x86test` accepts the hardware behaviour and counts the case separately: page faults on read-modify-write operands (QEMU drops the W bit and sets A instead of A and D), and PUSHA, which QEMU probes as a whole instead of pushing in order.
+
+### QEMU deviations by area
+
+Where TCG differs from the manuals, the comparison uses the manual's result: a rule in `test/sys/qemu-deviations.txt` (system tests: regular expression, replacement, the cited reason; 122 rules), a rule in `TestMain.qemuAsHardware` (single instructions: only TCG's signature of a known deviation is replaced, counted in "known QEMU deviations accepted"), the per-line x87 transcendental rules of `test/sys/x87t-deviations.txt` (231, generated by `x87ref.py`), or the form is not generated and is covered by a model-only check. By area (system-test rules, then the other mechanisms):
+
+| area | rules | what TCG does differently (details in the paragraphs below and in the rule texts) |
+|---|---|---|
+| paging, PAE, TLB (`pae`, `pgf`, `pgt`, `npf`, `lmf`, `lm`) | 6 + 4 + 4 + 6 + 6 + 10 | reserved-bit #PF with P = 0, PDPTEs not checked/cached, 40 physical-address bits, long-mode activation and EFER checks, LTR/LAR/LSL with 16-byte descriptors in compatibility mode, A bit on faulting large leaves; RMW #PF error codes (`qemuAsHardware`) |
+| system A (`sysa`) | 13 | SYSCALL/SYSRET SS RPL, CR8 and EFER/PAT/MTRR reserved bits, EFER.LMSLE/FFXSR/TCE/INTWB dropped, SMAP with AC for implicit accesses; SYSRET's CPL check before EFER.SCE (`qemuAsHardware`) |
+| exceptions, tasks, gates, debug (`dfc`, `db`, `task`, `tsf`, `cgf`, `dbf`) | 10 + 5 + 1 + 1 + 2 + 1, and 1 for `tsf` and `cgf` | no EXT bit, #TS for a not-present SS0, MOV SS trap delay, data breakpoints in REP, faults after the task-switch commit point, #SS/#NP choices |
+| SVM (`svm`, `npf`) | 12 (+ NPF above) | missing intercepts (RDTSCP, CR reads), INT3/INTO intercepts, VMEXIT_INVALID for a guest CR4 reserved bit, INVD/INTn intercept order, TR/LDTR attributes, RF kept until the end of a translation block; model-only instead of rewritten: the #DF intercept of a combined double fault, the INIT intercept on the AP; not generated: NRIPS, decode assists, PAUSE filter, TSC ratio, SKINIT |
+| APIC, x2APIC, I/O APIC, SMP, SMM (`apic`, `x2apic`, `ioapic`, `smp`, `smm`) | 4 + 6 + 1 + 1 + 3 | APIC version 14h (AMD: 10h), I/O APIC version 20h, no ESR error interrupt, no x2APIC #GP rules, reset FNINIT values, legacy SMM save map / revision |
+| x87, MMX/SSE, XSAVE (`x87`, `simd`, `sse`, `xsave`) | 4 + 7 + 2 + 4 | FERR#/C1 details, MXCSR_MASK FFFFh, EXTRQ/INSERTQ without OSFXSR, XSAVE #NM and MXCSR for RFBM = {AVX}; x87 transcendental #D and NaN choices (231 per-line rules); two-NaN SSE lanes not generated (TCG's larger-significand rule) |
+| AVX, AVX2, FMA, F16C (`avx`) | 4 | #UD with CR0.EM, #NM before #UD, masked-out loads fault, VLDMXCSR reserved bits; `qemuAsHardware`: VEX forms TCG executes that are #UD, LIG scalar forms, 32-byte loads of m128 operands, masked stores writing before a fault; not generated: VEX.L = 1 of VMOVSS/SD and VCVTSI2Sx (TCG keeps bits 255:128) and of VROUNDSS/SD (QEMU aborts), VEX.NP.0F C4 (QEMU aborts), is4 imm8[7], VCVTPS2PH with FTZ, binary16 denormals |
+| GPR extensions, crypto (`gpr`, `crypto`) | 2 + 1 | RDMSR TSC_AUX reads 0, WBNOINVD at CPL 3; SHA with 66/F2/F3 executed, SHA alignment not checked (`qemuAsHardware` for the 'ud' vectors) |
+| identity (`lm.compat.cpuid`) | 1 | QEMU's EPYC-Rome reports highest standard leaf 0Dh; the 7742 reports 10h |
+
+Single-instruction deviations that are not rewritten but left out of generation: AAM/AAD with an immediate ≥ 80h, INVD/WBINVD at CPL 3, REP INS/OUTS with a zero count, REP with TF, the read order of CMPS (QEMU deviates from the SDM), and the forms listed per feature below.
 
 ## System tests
 `test/sys/run.sh` builds a small multiboot test kernel (`test/sys/*.c`, clang only) and runs it under `qemu-system-i386` (the long-mode pass under `qemu-system-x86_64`, below) and on the model (`x86sys`), then compares the two serial transcripts line by line. It exercises what the single-instruction tests cannot: legacy and PAE paging with NX, debug-register breakpoints and RF, call gates, hardware task switches (including #DF through a task gate), virtual-8086 mode, the local APIC system-management mode, and the x87 FPU: 2,500 random operations over every operand class (denormals, pseudo-denormals, unnormals, NaNs, extreme exponents) with random rounding and precision control are compared with QEMU's softfloat, and stack faults, unmasked responses, #MF/FERR#, FIP/FDP/FOP and the C1 round-up indicator, which TCG does not model, are model-only checks (the kernel opens SMRAM and enables APM SMIs through QEMU's i440FX/PIIX4 chipset; the model has no chipset and `x86sys` starts with the firmware's SMBASE). MMX/SSE/SSE2 (`t_simd.c`, `t_simdx.c`): 6,500 random instructions (every MMX, SSE and SSE2 opcode and prefix form, register and memory operands, binary32/64 operands from every class, random RC/DAZ/FTZ and sticky flags with all exceptions masked) compared with QEMU (the EPYC-Rome CPU of `test/qemu-cpu.sh`; probes of SSE3 instructions follow CPUID), plus the #UD/#NM rules (CR0.EM/TS, CR4.OSFXSR), 16-byte alignment, undefined prefix combinations, prefix precedence, LDMXCSR/FXRSTOR reserved bits, the FXSAVE image and FXRSTOR; unmasked SIMD exceptions (#XM/#UD and their MXCSR flags), #MF for MMX instructions, the MMX exponent word, the two-NaN rule, MIN/MAX with DAZ, RCP/RSQRT special cases and FXSAVE's FIP/FDP are model-only (TCG returns the larger-significand NaN like x87 instead of the first operand, so two-NaN lanes are not generated for the QEMU comparison).
@@ -61,7 +99,13 @@ The multiprocessor platform (`t_apic.c` error part, `t_ioapic.c`, `t_x2apic.c`, 
 
 Long mode (`t_long.c`) is a second pass of `test/sys/run.sh` with the command line `long=1` under `qemu-system-x86_64` (the EPYC-Rome CPU of `test/qemu-cpu.sh` with long mode; `qemu-system-i386` has none). The kernel builds 4-level page tables and a 64-bit IDT, checks the activation rules from legacy mode (EFER.LME, PG without PAE, EFER.LMA writes), activates long mode and runs compatibility-mode code at CPL 0 and 3: 4-level paging (A/D bits at every level, 2 MiB and 1 GiB pages, NX at PTE/PDE/PDPE level and without NXE, reserved bits, bits 62:52, U/S and R/W across levels with CR0.WP, SMEP/SMAP, INVLPG of a 1 GiB page), interrupts and exceptions through 64-bit gates (IST, trap gates, the #GP/#NP rules for task gates, 16-bit gates, not-present gates and non-64-bit targets, INT n DPL from ring 3 with the RSP0 stack switch), SYSENTER/SYSEXIT/SWAPGS/RDFSBASE #UD, IRET with NT, FS_BASE/KernelGSbase, LTR/LLDT/LAR/LSL with long-mode descriptor types, 16-bit compatibility-mode code, and every transfer into 64-bit code: far JMP/CALL to a 64-bit segment and through 64-bit call gates (same privilege and from ring 3), RETF and IRET to 64-bit code, and SYSCALL to CSTAR. Exceptions in long mode go to 64-bit handlers and those transfers enter 64-bit code; their targets are tiny hand-assembled 64-bit stubs that record the frame (and RCX/R11) and return with IRETQ to compatibility mode. QEMU executes them; the model stops before the first 64-bit instruction, and `x86sys` applies the stub's exact effect (`LongStub.lean`, recognised by its bytes) and continues, so both transcripts show the architectural state at the boundary. A 4-level paging fuzzer (`lmf=N`, 300 cases by default; 1,500 cases each with seeds 7 and 99 checked) extends `t_pgfuzz.c` to random PDPEs (directories or 1 GiB pages), PDEs and PTEs with reserved bits, NX at every level, WP, NXE, PGE and SMEP/SMAP. TCG deviations, each rewritten by a rule citing the APM (`qemu-deviations.txt`, `lm.`/`lmf` rules): reserved-bit #PF with P = 0, 40 physical-address bits, MOV CR0 enabling paging with LME and PAE = 0 ignored instead of #GP, EFER.LMA writable and LME changeable with paging on, LTR reading 16-byte descriptors in compatibility mode, LAR/LSL with legacy types, SYSENTER/SYSEXIT executed in long mode, non-canonical FS_BASE/KernelGSbase accepted, a code segment with L = D = 1 entered, and the accessed bit of a 1 GiB or 2 MiB leaf set on a faulting access. Model-only (`model-only-long.expected`, after `MODEL-ONLY`; TCG would run 32-bit code as 64-bit code or walk 4-level tables as 32-bit ones): enabling paging with CS.L = 1, clearing CR4.PAE in long mode. Review fixes: IRET/RETF from CPL 0 to 64-bit code at CPL 2 with a null and a 16-bit SS (the full RSP), a same-privilege CALL through a 64-bit call gate with a based SS (flat 64-bit pushes), breakpoints against a RIP and an IST stack above 4 GiB (no #DB), and an SMI in compatibility mode (AMD64 save map with EFER; rule for QEMU's revision 20064h), all compared with QEMU; model-only: RSM recomputing LMA from a saved EFER with LME|LMA and PG = 0, and the L = D = 1 far-JMP target (#GP, the Intel rule; no AMD source). The main pass's t_smm handler reads either save map; rule for qemu-system-i386's legacy 32-bit map (revision 20000h).
 
-`x86bridge` (`BridgeMain.lean`, the only target that depends on both Lake packages) hands every stop of the IA-32 model in 64-bit mode to the `x86_64` model: it converts the machine state (registers zero-extended, RIP/RSP/R11 from `LongModeState`, segment caches, descriptor-table registers, control and debug registers, EFER and the SYSCALL/FS/GS MSRs, XMM, x87, memory; the state mapping is documented in the file) and runs the x86-64 model, which stops in turn at the first transfer back to compatibility mode (it has no compatibility mode). On `t_long` (`x86bridge --cmdline long=1 test/sys/out/systest.elf`) all 1,103 stops run the test's stub in the x86-64 model up to its IRETQ with exactly the memory writes and registers of `LongStub.lean`'s emulation. The X64 machine starts with `icount + tscOff`, so its TSC equals the IA-32 model's; the per-owner state X64 cannot hold is listed in the file header.
+`x86bridge` (`BridgeMain.lean`, the only target that depends on both Lake packages) hands every stop of the IA-32 model in 64-bit mode to the `x86_64` model: it converts the machine state (registers zero-extended, RIP/RSP/R11 from `LongModeState`, segment caches, descriptor-table registers, control and debug registers, EFER and the SYSCALL/FS/GS MSRs, XMM, x87, memory; the state mapping is documented in the file) and runs the x86-64 model, which stops in turn at the first transfer back to compatibility mode (it has no compatibility mode). On `t_long` (`x86bridge --cmdline long=1 test/sys/out/systest.elf`, step 6 of `verify.sh`) the IA-32 side reaches every one of its 1,108 stops and the test's `END`; 1,106 stops run the test's stub in the x86-64 model up to its IRETQ with exactly the memory writes and registers of `LongStub.lean`'s emulation. The X64 machine starts with `icount + tscOff`, so its TSC equals the IA-32 model's; the per-owner state X64 cannot hold is listed in the file header.
+
+### x86-64 model: known issues
+
+Found by this project in the separate `x86_64/` model and left unfixed there (that model is out of this work's scope); the root `verify.sh` reports the x86-64 checks with their own verdict (exit status 2 when only they fail), never as an IA-32 failure, and prints them:
+- **RF in the RFLAGS image of a #GP**: the x86-64 model does not set RF in the RFLAGS it pushes for a fault. 2 of the 1,108 bridge hand-offs differ for this reason (stops 55 and 56 of `t_long`: an IRETQ / far RET stub after a #GP; 2 differing bytes, registers equal). `validation/verify.sh` fails if more than these 2 differ.
+- **Two-NaN SUBPS against QEMU**: the random x86-64 test has a seed-dependent mismatch on SUBPS with two NaN lanes, e.g. `python3 x86_64/test/run.py 2000 1794432498`: vector 1771 (`0F 5C`), XMM2 bits 127:64: QEMU `ffc302ca7fc00123`, model `7fc001237fc00123` (1 of 2,000 vectors). Which side follows the SDM's two-NaN rule there has not been decided.
 
 SVM (`t_svm.c`): a small hypervisor in the test kernel (VMCBs, guest IDT stubs that report a vector with VMMCALL) compared with QEMU (`-cpu ...,+svm,+npt`, `test/qemu-cpu.sh`): the #UD/#GP rules of the SVM instructions (EFER.SVME, CPL 3, misaligned VMCB), a first guest and the host state after #VMEXIT, 50 instruction intercepts with and without the intercept, the selective CR0 write, IOIO (IOPM bits, EXITINFO1/2), MSR (MSRPM read/write bits, MSRs outside the map), exception intercepts with their error codes and DR6, #DF and shutdown with EXITINTINFO, the intercept-versus-exception priority matrix in a CPL-3 guest, event injection of every type and the invalid EVENTINJ values, the VMRUN consistency checks, VMSAVE/VMLOAD round trips, GIF holding INTR and NMI, the INTR/NMI intercepts and their delivery to the guest, V_INTR_MASKING with the host's IF, virtual interrupts (V_IRQ, priority, V_TPR, V_IGN_TPR, the VINTR intercept), CR8 with and without V_INTR_MASKING, real-mode, virtual-8086, 16-bit and paged guests (legacy, PAE, paged real mode, #PF intercepts), nested paging with a PAE host for guests without paging and with legacy/PAE paging (NPF EXITINFO1/2 and A/D bits in both dimensions), the interrupt shadow and RFLAGS.RF saved by intercepts and exception intercepts (also after MOV SS), and two fuzzers: `svf=N` (300 by default; 3,000 cases identical) random intercept vectors × guest state (including the interrupt shadow and RF the guest starts with) × an instruction from a 44-entry pool, and `npf=N` (300 by default; 3,000 cases with seed 3 identical) random nested and guest page tables with random reads, writes and fetches. The `smp=2` pass runs a guest on the AP and sends it a fixed IPI, an NMI and an INIT (its intercepts, then delivery in the AP's host after STGI); its transcript is the same for quanta 1 to 10^6 (`x86sys --quantum`). The `long=1` pass (qemu-system-x86_64) runs VMRUN from a compatibility-mode host: 4-level nested tables for a guest without paging and for a compatibility-mode guest with 4-level tables under nested paging (`test_svm_long`, identical to QEMU). TCG deviations (rules marked `(Svm)` in `qemu-deviations.txt`, each citing the APM): no RDTSCP intercept, no CR2/CR3/CR4/CR8 read intercepts, INT3/INTO not checked against the #BP/#OF intercepts, VMEXIT_INVALID for a guest's MOV CR4 with a reserved bit, a combined #DF not checked against the #DF intercept (TCG shuts down), INVD's intercept before its #GP, the INTn intercept after the virtual-8086 IOPL check, TR/LDTR attributes after LTR/LLDT, P = 0 for reserved-bit faults (NPF and guest #PF), RF not cleared before a VMMCALL in the same translation block; avoided by the generators: TCG has no NRIPS, decode assists, PAUSE filter, TSC ratio, VM_CR/SVM_KEY or SKINIT, walks no nested tables for a host without PAE, lets unknown MSRs and XSETBV with CR4.OSXSAVE = 0 pass differently, and runs WBINVD at CPL 3, and saves RF = 0 at a VMMCALL exit. Formerly rewritten outright by deviation rules, now model-only: the #DF intercept of a combined double fault (`svmm.df.0`) and the INIT intercept on the AP (`svmm.smp.init_exit`). Model-only (`model-only.expected`): CPUID 8000_000A, VM_CR/SVM_KEY/LOCK/SVMDIS, the SVM MSRs, nRIP and decode assists for every intercept, guest instruction bytes of a #PF, the PAUSE filter, TSC_RATIO and TSC_OFFSET, the virtual GIF, EV and nRIP of injected events, the consistency checks TCG does not make, the long-mode MSRs of VMLOAD/VMSAVE and VMSAVE/VMLOAD virtualization, host TLB entries across VMRUN/#VMEXIT with TLB_CONTROL and INVLPGA, INIT (held with GIF = 0, the INIT intercept, R_INIT → #SX), SMI (held, intercepted, taken in a guest, also under nested paging and in paged real mode, with the SVM fields of the AMD64 state-save map and EFER.SVME kept across SMM), SMM_CTL from a guest (no SMM entry: intercepts and nested paging stay) and HWCR.SmmLock, INIT in a nested-paging guest on the AP (the host's PAT and SPEC_CTRL back; `model-only-smp.expected`), regressions of an independent review (`svmr.*`: GIF = 0 discarding an instruction breakpoint, an intercepted INTR in the guest's interrupt shadow, permission maps and nCR3 above 4 GiB, VM_CR's SVMDIS #GP with LOCK, FERR_FREEZE), SKINIT, SPEC_CTRL and gPAT, GIF discarding breakpoint traps, the conditional MWAIT, RDPRU and MCOMMIT intercepts, #XM, nested paging with a 32-bit host, and two tables from `test/sys/svmref.py`, an independent reference written from the APM (`svmref.py table 400 400 1 > svm_cases.h`): 400 SVM-fuzzer cases without the TCG restrictions (exit code, EXITINFO1, nRIP, delivered vector) and 400 nested-paging cases with 32-bit and PAE hosts and every guest mode (the 2D walk, NPF/#PF information, A/D bits). Two points the APM leaves open are not derived from it: leaf A/D bits on an access the permissions refuse, and when a PAE guest's PDPTEs are read under nested paging; the table marks the cases that depend on them (138 of 400 with seed 1), and the report counts them separately. The SVM instructions are #UD/#GP cases of the 'ext' family of the single-instruction tests (`test/gen_svm.py`). Not tested: 64-bit guests (the 64-bit boundary). No native hardware family is possible: SVM is ring 0.
 
@@ -75,26 +119,35 @@ preserves single-CPU execution and records all stores, using 20,000 generated in
 (only those with paging off are checked).
 
 ## Hardware tests
-For the IA-32 x87/MMX/SSE/SSE2 coverage gap, the new
-[user-mode floating-point campaign](test/FP-HARDWARE.md) provides over 120,000
-directed and random cases, a full-state native oracle, and a self-contained
-Linux paste script. It requires no root, KVM, compiler or Lean on the target.
-Preparation and emulator smoke checks are not physical-hardware evidence.
-Its `alignment_check` family (`fp_cases.alignment_cases`, 547 cases) checks user-mode alignment
-checking: Linux runs with CR0.AM = 1, so the oracle passes EFLAGS.AC as an input and #AC arrives as
-SIGBUS (trap 17); it covers integer, string, x87 and SSE operands at offsets 0..12, the masked stores,
-and a misaligned access to an unmapped page (#AC or #PF first). SYSCALL, SYSENTER, SMEP/SMAP, UMIP,
-global pages and the MSRs cannot be tested natively in user mode.
 
-The native oracle runs each case as 32-bit code in compatibility mode under 64-bit Linux. `x86fp --compat`
-runs the cases that way on the model too (EFER.LME/LMA/NXE/SCE, CR4.PAE, 4-level page tables with the
-same identity map and test pages, CS 0x23 with L = 0); by default x86fp keeps legacy protected mode.
-On the 24 campaigns of `test/out/ia32-fp-hardware` (116,715 cases) both configurations give identical
-output for every case (including the 3,034 page faults), and the legacy output is identical to the
-stored `.model` files: no user-mode floating-point or SIMD instruction behaves differently in
-compatibility mode, and the 4-level walk gives the same #PF error codes for these accesses.
+### The EPYC bundle (user mode, no root)
 
-Open questions for real hardware (the manuals do not settle them; the model's choice is documented where it is made): SMAP on implicit supervisor accesses (descriptor tables, IDT, TSS) made at CPL 0 with EFLAGS.AC = 1 — the model checks them regardless of AC, following the Intel SDM 4.6.1 classification ("implicit supervisor-mode accesses"), which AMD APM vol. 2, 5.6.6 words differently (`Machine.smPass`); whether an IRET that faults before completing ends the blocking of NMIs — the model keeps them blocked (AMD APM vol. 2, 8.1.4; the SDM 7.7.2 unblocks them; `Step.iretUnblock`); whether call-gate parameters are read from the caller's stack at the caller's or the new CPL (visible only with SMAP) — the model reads them at the caller's CPL, as QEMU does; the CALL pseudocode of neither manual says (`Sys.callGate`); and #AC for misaligned MOVUPS/MOVDQU operands with EFLAGS.AC = 1 (the `alignment_check` family records them as 'observe'). The first three are system-level: `test/hardware.py` can run the system test kernel under KVM on the EPYC (`-accel kvm -cpu host`) to observe them.
+`test/native_fp.py prepare` builds a self-contained paste script that runs every native case family on an x86-64 Linux machine in 32-bit compatibility mode and captures the full state with signal handlers ([`test/FP-HARDWARE.md`](test/FP-HARDWARE.md)); it needs Python 3 and nothing else on the target (no root, KVM, compiler or Lean). The current bundle:
+
+```
+$ python3 test/native_fp.py prepare test/out/ia32-epyc-linux --seed 20261112 --count 10000
+  -> test/out/ia32-epyc-linux-paste.sh (22.9 MB), test/out/ia32-epyc-linux.tar.gz (17.0 MB)
+$ bash ia32-epyc-linux-paste.sh          # on the EPYC; prints the results archive to send back
+$ python3 test/native_fp.py compare test/out/ia32-epyc-linux --result <returned results dir>
+```
+
+It holds 189,240 cases in 66 campaigns of 76 families (10,368 of them 'observe'): the x87/MMX/SSE/SSE2 base campaign, `alignment_check`, the GPR extensions (`gpr_*`), SSE3..SSE4a and MisalignSse, AES/PCLMULQDQ/SHA, the XSAVE family, AVX, AVX2/FMA/F16C, `longmode`, and `open_questions` (the user-mode rows of the list above), each with the model's result in compatibility mode (`x86fp --compat`), the machine's whole CPUID dump (`cpuid.txt`), and CPUID gating (a campaign whose features the machine lacks is skipped and reported). Smoke run under QEMU/TCG (`test/fp_smoke.py` on the `--smoke` bundle, 2,654 cases, x86-64 guest of `../x86_64/guest/`): 2,604 cases in 26 campaigns executed end to end with complete output and YMM state captured in every row, 7 campaigns skipped for features TCG lacks (CLZERO, MONITORX, MCOMMIT, RDPRU, MisalignSse, XSAVEC, XSAVES), 2 cases left out because QEMU aborts on them, and 527 TCG/model differences retained, all in families where TCG is known to differ (unmasked SSE/x87 exceptions and C1, masked moves, the 15-byte limit, SYSENTER in long mode, two-NaN rules, ...). That is a runner check, not hardware evidence.
+
+What to send back: the `results.tar.gz` the script names at the end (raw observations, `cpuid.txt`, `/proc/cpuinfo`, kernel version, the comparison and its mismatch list).
+
+### KVM: privileged behaviour
+
+SVM, SMP, SMEP/SMAP, paging, alignment checking at CPL 0, task switches and long-mode entry cannot be observed from user mode. `test/hardware.py` prepares a bundle that the user runs on the EPYC with `/dev/kvm` (QEMU with `-accel kvm -cpu host`), then compares locally:
+
+```
+$ python3 test/hardware.py prepare test/out/kvm --count 10000          # --arch i386 x86_64 sys (default: all)
+$ python3 hardware.py run kvm                                            # on the EPYC, in the copied bundle
+$ python3 test/hardware.py compare test/out/kvm-returned                 # here
+```
+
+`i386`/`x86_64` run random single instructions in the ring-3 harness; `sys` runs the system-test kernel in its three passes (main, `smp=2`, `long=1`) with the whole transcripts, MODEL-ONLY parts included, and lists every line where `x86sys` differs (`sys/<pass>.diff`) for review, with no QEMU rule applied. Under KVM the processor executes the instructions, paging, SMEP/SMAP, #AC, gates, task switches, virtual-8086 mode and long-mode transitions; the local APIC, I/O APIC, PIC/PIT, SMM chipset, NMI delivery and the nested SVM guest are KVM's, so differences there are not hardware evidence. The `sys` path was run here with TCG in place of KVM (all three passes and the comparison complete); it has not run under KVM.
+
+### Earlier native campaigns (integer core, x86-64)
 
 These run on an x86-64 Linux server without root or KVM. Each instruction executes in user mode, and Linux signal handlers capture the result, for both models:
 
@@ -104,9 +157,9 @@ $ bash test/native_remote.sh test/out/run.tar.gz user@host
 $ python3 test/native.py compare test/out/run-returned --prepared test/out/run
 ```
 
-`--memory` adds loads, stores and read-modify-write operations on pages that are writable, read-only or unmapped. `--hunt` targets areas earlier runs missed, and `test/native_hunt.py` groups its mismatches. For privileged and paging behaviour, `test/hardware.py` runs the QEMU harness under KVM (`-accel kvm -cpu host`).
+`--memory` adds loads, stores and read-modify-write operations on pages that are writable, read-only or unmapped. `--hunt` targets areas earlier runs missed, and `test/native_hunt.py` groups its mismatches.
 
-On an AMD EPYC 7742, about 475,000 observations across four campaigns now all match. Bugs found this way and by the Linux boot:
+On an AMD EPYC 7742, about 475,000 observations across four campaigns (before the Zen 2 work) all match. Bugs found this way and by the Linux boot:
 - AAS ignored the borrow out of AL.
 - LOCK on non-lockable instructions did not raise #UD.
 - Read-modify-write instructions skipped the write-back for a zero shift count and for an unchanged ARPL.
@@ -117,15 +170,224 @@ On an AMD EPYC 7742, about 475,000 observations across four campaigns now all ma
 
 Regression tests: `python3 test/rmw_regression.py` and `python3 test/stack_regression.py`.
 
+The native oracle runs each case as 32-bit code in compatibility mode under 64-bit Linux, and `x86fp --compat` runs it that way on the model (EFER.LME/LMA/NXE/SCE, CR4 as Linux sets it on a 7742, 4-level page tables with the same identity map and test pages, CS 0x23 with L = 0); by default x86fp keeps legacy protected mode. Both configurations give identical output for every case outside the `longmode` family (`test/fp_model_check.py`; on the 116,715 cases of the earlier `ia32-fp-hardware` campaigns, including 3,034 page faults, too).
+
+## Open questions for the EPYC
+
+Every place where the model's behaviour is a choice that the manuals do not settle for a Zen 2, or a value that could not be confirmed, with what the model does, the manual text it follows and what observes it on the real 7742. "native `family`" is a family of the user-mode hardware bundle (`test/FP-HARDWARE.md`; 'observe' cases are recorded and reported, not failed); "KVM sys" is `test/hardware.py --arch sys`, which runs the system-test kernel under KVM on the EPYC (privileged behaviour; under KVM the APICs, I/O APIC, PIC/PIT, SMM chipset, NMI delivery and nested SVM are KVM's emulation, so those rows get no hardware evidence from it). U = observable from a ring-3 32-bit program under 64-bit Linux, S = needs ring 0. Rows marked "no native case" are user-mode observable but cannot be expressed as one instruction of the oracle (reason given).
+
+**Decoder**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| D1 | U: a 16-byte encoding of an undefined opcode (prefix-padded): #UD or #GP(0)? | decodes the whole instruction, then #GP(0) for length > 15 (`Decode.lean`); QEMU raises #UD without fetching the last byte (`x86test` counts these, ≈470 per 20,000 vectors) | SDM vol. 3, table 6-2 (length limit) | native `open_questions` `len_*_16` and the 15-byte controls (observe) |
+| D2 | U: are the ModRM/SIB/disp/imm8 of an *undefined* 0F 38, 0F 3A or VEX opcode fetched before the #UD (visible as #GP at the length limit or #PF at a page end)? | yes: 0F 38 has ModRM, 0F 3A ModRM + imm8, VEX the legacy layout (`opInfo`); behaviour change from the foundation: these encodings used to raise #UD at any length | none (QEMU's layout) | native `open_questions` `len_0f38/0f3a/vex0f38_16` (observe); the page-end variant has no native case (the oracle's code is not placed at a page end) |
+| D3 | U: 62 with mod = 11 and 8F with reg ≠ 0 (EVEX/XOP on other CPUs) | #UD (BOUND/POP register forms) | APM vol. 3: Zen 2 has no EVEX/XOP | native `open_questions` `evex_xop` (strict) |
+
+**General-purpose extensions and core integer**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| G1 | U: undefined flags of LZCNT/TZCNT, ANDN/BLSx/BZHI, BEXTR | OF = AF = 0, SF = top bit, PF = parity (as TCG) | APM rFLAGS tables: undefined | native `gpr_bitcount`, `gpr_bmi`: masked in the comparison, raw values recorded |
+| G2 | U: BZHI with index ≥ 32 | source unchanged, CF = 1 | SDM pseudocode, APM prose | native `gpr_bmi` (strict) |
+| G3 | U: RORX with VEX.vvvv ≠ 1111b | executes | APM lists no #UD (SDM does) | native `gpr_bmi` rorx rows with vvvv 0..2 (strict) |
+| G4 | U*: do CLFLUSH/CLFLUSHOPT/CLWB trigger data breakpoints? | never | APM silent (UNCONFIRMED in `Gpr.lean`) | no native case (needs DR7: ptrace); KVM sys has no case |
+| G5 | U*: CLZERO alignment of the offset or of the linear address | linear address | APM CLZERO silent | no native case (needs a DS base that is not 64-byte aligned, i.e. an LDT segment) |
+| G6 | U: RDPRU CF for an unsupported ECX | EDX:EAX = 0, CF = 0 | APM: "CF modified" (UNCONFIRMED) | native `gpr_rdpru` (strict) |
+| G7 | U: MONITOR/MWAIT(X) wake-up corner cases (silent stores, far transfers, masked timer) | documented in `Gpr.lean` | SDM MWAIT, APM | timing only; native `gpr_monitorx` records the register and fault outcome |
+| G8 | U: SHLD/SHRD r16 with a count of 17..31 | shifts dst:src:dst | undefined (SDM, APM) | native `open_questions` `shld_shrd_r16_count` (observe) |
+| G9 | U: AF after AND/OR/XOR/TEST | 0 | undefined | masked in the integer campaigns (raw value recorded) |
+
+**SSE (SSE..SSE4a, MisalignSse)**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| S1 | U: EXTRQ/INSERTQ bits 127:64 and index + length > 64 | bits 127:64 kept, bits above 63 read as 0 (QEMU, Bochs) | APM vol. 4: undefined | native `sse4a` (observe) |
+| S2 | U: HADDPx/HSUBPx with two NaNs in a pair | HADD the higher element's NaN, HSUB the lower's | SDM/APM table 4-7 with the instruction text | native `sse3_hadd_nan`, two-NaN rows of `sse3_arith` (observe) |
+| S3 | U: DPPS/DPPD exception staging | per stage; masked-out products +0 | SDM DPPS | native `sse41_dp` (two-NaN rows observe) |
+| S4 | U: PCMPxSTRx equal-ordered with an empty prototype / partial match at the end | SDM, where AMD's pseudocode differs | APM vol. 4 1.5.3 vs SDM | native `sse42_strings` imm8 & 0Ch = 0Ch (observe) |
+| S5 | U: RCPPS/RSQRTPS result bits | correctly rounded 1/x, 1/√x | implementation specific (≤ 1.5·2⁻¹²) | native `sse_random` 52h/53h, `avx_ops` (observe) |
+| S6 | U: #AC for misaligned MOVUPS/MOVDQU with EFLAGS.AC = 1 | #AC (16 bytes) | APM vol. 2, table 8-7 | native `alignment_check` (observe) |
+| S7 | U: #AC for MASKMOVQ/MASKMOVDQU | checked as a 64/128-bit operand whatever the mask | APM table 8-7 does not single them out | native `alignment_check` (strict) |
+| S8 | U: #AC or #PF first for a misaligned access to an unmapped page | #AC (before paging, as Bochs) | APM 8.2.17 silent | native `alignment_check` `unmapped_load` (strict) |
+| S9 | U*: MXCSR_MASK | 0x2FFFF (MisalignSse) | APM vol. 1, 4.2.2 | no native case: the FXSAVE/XSAVE image hashes leave MXCSR_MASK out, and the oracle returns no image bytes; KVM sys: `simd` FXSAVE lines |
+| S10 | S: FXSAVE/FXRSTOR with CR4.OSFXSR = 0 | MXCSR/XMM neither saved nor restored | SDM: implementation dependent | KVM sys (`t_simdx.c`) |
+
+**Crypto**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| C1 | U: "NP" SHA instructions with 66/F2/F3 | #UD (Bochs; TCG executes them) | SDM 3.1.1.1 | native `sha_prefix` (observe) |
+| C2 | U: misaligned SHA memory operand | #GP(0) (exception class 4) | SDM table 2-21 | native `sha` offset rows (observe) |
+
+**AVX, AVX2, FMA3, F16C**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| A1 | U: VMASKMOVPS/PD masked-out elements: accesses, faults, #AC | never accessed; stores check every selected element first | SDM (APM: implementation dependent) | native `avx_maskmov` (observe), `avx_alignment` |
+| A2 | U: VZEROALL with VEX.W = 1 | W ignored | APM exception table says #UD, its encoding table WIG | native `avx_encoding` `vzeroall_w1` (observe) |
+| A3 | U: VMOVSS/VMOVSD load with VEX.vvvv ≠ 1111b | vvvv ignored | SDM note, APM exception table (store only) | native `avx_encoding` (strict) |
+| A4 | U: VEX.W/is4[7]/vvvv[3]/VEX.L of LIG forms outside 64-bit mode | ignored | SDM 2.3.5.6, 2.3.9; APM "x" encodings | native `avx_encoding`, `avx2_encoding` (strict) |
+| A5 | U: VDPPS ymm exception stages across the lanes | stages span both lanes | SDM ("order of execution") | native `avx_observe` (observe) |
+| A6 | U: VHADD/VHSUB ymm two-NaN pairs | as S2 | as S2 | native `avx_observe` (observe) |
+| A7 | U: VPMASKMOVD/Q masked-out elements | never accessed; stores checked first | APM implementation dependent vs SDM | native `avx2_maskmov` (observe) |
+| A8 | U: #AC alignment of VPMASKMOV | 16 bytes when an element is selected | APM vol. 4 page (32) vs vol. 2 table 8-7 (16) | native `avx2_alignment` (observe) |
+| A9 | U: #AC for gather elements | element size | model choice | native `avx2_alignment` gathers (observe) |
+| A10 | U: gather mask and destination after a fault | mask elements not normalized; upper bits unchanged | SDM normalizes, APM silent | native `avx2_gather` `pf_*` (observe) |
+| A11 | U*: data breakpoint of a loaded gather element vs a later fault | the fault wins, the trap is dropped | SDM gather text | no native case (needs DR7: ptrace) |
+| A12 | U: FMA 0·∞ + QNaN | QNaN, no IE | SDM vol. 1 table 14-17, IEEE 754-2008 7.2; AMD silent | native `fma_special` (observe) |
+| A13 | U: FMA NaN choice with several NaN operands | first of x, y, z in x·y + z | SDM table 14-17; AMD silent | native `fma_special`, `avx2_ops` (observe) |
+| A14 | U: F16C with DAZ/FTZ | VCVTPH2PS ignores DAZ (no DE), VCVTPS2PH ignores FTZ | APM vol. 4 (TCG differs) | native `f16c` (strict) |
+
+**XSAVE**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| X1 | U*: XINUSE/XMODIFIED (init and modified optimizations) | exact tracking (`Xsave.lean`) | SDM vol. 1 13.6, 13.8.3 (latitude) | no native case that discriminates: the oracle loads every component from the signal frame (XINUSE = 7) and runs one instruction; KVM sys: `xsave` lines |
+| X2 | U: MXCSR saved/restored for RFBM[1] or RFBM[2] | either bit (Intel) | APM vol. 4 ("bits 0 or 1") vs vol. 2 11.5.9 / SDM | native `xsave_save`, `xsave_restore` (strict) |
+| X3 | U*: XRSTOR header bytes checked | 8..23 standard, 16..63 compacted | APM vol. 4 vs SDM 13.8.1 | no discriminating native case (random headers fail both rules); KVM sys: `xsave` header cases |
+| X4 | S: XRSTORS #GP rule for XSTATE_BV & ~IA32_XSS | SDM | APM vs SDM | KVM sys |
+| X5 | U*: faults on pages of components not touched | not probed | undocumented | no native case (the oracle's data area is one mapping) |
+| X6 | U: XSaveErPtr | XSAVE* always write/restore the x87 error pointers | APM vol. 3 E, 8000_0008:EBX[2] | recorded; pointers are 0 in the native frames, not distinguishable |
+| X7 | U: XGETBV with 66/F2/F3 | #UD | SDM "NP" | native `open_questions_xsave` (observe) |
+
+**x87**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| F1 | U: SNaN m32/m64 operand of D8/DC arithmetic: quieted before the NaN choice? | yes (QEMU, Bochs) | SDM silent | native `open_questions` `x87_snan_memory` (observe) |
+| F2 | U: transcendental result bits, Pi/2 reduction, FPTAN/FSINCOS NaN, FSINCOS C1 | correctly rounded, 66-bit Pi | SDM vol. 1 8.3.8, 8.3.10 | native `x87_transcendental`, `x87_trans_boundary` (observe) |
+| F3 | U: F2XM1 with abs(x) > 1, FYL2XP1 outside its range | invalid operation (QEMU) | SDM undefined; AMD's range | native `x87_transcendental` (observe) |
+| F4 | U: FYL2X/FPATAN with two NaNs | larger significand (SDM table 4-7); QEMU takes ST(0) | SDM vol. 1 table 4-7 | native `open_questions` `x87_trans_two_nan` (observe) |
+| F5 | U: FIP/FDP/FOP update policy | every non-control instruction updates FIP/FOP; FDP with a memory operand | SDM | recorded, excluded from the comparison |
+
+**System (paging, SYSCALL/SYSENTER, MSRs)**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| SA1 | S: SMAP on implicit supervisor accesses at CPL 0 with EFLAGS.AC = 1 | checked regardless of AC | SDM 4.6.1 vs APM vol. 2 5.6.6 | KVM sys `sysa.smap.implicit` (runs natively under KVM) |
+| SA2 | S: call-gate parameters read at the caller's or the new CPL | caller's (QEMU) | neither manual's CALL pseudocode | KVM sys (`t_callgate.c`, with SMAP) |
+| SA3 | S: SYSENTER in real mode | #UD | APM vol. 3 exception table vs its text and the SDM (#GP) | KVM sys |
+| SA4 | S: legacy SYSRET keeps SS's cache and RPL; SYSCALL keeps SS.RPL | as stated | APM SYSRET/SYSCALL pseudocode | KVM sys `sysa.*` |
+| SA5 | U: LOCK MOV CRn (n ≠ 0) at CPL 3 | #UD before the CPL check (LOCK MOV CR0 = CR8: #GP) | APM defines LOCK only for CR0 | native `open_questions` `lock_mov_cr` (observe) |
+| SA6 | S: #PF I/D bit for a SMEP fetch without NXE | set (Intel, QEMU) | APM 8.4.2 vs SDM 4.7 | KVM sys `pgf` |
+| SA7 | S: global pages across MOV CR3 and task switches | kept | implementation defined | KVM sys `sysa.pge*`, `pgt` |
+| SA8 | S: A bit of a long-mode 1 GiB/2 MiB leaf with a reserved bit | not set | APM 5.4.2 silent | KVM sys `lmf` |
+| SA9 | S: WRMSR of a reserved MTRR memory type | #GP(0) | SDM 11.11.2 (APM silent) | KVM sys `sysa.msr*` |
+
+**System B (NMI, VME, IRPerf, SMM, INIT)**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| SB1 | S: does a faulting IRET end NMI blocking? | no | APM vol. 2 8.1.4 vs SDM 7.7.2 | KVM sys `nmiq.*` (NMI blocking under KVM is KVM's: no hardware evidence) |
+| SB2 | S: does INIT end NMI blocking? | unchanged | neither manual | none |
+| SB3 | S: armed MONITOR across INIT | kept | not specified | none |
+| SB4 | S: GIF after INIT | 1 | no row in APM table 14-1 | none |
+| SB5 | S: IRPerf retirement corner cases | rules in `SysB.lean` | APM 13.2.1 silent | KVM sys `irperf.*` (if KVM passes IRPerf through) |
+| SB6 | S: VME redirection bitmap beyond the TSS limit | #GP(0) | AMD silent | KVM sys `vme.irb.limit` |
+| SB7 | S: task switch into a 16-bit TSS: upper register halves | kept (QEMU) | none | KVM sys `tsf` |
+| SB8 | S: SMM save-state attribute layout, GPR high halves | QEMU's layout, zero-extended | APM does not define the layout | KVM sys `smm.*` (SMM under KVM is emulated) |
+| SB9 | S: which CPU an APM-port (B2h) SMI goes to | the CPU executing the OUT | chipset dependent | none (chipset) |
+
+**Long mode**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| L1 | S: far transfer to a code descriptor with L = D = 1 | #GP(selector) (Intel) | APM 4.8.1 "reserved", no AMD rule | KVM sys model-only `lmm.jmp.rsvdcode` |
+| L2 | S: error code when a 64-bit IDT gate's target is not 64-bit code | the selector | APM READ_DESCRIPTOR vs 4.8.4 prose | KVM sys `lm.*` gate cases |
+| L3 | U*: GPR bits 63:32 when compatibility code enters 64-bit mode | zero (the bridge zero-extends) | APM: undefined outside 64-bit mode | no native case (the oracle must not run 64-bit code) |
+| L4 | S: same-privilege CALL through a 64-bit call gate | flat 64-bit pushes (QEMU) | APM CALLF pseudocode | KVM sys `lm.*` |
+| L5 | S: RSM with LME/LMA and PG = 0 | LMA = LME ∧ PG ∧ PAE | APM 10.4 | KVM sys `lmm.*` (SMM emulated) |
+
+**Multiprocessor platform** (all S; under KVM the local APIC and I/O APIC are KVM's, so none of these gets hardware evidence from the KVM run)
+
+| # | question | model | source |
+|---|---|---|---|
+| P1 | lowest-priority ties among focus processors; APR bits compared | highest APIC ID; APR bits 7:4 | APM 16.6.2 leaves it open |
+| P2 | polarity of SVR.FCC | set = focus checking disabled | APM 16.4.7 vs 16.6.2 |
+| P3 | XAIDN (4/8-bit APIC ID matching) | always 8-bit | APM |
+| P4 | IER writes | only with IERN = 1 | APM 16.3.6 |
+| P5 | what a disabled APIC accepts | AE = 0 nothing; ASE = 0 SMI/NMI/INIT/STARTUP/remote read/ExtINT | APM 16.5 |
+| P6 | illegal vectors 0..15, SIV/RIV/SAE/RAE | sender SIV, receivers drop and set RIV, SAE when nobody accepts, RAE never | APM |
+| P7 | timer divide sampling, delivery status | divide sampled at the initial-count write; status always 0 | APM |
+| P8 | APIC version register | 10h (UNCONFIRMED for the 7742) | APM 16.3.4 "1Xh" |
+| P9 | I/O APIC version, level-programmed NMI/INIT/SMI/ExtINT entries | 11h; edge-triggered | 82093AA datasheet (the 7742's I/O APIC is not an 82093AA) |
+| P10 | x2APIC IER reserved bits | not checked | APM 16.11.3 |
+| P11 | I/O APIC ID | N for N ≤ 14 CPUs, else 0 | platform choice |
+
+**SVM** (all S; KVM runs a nested SVM guest with its own emulation, so the KVM run is no hardware evidence for these)
+
+| # | question | model | source |
+|---|---|---|---|
+| V1 | host state at VMRUN | kept on chip; VM_HSAVE_PA page not written; #VMEXIT restores DR6/DR7 with breakpoints off, CR2 keeps the guest's | APM 15.5.1, 15.6 |
+| V2 | VMCB clean bits | ignored: every field reloaded | APM 15.15.1 |
+| V3 | TLB across VMRUN; reserved TLB_CONTROL | guest starts empty, host entries set aside; VMEXIT_INVALID (as KVM) | APM reserved |
+| V4 | VMCB register loading | CR0 reserved bits read 0, LMA recomputed, CR3[63:48] MBZ for long-mode guests | model choice |
+| V5 | VMCB CPL ≠ CS.RPL | the simulation stops (unsupported) | model limitation |
+| V6 | event injection details | error code only with EV; type 3/4 push nRIP; type 3 with another vector VMEXIT_INVALID | APM 15.20 |
+| V7 | SKINIT | CPU-state effects only | APM vol. 3 SKINIT |
+| V8 | VMSAVE/VMLOAD virtualization | never recognized (no 64-bit host) | APM 15.33.1 |
+| V9 | SMI in a guest | SMM in the guest's context (no intercepts, no nested paging); RSM does not re-read the SVM fields of the save map (FF38h written as the host's CR3, "SVM Host CR3"; KVM's `svm_host_cr3`); SMM_CTL ENTER/EXIT hold SMIs and block NMIs without entering SMM, locked by HWCR.SmmLock | APM 15.22, 15.30.3, table 10-1 |
+| V10 | LbrVirt, AVIC, GMET | not reported | APM |
+| V11 | guest-physical address ≥ 4 GiB with a 32-bit or PAE host | not-present NPF | APM silent (UNCONFIRMED) |
+| V12 | VMRUN in SMM | unsupported (stops) | APM: undefined |
+| V13 | RFLAGS.RF and the interrupt shadow saved by a #VMEXIT | those the intercepted instruction started with (also for an intercepted exception it raises) | APM 15.7.1 "as of the moment the intercept triggers"; TCG agrees |
+| V14 | intercepted INTR/NMI/SMI in the guest's interrupt shadow | exit at once (the VMCB records the shadow) | KVM: "vmexits aren't blocked by the interrupt shadow"; TCG holds them; APM silent |
+| V15 | FERR_FREEZE | the model never freezes (CR0.NE = 0: FERR# raises IRQ13 and execution continues); the intercept exits (7Eh) where the freeze would be, unless the IGNNE MSR asserts IGNNE | APM table 15-7, appendix C (exit 7Eh); x87 legacy FERR handling |
+| V16 | INIT in a guest without the INIT intercept | GIF = 1 (as QEMU), VM_CR.SVMDIS cleared unless LOCK, host PAT/SPEC_CTRL restored, the guest's TLB entries dropped | APM 15.30.1, table 14-1 (no SVM rows) |
+| V17 | nested walk: leaf A/D bits on a refused access; a PAE guest's PDPTEs under nested paging | A/D not set; PDPTEs read at each walk through the nested tables | APM silent; `svmref.py` marks the dependent cases |
+| V18 | long-mode guest CR3/GDTR/IDTR, VMLOAD TR/LDTR base above 4 GiB | unsupported (the model's CR3 and table bases have 32 bits) | model limitation |
+
+**CPUID and MSR values**
+
+| # | question | model | source | observed by |
+|---|---|---|---|---|
+| M1 | U: unnamed dump bits (8000_0007:EBX[4], 8000_0008:EBX[6, 10]) | masked | no name in APM rev. 3.33 | the bundle stores the machine's whole CPUID dump (`cpuid.txt`) |
+| M2 | U/S: PKRU in leaf 0xD without PKU; XSETBV with XCR0[9] | not reported; #GP(0) | APM 11.5.2, 5.6.7 | `cpuid.txt`; XSETBV: none |
+| M3 | S: MCG_CAP bank count | 23 (UNCONFIRMED) | family 17h PPR not available | KVM sys (KVM's value, not the hardware's) |
+| M4 | S: width of SYSENTER_CS/ESP/EIP | upper bits ignored (UNCONFIRMED) | none | KVM sys `sysa.msr*` |
+| M5 | S: LS_CFG/DE_CFG reserved bits; CPUID override MSRs C001_1004/5 | UNCONFIRMED; stored without changing CPUID | PPR not available | KVM sys (KVM's) |
+| M6 | S: PATCH_LEVEL (8Bh) | reads 0, WRMSR #GP(0); Linux therefore prints "microcode: Current revision: 0x00000000" and enables the Zenbleed chicken bit | AMD OSRR 56255 | KVM sys `msr8b.amd` |
+| M7 | S: Intel MSRs 17h, C1h/C2h, 186h/187h | #GP(0) with the AMD identity (integration fix; they were storage before) | not in APM vol. 2 appendix A | KVM sys `msr.intel` |
+
+Rows marked U* are user-mode observable but have no native case, for the reason given; every other U row has one.
+
+## Bugs found during the Zen 2 work
+
+Found by reviews (a second agent reading a workstream's diff against the APM/SDM), by the fuzzers, by Linux and by the integration checks; each is fixed and has a regression test or theorem:
+- VEX.256.NP.0F 70 executed as VPSHUFLW instead of #UD (review; the 'ud' family now walks every undefined VEX neighbour, `vexnb`; theorem `vexExec_np70`).
+- INT n read the TSS interrupt-redirection bitmap outside virtual-8086 mode with CR4.VME, raising #GP(0) with short TSS limits; events from virtual-8086 mode pushed their ring-0 frame at CPL 3 (review; `t_review.c`, theorems `intN_noVme`, `leaveV86_cpl`).
+- XSAVE/XSAVEC/XSAVES wrote zero x87 error pointers unless FSW.ES = 1, although CPUID reports XSaveErPtr (review; `xsaveref.py` found 27 of 600 cases).
+- VDPPS ymm staged exceptions per lane; HADDPx returned the lower element's NaN of a two-NaN pair (review).
+- A STARTUP accepted while an INIT was pending was lost, so Linux started its AP only at some scheduling quanta; APIC timers and MWAIT wake-ups of CPUs that were not running depended on the quantum (the SMP Linux checks and the platform review).
+- SMM used the legacy 32-bit save map and stopped in long mode (AMD64 processors use the AMD64 map in every mode); RETF/IRET to 64-bit code at an outer level and same-privilege 64-bit call-gate CALLs used the wrong stack pointer; the INIT and RESET states were corrected against APM table 14-1 (R11, CR0.CD/NW, the x87 words of application processors); I/O APIC NMI/INIT/SMI/ExtINT entries could be level-triggered; EOI cleared TMR (platform review).
+- An unassigned VEX.0F 8x encoding was decoded with the wrong length (the 15-byte-limit tests).
+- Integration: the Intel MSRs 17h, C1h/C2h, 186h/187h existed with the AMD identity (now #GP(0)); the native-campaign comparison rejected the #BR of the `longmode` family's BOUND cases as an "unexpected signal" (Linux delivers #BR as SIGSEGV), which would have stopped `compare` on the hardware results; the TCG smoke check could run only single-campaign bundles; `isa_forms.py` rows were broader than Zen 2 (BMI1/BMI2 with VEX.L = 1, BLSR/BLSMSK/BLSI's undefined ModRM.reg values, 0F 01 CC..CF/F8/FE/FF), so the 'ud' family never tested those forms (the model was already right; found by the LLVM cross-check).
+
+The TLB fuzzer (`pgt`, 12,000 cases; with INVLPG or the MOV CR3 flush disabled in the model it reports mismatches) and the SVM fuzzers (`svf`, `npf`, 3,000 cases each) found no model bug.
+
 ## Linux guest
-`guest/build.sh` builds Linux 6.12.111 from `tinyconfig` plus `guest/kernel.fragment`: a 486SX-class kernel with math emulation, an 8250 console and no SMP, APIC, PCI or ACPI. It also builds an initramfs with Debian's static i386 BusyBox. Run it in a Linux VM, e.g. on macOS:
+`guest/build.sh` builds Linux 6.12.111 from `tinyconfig` plus `guest/kernel.fragment`: a 486SX-class kernel (math emulation compiled in, unused because CPUID reports the FPU), an 8250 console and no SMP, APIC, PCI or ACPI. It also builds an initramfs with Debian's static i386 BusyBox. Run it in a Linux VM, e.g. on macOS:
 
 ```
 $ limactl start --name=kbuild template:debian
 $ limactl shell kbuild -- sudo apt-get install -y build-essential flex bison bc libelf-dev cpio lz4 gcc-i686-linux-gnu
-$ limactl shell kbuild -- bash guest/build.sh
+$ limactl shell kbuild -- bash guest/build.sh          # also: build.sh smp, build.sh bigsmp
 ```
 
-`guest/workload.sh` runs hashing, sort, a gzip round trip, shell arithmetic, floating-point awk (on the model's x87 FPU, which CPUID advertises), tmpfs I/O and `/proc` reads. Debian's BusyBox awk is built without its math library, so the transcendental instructions were checked in the guest with a small static test program instead (all results bit-identical to `test/sys/x87ref.py`). Its output on the model is byte-for-byte identical to QEMU's (`guest/workload.qemu.txt`).
+With the AMD identity Linux takes its AMD paths. What it prints about the CPU (UP kernel; the SMP kernels print the same):
+- `CPU: AMD EPYC 7742 64-Core Processor (family: 0x17, model: 0x31, stepping: 0x0)`; `/proc/cpuinfo`: `vendor_id AuthenticAMD`, `cpu family 23`, `model 49`, `cpuid level 16`, `cache size 512 KB`, `address sizes 48 bits physical, 48 bits virtual`, and the flags of the reported features (no `xsaves`: Linux clears it for AMD erratum 1386 on Zen 1/2; no `ht` with one CPU, as the topology leaves say).
+- `x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'compacted' format` (XSAVEC, because of the erratum 1386 workaround; with the former Intel identity Linux used XSAVES).
+- `microcode: Current revision: 0x00000000` and `Zenbleed: please update your microcode for the most optimal fix`: PATCH_LEVEL (MSR 8Bh) reads 0, the value of a 7742 without a loaded patch (open question M6); Linux then sets the Zenbleed chicken bit in DE_CFG, which the model stores.
+- `Spectre V2 : User space: Vulnerable`, `Speculative Store Bypass: Vulnerable`, `bugs: sysret_ss_attrs spectre_v1 spectre_v2 spec_store_bypass retbleed smt_rsb srso ibpb_no_ret vmscape`: the guest is built with `CPU_MITIGATIONS=n`; the bug list is the one Linux assigns to Zen 2.
+- `Performance Events: AMD PMU driver` with 4 generic counters (PerfCtrExtCore is masked; a real 7742 reports "Fam17h+ core perfctr" with 6).
+- `Last level iTLB entries: 4KB 1024, 2MB 1024, 4MB 512`, `dTLB ... 1GB 0` from leaves 8000_0005/6 (the dump's values).
+- `tsc: Detected 99.996 MHz processor` (the virtual 100M instructions per second), `process: using mwait in idle threads` (MONITOR is reported; MWAIT waits for an interrupt), system calls: by its code, a 32-bit kernel enters through SYSENTER when CPUID reports SEP (`do_SYSENTER_32`; the AMD SYSCALL path is for 64-bit kernels).
+- No warning, `BUG`, `Oops` or call trace; the boot takes 54,168,236 instructions (52,180,389 with the former Intel identity at the same commit).
 
-`guest/build.sh smp` builds an SMP variant (`kernel-smp.fragment`: SMP, local APIC, I/O APIC, MP-table parsing; own source tree) as `bzImage-smp` with `initramfs-smp.cpio` (adds `smp.sh`); the UP kernel and its gate are unchanged. `guest/smp-check.sh N` boots it with `x86run --smp N` (the loader places MP tables: one processor entry per CPU, the I/O APIC, ISA interrupts with IRQ 0 on pin 2, ExtINT/NMI to LINT0/LINT1) and under QEMU `-smp N,sockets=N` (SeaBIOS lists only one CPU per package in its MP table), with `no_timer_check`, runs `smp.sh` (`nproc`, online CPUs, `/proc/cpuinfo` processors, the IO-APIC lines of `/proc/interrupts`, the same computation pinned to each CPU with `taskset`, concurrent jobs) and `workload.sh`, and compares the transcripts: identical for N = 2 and N = 4. Linux reports 1 package, 1 (2) cores with 2 threads each from the topology leaves and runs its timer through the I/O APIC (`..TIMER: vector=0x30 apic1=0 pin1=2`). `QUANTA="100 1000 20000 1000000" guest/smp-check.sh 2` runs the model at each quantum against the one QEMU transcript.
+`guest/workload.sh` runs hashing, sort, a gzip round trip, shell arithmetic, floating-point awk (on the model's x87 FPU), tmpfs I/O and `/proc` reads. Debian's BusyBox awk is built without its math library, so the transcendental instructions were checked in the guest with a small static test program instead (all results bit-identical to `test/sys/x87ref.py`). Its output on the model is byte-for-byte identical to QEMU's reference `guest/workload.qemu.txt`, which `guest/qemu-workload.sh` regenerates (qemu-system-i386 with the EPYC-Rome CPU of `test/qemu-cpu.sh`, 128 MiB, the serial console; the command that produced the original file is not recorded; `-cpu pentium2`, the CPU of `doom/test.sh`, gives the same bytes).
+
+`guest/build.sh smp` builds an SMP variant (`kernel-smp.fragment`: SMP, local APIC, I/O APIC, MP-table parsing, NR_CPUS = 8; own source tree) as `bzImage-smp` with `initramfs-smp.cpio` (adds `smp.sh`); `guest/build.sh bigsmp` adds `kernel-bigsmp.fragment` (X86_BIGSMP, NR_CPUS = 64, the 32-bit maximum) for `bzImage-bigsmp`. `guest/smp-check.sh N` (`KERNEL=guest/bzImage-bigsmp` for N > 8) boots it with `x86run --smp N` (the loader places MP tables: one processor entry per CPU, the I/O APIC, ISA interrupts with IRQ 0 on pin 2, ExtINT/NMI to LINT0/LINT1) and under QEMU `-smp N,sockets=N` (SeaBIOS lists only one CPU per package in its MP table), with `no_timer_check`, runs `smp.sh` (`nproc`, online CPUs, `/proc/cpuinfo` processors, the IO-APIC lines of `/proc/interrupts`, the same computation pinned to each CPU with `taskset`, concurrent jobs) and `workload.sh`, and compares the transcripts. With the AMD identity they are identical for N = 2 (quanta 100, 1000, 20000, 10⁶), 4 (1000, 20000), 8 and 16. Linux takes the topology from the leaves (`CPU topo: ... Num. threads per package: 16`), runs its timer through the I/O APIC (`..TIMER: vector=0x30 apic1=0 pin1=2`) and, as an AMD (xAPIC) system, does not check the I/O APIC ID for uniqueness: the former limit of 14 CPUs (the Intel identity's unique 4-bit I/O APIC IDs) is gone; with 16 CPUs the I/O APIC has ID 0. 32 CPUs boot on the model (all online, every per-CPU job and the workload correct) but QEMU's SeaBIOS writes no MP table for them, so there is no reference transcript. `guest/topo-check.sh N` checks the model's `/proc/cpuinfo` topology against `test/topo_ref.py`: 0 differences for N = 4, 16 and 64.
+
+
+DOOM (`doom/`, `doom/test.sh 100`): the first 100 frames of the demo are identical on QEMU and on the model with the AMD identity (2,236,019,717 instructions, ≈ 9 min).

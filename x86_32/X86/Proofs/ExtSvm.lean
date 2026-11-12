@@ -36,8 +36,8 @@ import X86.Proofs.Ext
 * `nestedWalk_above4g`, `nestedWalk_pde_np`: the nested walk with 32-bit or PAE nested tables maps
   nothing at or above 4 GiB, and with 32-bit tables succeeds only through a present entry of the page
   directory at nCR3 (what the walk can reach starts at nCR3).
-* `cpuid_svm_reachable`: with the legacy identity CPUID reports SVM (8000_0001 ECX bit 2) and the
-  SVM leaf 8000_000A is reachable (the maximum extended leaf is 8000_000A; SVM revision 1).
+* `cpuid_svm_reachable`: CPUID reports SVM (8000_0001 ECX bit 2) and the
+  SVM leaf 8000_000A is reachable (the maximum extended leaf is 8000_0020h; SVM revision 1).
 * `smmSave_host`, `smmSave_guest`: SMM entry outside guest mode writes every SVM field of the AMD64
   state-save map as 0; in guest mode SVM Guest = 1 and the VMCB address (15.22, table 10-1).
 * `rd32p_above`: a 32-bit nested-table entry above 4 GiB reads as open bus (nCR3 is not truncated).
@@ -351,13 +351,13 @@ theorem rd32p_above {mem : ByteArray} {a : UInt64} (h : (a >>> 32 != 0) = true) 
 /-! ## CPUID and SMM -/
 
 theorem cpuid_svm_reachable (c : Cpu) :
-    (cpuid c 0x80000001 0).2.2.1 &&& 4 ≠ 0 ∧ (cpuid c 0x80000000 0).1 = 0x8000000A ∧
+    (cpuid c 0x80000001 0).2.2.1 &&& 4 ≠ 0 ∧ (cpuid c 0x80000000 0).1 = 0x80000020 ∧
     (cpuid c 0x8000000A 0).1 = 1 := by
-  rw [cpuid_former, cpuid_former, cpuid_former]
+  rw [cpuid_epyc, cpuid_epyc, cpuid_epyc]
   refine ⟨?_, ?_, ?_⟩
-  · simp only [presentCpuid, sysALeaf]; simp [Cpuid.topoEcx81]; split <;> decide
-  · simp [presentCpuid, sysALeaf]
-  · simp [presentCpuid, sysALeaf]
+  · simp [epycCpuid, amdTable, Cpuid.topoEcx81]; split <;> decide
+  · simp [epycCpuid]
+  · simp [epycCpuid, amdTable]
 
 theorem smmSave_host (c : Cpu) (h : c.svmx.guest = false) : ∀ p ∈ Svm.smmSave c, p.2 = 0 := by
   simp [Svm.smmSave, h]

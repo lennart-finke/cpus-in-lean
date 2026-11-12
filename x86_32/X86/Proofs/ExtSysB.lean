@@ -22,7 +22,8 @@ import Std.Tactic.BVDecide
   (no access to the TSS interrupt-redirection bitmap); `leaveV86_cpl`: an event from virtual-8086
   mode pushes its frame at CPL 0 (supervisor accesses).
 * `irPerf_disabled`: with HWCR.IRPerfEn = 0 IRPerfCount does not move.
-* `patchLevel_amd_wr`, `patchLevel_amd_rd`: on the AMD identity MSR 0x8B is read-only (WRMSR #GP(0)).
+* `patchLevel_amd_wr`, `patchLevel_amd_rd`, `coreMsr_patchLevel`: on the AMD identity (the model's) MSR
+  0x8B is read-only (WRMSR #GP(0)) and reads 0.
 -/
 namespace X86
 open SysB
@@ -248,6 +249,9 @@ theorem patchLevel_amd_wr (v : UInt64) (m : Machine) :
 
 /-- On the AMD identity PATCH_LEVEL reads 0 (no microcode patch loaded). -/
 theorem patchLevel_amd_rd (m : Machine) : (patchLevelMsr .epyc7742).rd m = .ok 0 m := rfl
+
+/-- The model's MSR 8Bh is the AMD PATCH_LEVEL (the final identity is the EPYC 7742). -/
+theorem coreMsr_patchLevel : coreMsr? 0x8B = some (patchLevelMsr .epyc7742) := rfl
 
 /-! ## Restated system theorems -/
 

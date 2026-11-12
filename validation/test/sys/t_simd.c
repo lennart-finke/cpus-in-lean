@@ -7,8 +7,8 @@
    Extending (EXTENDING.md): `struct sop` also describes 0F 38 / 0F 3A forms (`map`) and VEX forms
    (`vex`, `l`, `w`; VEX.vvvv names XMM2/YMM2), with flags ALLX (print XMM0..7) and YMMD (print the
    YMM upper halves). New rows go into `xops` (run by the `ssex` loop, so the existing `sops` cases
-   keep their random sequence); only forms whose feature the model implements may be added (the
-   others are listed in test/isa_forms.py). With CPUID reporting XSAVE and AVX, test_simd sets
+   keep their random sequence); the model implements every Zen 2 form listed in
+   test/isa_forms.py. With CPUID reporting XSAVE and AVX, test_simd sets
    CR4.OSXSAVE and XCR0 = 7, and every case also loads YMM0..7[255:128] from YIN and stores them to
    YOUT. */
 #include "sys.h"
@@ -217,8 +217,8 @@ static const u8 iops[] = {
 	0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
 	0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
 };
-/* Forms of later ISA extensions (SSE3 .. SSE4.2, AES, AVX, ...), added by the feature work once the
-   model implements them (test/isa_forms.py lists the others). Run by the `ssex` loop; the last row is
+/* Forms of later ISA extensions (SSE3 .. SSE4.2, AES, AVX, ...), as listed in
+   test/isa_forms.py and implemented by the model. Run by the `ssex` loop; the last row is
    a terminator. Example: { 0xF2, 0x7C, MEM | F32 | D32 } (HADDPS), { 0x66, 0x00, MEM, 2 } (PSHUFB),
    { 0x66, 0x58, MEM | F64 | D64 | ALLX | YMMD, 1, 1, 2 } (VADDPD, VEX.128/256). */
 static const struct sop xops[] = {
