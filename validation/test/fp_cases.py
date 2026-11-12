@@ -37,6 +37,9 @@ X87 = [
 ]
 TRANS = [('f2xm1','d9f0'), ('fyl2x','d9f1'), ('fyl2xp1','d9f9'),
          ('fpatan','d9f3'), ('fsin','d9fe'), ('fcos','d9ff'), ('fptan','d9f2'), ('fsincos','d9fb')]
+# Data-page PTEs with a native equivalent: unmapped, read-only, writable (native/record_check.h; the
+# accessed/dirty bits cannot be cleared from user mode, so other values cannot be run natively).
+ORACLE_PTES = (0, 0x65, 0x67)
 IOPS = bytes.fromhex('60 61 62 63 64 65 66 67 68 69 6a 6b 74 75 76 d1 d2 d3 d4 d5 d8 d9 da db dc dd de df e0 e1 e2 e3 e4 e5 e8 e9 ea eb ec ed ee ef f1 f2 f3 f4 f5 f6 f8 f9 fa fb fc fd fe')
 
 
@@ -45,6 +48,8 @@ def record(code, *, a=ONE, b=ONE, cw=0x37f, sw=0, tags=255,
            address=0x10000, permissions=(0x67, 0x67), stack=None, memory_kind=0, ymmh=None):
     code = bytes.fromhex(code) if isinstance(code, str) else code
     assert 1 <= len(code) <= 15 and len(mem) <= 64
+    # the data-page states the native oracle can realise (native/record_check.h)
+    assert all(p in ORACLE_PTES for p in permissions), permissions
     regs = [0x12345678, 3, 0x76543210, address, 0x11800, address, address, address] + [0]*8
     xmm = xmm or [0x0123456789abcdef ^ (k*0x101010101010101) for k in range(32)]
     base = struct.pack('<16s16QQII2Q32QII', bytes([len(code)])+code.ljust(15,b'\xcc'),
