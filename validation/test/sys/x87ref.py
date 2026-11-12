@@ -7,8 +7,13 @@ Specification (the model's, see x86_32/README.md):
   does not apply) of the exact functions.
 * FSIN/FCOS/FPTAN/FSINCOS reduce exactly by Pi/2, Pi = 0.C90FDAA22168C234C * 2^2 (the SDM's 66-bit pi,
   vol. 1, 8.3.8), with the nearest quotient; |x| >= 2^63 is out of range (C2 = 1, ST0 unchanged).
-* Special operands follow the SDM instruction tables. F2XM1 with |x| > 1 and FYL2XP1 outside
-  [sqrt2/2 - 1, sqrt2 - 1] are invalid operations (QEMU's choice; the SDM leaves them undefined).
+* Special operands follow the SDM instruction tables. Outside the documented domains the AMD EPYC 7742
+  defines the result (the native campaign's x87_transcendental/x87_trans_boundary families,
+  validation/README.md): F2XM1 returns a finite x with |x| > 1 unchanged with PE, +inf for +inf and
+  -1 for -inf (no flags), -0.5 with PE for -1 and, for +1, the rounding of a value just below 1 with
+  PE; FYL2XP1 computes y * log2(1 + x) for every finite x > -1 and returns x with PE for x <= -1
+  (x = +-inf stays invalid, not observed). F2XM1, FYL2X and FYL2XP1 report PE for every finite
+  nonzero result, also an exact one (and UE if that result is a denormal).
 
 Method (deliberately unlike the model's ball arithmetic): exp, ln, sqrt and division come from Python's
 decimal module (correctly rounded at the working precision P digits), pi from the decimal
@@ -255,6 +260,14 @@ def special2(x, y):
 def denf(*xs):
     return DE if any(isden(x) for x in xs) else 0
 
+def exact_pe(r):
+    """An exact result reported inexact, as the EPYC 7742 does for F2XM1/FYL2X/FYL2XP1: PE, and UE for
+    a denormal (masked underflow)."""
+    v, fl = r
+    if iszero(v) or ex(v) == 0x7FFF:
+        return r
+    return v, fl | PE | (UE if ex(v) == 0 else 0)
+
 def f2xm1(x, rc):
     if unsupported(x):
         return INDEF, IE
@@ -262,13 +275,15 @@ def f2xm1(x, rc):
         return quiet(x), IE if issnan(x) else 0
     if iszero(x):
         return x, 0
-    if isinf(x) or abs(val(x)) > 1:
-        return INDEF, IE
+    if isinf(x):
+        return ((0xBFFF, J) if sgn(x) else x), 0
+    if abs(val(x)) > 1:
+        return x, PE
     v = val(x)
     if v == 1:
-        return ONE, 0
+        return round80(1 - Fr(1, 2 ** 200), rc)
     if v == -1:
-        return round80(Fr(-1, 2), rc)[0], 0
+        return round80(Fr(-1, 2), rc)[0], PE
     def f(c):
         return expm1_dec(c.multiply(dec(c, v), c.ln(D(2))), c)
     r, fl = evaluate(f, rc)
@@ -300,7 +315,7 @@ def fyl2x(x, y, rc):
     if vx == Fr(2) ** k:
         if k == 0:
             return zero(sgn(y)), de
-        r, fl = round80(vy * k, rc)
+        r, fl = exact_pe(round80(vy * k, rc))
         return r, fl | de
     def f(c):
         cc = ctx(c.prec + 25)
@@ -317,8 +332,10 @@ def fyl2xp1(x, y, rc):
     if sp:
         return sp
     de = denf(x, y)
-    if not finite(x) or not (LNP1_LO <= val(x) <= LNP1_HI):
+    if not finite(x):
         return INDEF, IE
+    if not iszero(x) and val(x) <= -1:
+        return x, PE | de
     if iszero(x):
         return (INDEF, IE) if isinf(y) else (zero(sgn(x) ^ sgn(y)), de)
     if isinf(y):
@@ -326,8 +343,16 @@ def fyl2xp1(x, y, rc):
     if iszero(y):
         return zero(sgn(x) ^ sgn(y)), de
     vx, vy = val(x), val(y)
+    k = log2floor(1 + vx)
+    if 1 + vx == Fr(2) ** k:
+        r, fl = exact_pe(round80(vy * k, rc))
+        return r, fl | de
     def f(c):
-        return c.multiply(dec(c, vy), c.divide(ln1p_dec(vx, c), c.ln(D(2))))
+        if LNP1_LO <= vx <= LNP1_HI:
+            return c.multiply(dec(c, vy), c.divide(ln1p_dec(vx, c), c.ln(D(2))))
+        cc = ctx(c.prec + 25)
+        l2 = cc.divide(cc.ln(dec(cc, 1 + vx)), cc.ln(D(2)))
+        return c.multiply(dec(c, vy), l2)
     r, fl = evaluate(f, rc)
     return r, fl | de
 
@@ -600,8 +625,29 @@ def exact_value(op, a, b):
         t = c.subtract(pi, t)
     return Fr(-t if vb < 0 else t)
 
+def hw_rule(op, a, b):
+    """The hardware-defined case (EPYC 7742, native campaign) a line falls under, if any."""
+    if op == 0 and finite(a) and not iszero(a) and abs(val(a)) >= 1:
+        return ('outside the documented domain (or at its ends): the EPYC 7742 returns x for |x| > 1 and '
+                'reports PE for +-1 (native x87_transcendental); TCG raises an invalid operation or reports '
+                'the exact value')
+    if op == 0 and isinf(a):
+        return 'F2XM1 of +-inf: the EPYC 7742 returns +inf / -1 without exceptions (native x87_transcendental); TCG raises an invalid operation'
+    if op == 2 and finite(a) and not iszero(a) and not (LNP1_LO <= val(a) <= LNP1_HI):
+        return ('outside the documented domain: the EPYC 7742 computes y log2(1 + x) for x > -1 and returns x '
+                'with PE for x <= -1 (native x87_transcendental); TCG raises an invalid operation')
+    if op in (1, 2) and finite(a) and finite(b) and not iszero(a) and not iszero(b):
+        v = val(a) + (1 if op == 2 else 0)
+        if v > 0 and v == Fr(2) ** log2floor(v) and v != 1:
+            return ('exact result reported inexact: the EPYC 7742 sets PE for every finite nonzero FYL2X/FYL2XP1 '
+                    'result (native x87_transcendental); TCG does not')
+    return None
+
 def reason(op, cw, a, b, rq, swq, rr, swr):
     """Why the reference (the model's specification) differs from QEMU on this line."""
+    hw = hw_rule(op, a, b)
+    if hw:
+        return hw
     if rq != rr:
         if finite(rq) and finite(rr) and not iszero(rq) and not iszero(rr) and sgn(rq) == sgn(rr):
             t = exact_value(op, a, b)

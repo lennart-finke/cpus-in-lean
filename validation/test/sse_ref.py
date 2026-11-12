@@ -187,9 +187,9 @@ def dp(width, a, b, imm, mx):
 
 def hop(width, sub, a, b, mx):
     """HADDPS/HADDPD/HSUBPS/HSUBPD (SDM vol. 2 and AMD APM vol. 4 instruction pages): the pairs of
-    adjacent elements of a, then of b. HADD: element 2j+1 + element 2j, in the order both manuals
-    write it (SDM HADDPS "DEST[31:0] := SRC1[63:32] + SRC1[31:0]", HADDPD "SRC1[127:64] +
-    SRC1[63:0]"; APM "Adds the packed single-precision values in bits [63:32] and bits [31:0]");
+    adjacent elements of a, then of b. HADD: element 2j + element 2j+1 (the lower element first: the
+    order the AMD EPYC 7742 shows with two NaN operands, native campaign family sse3_hadd_nan; the
+    current manuals write SRC1[63:32] + SRC1[31:0], older SDM editions xmm1[0..31] + xmm1[32..63]);
     HSUB: element 2j - element 2j+1 (SDM HSUBPS "DEST[31:0] := SRC1[31:0] - SRC1[63:32]"). With two
     NaN operands the first operand's NaN is returned (SDM vol. 1, table 4-7). Returns (bits, flags)."""
     f = Fmt(width)
@@ -201,7 +201,7 @@ def hop(width, sub, a, b, mx):
                 nb = ls[j + 1] ^ (1 << (width - 1)) if not f.isnan(ls[j + 1]) else ls[j + 1]
                 r, fl = arith(f, 'add', ls[j], nb, mx)
             else:
-                r, fl = arith(f, 'add', ls[j + 1], ls[j], mx)
+                r, fl = arith(f, 'add', ls[j], ls[j + 1], mx)
             out.append(r)
             flags |= fl
     return join(out, width), flags
@@ -410,16 +410,17 @@ def check_line(line):
         after = dict(x.split('=') for x in w[arrow + 1:])
         x = {k: hx(v) for k, v in before.items()}
         lo = lambda v: v & ((1 << 64) - 1)
+        # bits 127:64 of the destination: undefined in the APM, cleared by the EPYC 7742 (native family sse4a)
         if code[2] == 0x78 and code[0] == 0x66:
             k = 'x%d' % (code[3] & 7)
-            exp = {k: (x[k] & ~((1 << 64) - 1)) | extrq(lo(x[k]), code[4], code[5])}
+            exp = {k: extrq(lo(x[k]), code[4], code[5])}
         elif code[2] == 0x78:
-            exp = {'x0': (x['x0'] & ~((1 << 64) - 1)) | insertq(lo(x['x0']), lo(x['x1']), code[4], code[5])}
+            exp = {'x0': insertq(lo(x['x0']), lo(x['x1']), code[4], code[5])}
         elif code[0] == 0x66:
-            exp = {'x0': (x['x0'] & ~((1 << 64) - 1)) | extrq(lo(x['x0']), x['x1'] & 63, (x['x1'] >> 8) & 63)}
+            exp = {'x0': extrq(lo(x['x0']), x['x1'] & 63, (x['x1'] >> 8) & 63)}
         else:
             hi = x['x1'] >> 64
-            exp = {'x0': (x['x0'] & ~((1 << 64) - 1)) | insertq(lo(x['x0']), lo(x['x1']), hi & 63, (hi >> 8) & 63)}
+            exp = {'x0': insertq(lo(x['x0']), lo(x['x1']), hi & 63, (hi >> 8) & 63)}
         return [(k, v, hx(after[k])) for k, v in exp.items() if hx(after[k]) != v]
     if w[0] in ('ssem.hnanps:', 'ssem.hnanpd:'):
         # mx=M a=X b=Y then (name=vec r=R mxo=M) for haddps, hsubps, haddpd, hsubpd; all masked

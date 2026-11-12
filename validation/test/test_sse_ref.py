@@ -93,13 +93,13 @@ class FloatingPoint(unittest.TestCase):
         b = R.join([f32(5), f32(6), f32(7), f32(8)], 32)
         self.assertEqual(R.hop(32, False, a, b, 0x1F80), (R.join([f32(x) for x in (3, 7, 11, 15)], 32), 0))
         self.assertEqual(R.hop(32, True, a, b, 0x1F80), (R.join([f32(-1)] * 4, 32), 0))
-        # two NaNs: HADD returns the higher element's (the first operand in both manuals), HSUB the lower's
+        # two NaNs: HADD and HSUB return the lower element's (the first operand; the EPYC 7742's order)
         n = R.join([0x7FC00001, 0x7FC00002, 0x7F800003, 0x7FC00004], 32)
-        self.assertEqual(R.lanes(R.hop(32, False, n, 0, 0x1F80)[0], 32)[:2], [0x7FC00002, 0x7FC00004])
+        self.assertEqual(R.lanes(R.hop(32, False, n, 0, 0x1F80)[0], 32)[:2], [0x7FC00001, 0x7FC00003])
         self.assertEqual(R.hop(32, False, n, 0, 0x1F80)[1], R.IE)
         self.assertEqual(R.lanes(R.hop(32, True, n, 0, 0x1F80)[0], 32)[:2], [0x7FC00001, 0x7FC00003])
         d = R.join([0x7FF8000000000001, 0x7FF8000000000002], 64)
-        self.assertEqual(R.lanes(R.hop(64, False, d, 0, 0x1F80)[0], 64)[0], 0x7FF8000000000002)
+        self.assertEqual(R.lanes(R.hop(64, False, d, 0, 0x1F80)[0], 64)[0], 0x7FF8000000000001)
         self.assertEqual(R.lanes(R.hop(64, True, d, 0, 0x1F80)[0], 64)[0], 0x7FF8000000000001)
 
     def test_arith(self):

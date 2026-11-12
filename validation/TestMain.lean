@@ -163,6 +163,31 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option
   -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
   if !i.vex && i.pp != 0 && ((0x2C8 ≤ i.op && i.op ≤ 0x2CD) || i.op == 0x3CC) && lo.vec == 6 then
     return lo
+  -- (Sse) EXTRQ/INSERTQ (66/F2 0F 78/79) clear bits 127:64 of the destination on the AMD EPYC 7742
+  -- (native campaign family sse4a, 288 cases; the APM calls them undefined); TCG keeps them. Only
+  -- those two words of QEMU's outcome are replaced, and only when everything else is equal.
+  if !i.vex && (i.op == 0x178 || i.op == 0x179) && (i.pp == 1 || i.pp == 3) && lo.vecs.length > 33 then
+    let d := (if i.op == 0x178 && i.pp == 1 then i.rm else i.reg).toNat
+    let hiWords := [1 + 4 * d + 2, 1 + 4 * d + 3]
+    let same := (List.range qo.vecs.length).all fun k => hiWords.contains k || qo.vecs[k]! == lo.vecs[k]!
+    if same && hiWords.all (fun k => lo.vecs[k]! == 0) && { qo with vecs := lo.vecs } == lo then
+      return lo
+  -- (Avx, Avx2) VEX encoding rules of the AMD EPYC 7742 that TCG does not check (native campaign
+  -- families avx_encoding, avx2_encoding): VEX.vvvv[3] alone wrong on a form that needs 1111b, the
+  -- VMOVSS/VMOVSD load with VEX.vvvv ≠ 1111b, VPEXTRD/VPINSRD with VEX.W1 outside 64-bit mode: #UD
+  -- (TCG executes them, or faults on their memory operand); VPERMQ/VPERMPD with VEX.W0 executes (TCG
+  -- raises #UD).
+  if i.vex && lo.vec == 6 && qo.vec != 6 &&
+      (i.vvvv3 || (i.map == 1 && i.byte == 0x10 && (i.pp == 2 || i.pp == 3) && i.isMem && i.vvvv != 0) ||
+       (i.map == 3 && (i.byte == 0x16 || i.byte == 0x22) && i.pp == 1 && i.vexW)) then
+    return lo
+  if i.vex && i.map == 3 && (i.byte == 0x00 || i.byte == 0x01) && i.pp == 1 && !i.vexW && qo.vec == 6 &&
+      lo.vec != 6 then
+    return lo
+  -- (Gpr) RORX (VEX.F2.0F3A F0) with VEX.vvvv ≠ 1111b is #UD: the SDM says so and the AMD EPYC 7742
+  -- raises it (native campaign family gpr_bmi, 40 cases; the APM lists no #UD). TCG executes it.
+  if i.vex && i.map == 3 && i.byte == 0xF0 && !Vex.noV i && lo.vec == 6 then
+    return lo
   -- (Avx) VEX encodings TCG executes although they are #UD (QEMU's completion or fault, or the
   -- accessed bits its memory access set before its #UD, are replaced by the model's #UD; see
   -- `tcgVexUd`)

@@ -6,9 +6,11 @@ taken in) and the CPUID dump of a real 7742 (`validation/test/fixtures/epyc7742-
 logical CPU #0); `cpuid_table.py check` (a unit test) fails if the model, the reasons or this file
 drift apart. Do not edit by hand. The Lean side: `X86/Cpuid.lean` (`implemented`, with the same
 reasons) and `X86/Proofs/Ext.lean` (`cpuid_epyc`, `cpuid_epyc_dump`: no reported bit is missing
-from the dump).
+from the dump), `X86/Proofs/EpycHw.lean` (`cpuid_epyc_native_dump`: nor from the dump of the 7742 the
+native campaign ran on, `validation/test/fixtures/epyc7742-native-cpuid.txt`; the two dumps' feature
+bits differ only in 8000_0008h EBX[17] StibpAlwaysOn, `dumps_feature_diff`).
 
-Feature bits set in the dump: 162; reported by the model: 125; not reported: 37.
+Feature bits set in the dump: 162; reported by the model: 124; not reported: 38.
 Identity, brand string, cache/TLB descriptors (8000_0005/6/19/1D), address sizes (8000_0008),
 MONITOR (5), the topology (1, 0Bh, 8000_0008 ECX, 8000_001E) and the SVM revision/ASIDs equal the dump
 (the topology fields for N CPUs: `Cpuid.topo`; with N = 1 HTT and CmpLegacy are 0).
@@ -42,6 +44,7 @@ MONITOR (5), the topology (1, 0Bh, 8000_0008 ECX, 8000_001E) and the SVM revisio
 | 80000008.0 | EBX | 6 | (bit 6, reserved in APM 3.33) | hints the timing-free model cannot honour (INT_WBINVD, IbrsPreferred, IbrsSameMode) and bits without a documented meaning |
 | 80000008.0 | EBX | 10 | (bit 10, reserved in APM 3.33) | hints the timing-free model cannot honour (INT_WBINVD, IbrsPreferred, IbrsSameMode) and bits without a documented meaning |
 | 80000008.0 | EBX | 13 | INT_WBINVD | hints the timing-free model cannot honour (INT_WBINVD, IbrsPreferred, IbrsSameMode) and bits without a documented meaning |
+| 80000008.0 | EBX | 17 | StibpAlwaysOn | set in this dump, clear on the 7742 the native campaign ran on (microcode 0x830107c, fixtures/epyc7742-native-cpuid.txt): a firmware/microcode preference; the model reports only bits both real dumps have |
 | 80000008.0 | EBX | 18 | IbrsPreferred | hints the timing-free model cannot honour (INT_WBINVD, IbrsPreferred, IbrsSameMode) and bits without a documented meaning |
 | 80000008.0 | EBX | 19 | IbrsSameMode | hints the timing-free model cannot honour (INT_WBINVD, IbrsPreferred, IbrsSameMode) and bits without a documented meaning |
 | 80000008.0 | EBX | 23 | PPIN | the protected processor inventory number MSRs are not modelled |
@@ -197,7 +200,7 @@ Leaves the dump fills and the model reports as zero (their feature is masked): 0
 | 80000008.0 | EBX | 13 | INT_WBINVD | not reported (ext8Misc) |
 | 80000008.0 | EBX | 14 | IBRS | reported |
 | 80000008.0 | EBX | 15 | STIBP | reported |
-| 80000008.0 | EBX | 17 | StibpAlwaysOn | reported |
+| 80000008.0 | EBX | 17 | StibpAlwaysOn | not reported (stibpAlwaysOn) |
 | 80000008.0 | EBX | 18 | IbrsPreferred | not reported (ext8Misc) |
 | 80000008.0 | EBX | 19 | IbrsSameMode | not reported (ext8Misc) |
 | 80000008.0 | EBX | 23 | PPIN | not reported (ppin) |

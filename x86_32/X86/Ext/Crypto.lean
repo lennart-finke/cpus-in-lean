@@ -40,11 +40,13 @@ figures 7 and 14; `X86/Proofs/ExtCrypto.lean` proves them equal to the algebraic
 
 Exceptions (SDM vol. 2, table 2-21 "Type 4"; AMD APM vol. 4, the instruction pages): #UD with any
 other mandatory prefix (AES/PCLMULQDQ need 66; the SHA instructions are "NP": a 66, F2 or F3 prefix
-is #UD, as in Bochs' decoder; QEMU's TCG executes them, see `validation/README.md`; not yet confirmed
-on a Zen 2, which the native campaign's `sha_prefix` cases probe), with LOCK
-(`Step.lockOk`), CR0.EM = 1 or CR4.OSFXSR = 0; then #NM with CR0.TS = 1 (`sseCheck`); then the
-memory operand: segment checks, #GP(0) unless 16-byte aligned (`vecAddr`; AMD's MisalignSse mode is
-the Sse workstream's), #PF. No flags, no MXCSR effect, YMM bits 255:128 unchanged (legacy SSE). The
+is #UD, as in Bochs' decoder and on the EPYC 7742, native `sha_prefix`; QEMU's TCG executes them,
+see `validation/README.md`), with LOCK (`Step.lockOk`), CR0.EM = 1 or CR4.OSFXSR = 0; then #NM with
+CR0.TS = 1 (`sseCheck`); then the memory operand: segment checks, #GP(0) unless 16-byte aligned for
+AES/PCLMULQDQ (`vecAddr`; AMD's MisalignSse mode is the Sse workstream's), #PF. The SHA instructions
+have no alignment requirement: the EPYC 7742 executes them with a misaligned m128 operand (native
+`sha`, 28 cases at offsets 1, 4, 8, 15; open question C2), as TCG does, although the SDM lists them
+with exception class 4; #AC with alignment checking is as for MOVUPS (16 bytes; not observed). No flags, no MXCSR effect, YMM bits 255:128 unchanged (legacy SSE). The
 undefined-prefix #UD is checked first, as for the SSE instructions of the core model.
 
 Hooks (called by `X86/Dispatch.lean` after `Sse.map2?`/`Sse.map3?`; `none` = not handled here):
@@ -330,12 +332,21 @@ then the aligned 128-bit source. -/
   let b ← rdXE i 16 true
   setXmm i.reg (f a b)
 
+/-- `xmmOp` of the "NP" SHA instructions: no prefix, and an m128 source of any alignment (the EPYC 7742
+executes misaligned SHA operands, see above). -/
+@[inline] def shaOp (i : Inst) (f : V128 → V128 → V128) : M Unit := do
+  if i.pp != 0 || !shaAvail then ud
+  sseCheck
+  let a ← getXmm i.reg
+  let b ← rdXE i 16 false
+  setXmm i.reg (f a b)
+
 /-- SHA256RNDS2 xmm1, xmm2/m128, <XMM0>. -/
 def sha256rnds2Op (i : Inst) : M Unit := do
   if i.pp != 0 || !shaAvail then ud
   sseCheck
   let a ← getXmm i.reg
-  let b ← rdXE i 16 true
+  let b ← rdXE i 16 false
   let wk ← getXmm 0
   setXmm i.reg (sha256rnds2 a b wk)
 
@@ -343,12 +354,12 @@ def sha256rnds2Op (i : Inst) : M Unit := do
 def map2? (i : Inst) : Option (M Unit) :=
   if i.vex then none else
   match i.byte with
-  | 0xC8 => some (xmmOp i 0 shaAvail sha1nexte)
-  | 0xC9 => some (xmmOp i 0 shaAvail sha1msg1)
-  | 0xCA => some (xmmOp i 0 shaAvail sha1msg2)
+  | 0xC8 => some (shaOp i sha1nexte)
+  | 0xC9 => some (shaOp i sha1msg1)
+  | 0xCA => some (shaOp i sha1msg2)
   | 0xCB => some (sha256rnds2Op i)
-  | 0xCC => some (xmmOp i 0 shaAvail sha256msg1)
-  | 0xCD => some (xmmOp i 0 shaAvail sha256msg2)
+  | 0xCC => some (shaOp i sha256msg1)
+  | 0xCD => some (shaOp i sha256msg2)
   | 0xDB => some (xmmOp i 1 (implemented .aes) fun _ b => aesimc b)
   | 0xDC => some (xmmOp i 1 (implemented .aes) aesenc)
   | 0xDD => some (xmmOp i 1 (implemented .aes) aesenclast)
@@ -363,7 +374,7 @@ def map3? (i : Inst) : Option (M Unit) :=
   match i.byte with
   | 0x44 => some (xmmOp i 1 (implemented .pclmulqdq) fun a b => pclmulqdq a b imm)
   | 0xDF => some (xmmOp i 1 (implemented .aes) fun _ b => aeskeygenassist b imm)
-  | 0xCC => some (xmmOp i 0 shaAvail fun a b => sha1rnds4 a b imm)
+  | 0xCC => some (shaOp i fun a b => sha1rnds4 a b imm)
   | _ => none
 
 end Crypto

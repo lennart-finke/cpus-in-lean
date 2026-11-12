@@ -31,7 +31,8 @@ pages) and vol. 1, 14.5 (FMA) and 14.4.1 (half precision), SDM vol. 2A, 2.3.12 (
   VPERM2I128, VINSERTI128/VEXTRACTI128, VBROADCASTI128, VPBROADCASTB/W/D/Q and VBROADCASTSS/SD from
   a register, VPBLENDD, and the variable shifts VPSLLVD/Q, VPSRLVD/Q (count ≥ element width gives 0),
   VPSRAVD (sign fill).
-* Encoding rules (#UD before the VEX checks, `Vex.start`): VEX.W1 for VPERMQ/VPERMPD; VEX.W0 for
+* Encoding rules (#UD before the VEX checks, `Vex.start`): VPERMQ/VPERMPD ignore VEX.W (the APM
+  requires W1, but the EPYC 7742 executes VPERMQ with W0 as VPERMQ: native `avx2_encoding`); VEX.W0 for
   VPERMD/VPERMPS, VPERM2I128, VINSERTI128, VEXTRACTI128, VBROADCASTI128, VPBROADCAST*, VPBLENDD,
   VPSRAVD, VPBLENDVB, VCVTPH2PS, VCVTPS2PH, VBROADCASTSS/SD (AMD APM vol. 4 exception tables:
   "VEX.W = 1"); VEX.L = 1 for the cross-lane 256-bit-only forms ("VEX.L = 0"); VEX.vvvv = 1111b for
@@ -42,12 +43,11 @@ pages) and vol. 1, 14.5 (FMA) and 14.4.1 (half precision), SDM vol. 2A, 2.3.12 (
 As VMASKMOVPS/PD in `Avx.lean`: masked-out elements are not accessed and raise no exception (AMD APM
 vol. 4 VPMASKMOVD: "Exception and trap behavior for elements not selected ... is implementation
 dependent"; the model follows the SDM, "Faults occur only due to mask-bit required memory accesses");
-a store checks every selected element before writing any. Unlike VMASKMOVPS, AMD lists #AC for
-VPMASKMOVD/Q ("256-bit memory operand not 32-byte aligned or 128-bit memory operand not 16-byte
-aligned"); the model raises #AC(0) with alignment checking when at least one element is selected
-and the operand is not aligned to 16 bytes, the alignment of 128- and 256-bit media operands in APM
-vol. 2, table 8-7 (the instruction page's 32 for 256-bit operands disagrees with that table; open
-doubt, recorded by the native campaign family `avx2_maskmov`).
+a store checks every selected element before writing any. AMD lists #AC for VPMASKMOVD/Q ("256-bit
+memory operand not 32-byte aligned or 128-bit memory operand not 16-byte aligned"), but the EPYC 7742
+raises none, for loads and stores, 128 and 256 bits, at offsets 1, 2, 4, 8 with alignment checking
+on (native campaign family `avx2_alignment`, 12 cases), as for VMASKMOVPS/PD: the model raises no
+#AC for them either (`maskAc` is a no-op).
 
 ## Gathers (VSIB)
 
@@ -61,8 +61,9 @@ SIB, is XMM4/YMM4 here.
   vol. 2A, 2.3.12, VSIB needs a SIB byte, which 16-bit addressing does not have; QEMU's decoder
   agrees).
 * Elements in ascending order: each selected element (mask sign bit) is loaded from
-  base + disp + sign-extended index · scale (32-bit wrap-around), with a segment check, #AC with
-  alignment checking for an element not aligned to its size, and paging; after each element
+  base + disp + sign-extended index · scale (32-bit wrap-around), with a segment check and paging
+  and no alignment check (the EPYC 7742 raises no #AC for misaligned gather elements with alignment
+  checking on: native `avx2_alignment`, offsets 1, 2, 4 of VPGATHERDD/DQ, 5 cases); after each element
   (selected or not) its mask element is cleared. A fault at element k leaves elements < k loaded with
   their mask elements zero and the others unchanged, and the instruction can be restarted (SDM:
   "Faults are delivered in a right-to-left manner"; AMD APM vol. 4 VGATHERDPS: "Elements that have
@@ -242,8 +243,8 @@ def varShiftOp (i : Inst) (kind : Nat) (enc : Bool) : M Unit := do
   let c ← rdRmV i
   setV i i.reg (varShift bits kind ((if i.vexL then 256 else 128) / bits) a c)
 
-/-- #AC(0) for a VPMASKMOV operand at linear address `lin` (see the module documentation). -/
-def maskAc (lin : UInt32) : M Unit := do acChk lin 16 (← isUser)
+/-- #AC for a VPMASKMOV operand: none on the EPYC 7742 (see the module documentation). -/
+def maskAc (_lin : UInt32) : M Unit := pure ()
 
 /-- VPMASKMOVD/Q load (VEX.66.0F38 8C): selected elements read in ascending order, others 0. -/
 def pmaskLoad (i : Inst) : M Unit := do
@@ -312,7 +313,6 @@ def gatherElems (i : Inst) (db ib : Nat) (base : UInt32) (ix : V256) (sel : Arra
         let sz := (db / 8).toUInt32
         let off := base + i.disp + ((ix.lane ib k).toUInt32 <<< i.scale.toUInt32)
         let lin ← segAddr i.seg off sz false
-        acChk lin sz (← isUser)
         let d := setLane256 d db k (← rdLin lin sz).lo
         setY i.reg d
         pure d
@@ -482,7 +482,7 @@ def map3 (i : Inst) : Option (M Unit) :=
   else if !implemented .avx2 then none else
   match b0 with
   | 0x00 | 0x01 => some do                           -- VPERMQ, VPERMPD
-    start i (i.vexW && L && noV i)
+    start i (L && noV i)   -- VEX.W ignored (EPYC 7742)
     setY i.reg (permq i.imm (← rdRm i 32))
   | 0x02 => some do                                  -- VPBLENDD
     start i (w0 i)

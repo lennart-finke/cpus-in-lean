@@ -169,8 +169,9 @@ theorem cpuid_leaf7_gpr (c : Cpu) :
   rw [cpuid_epyc]; simp [epycCpuid, amdTable]; decide
 
 /-- CPUID 8000_0008h EBX: CLZERO, RDPRU, MCOMMIT, WBNOINVD (and XSaveErPtr, bit 2, of the XSAVE work,
-system A's IBPB, IBRS, STIBP, StibpAlwaysOn, SSBD: 0x0102D000, and IRPERF, bit 1, of system B). -/
-theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x317 ||| 0x0102D000 := by
+system A's IBPB, IBRS, STIBP, SSBD: 0x0100D000, and IRPERF, bit 1, of system B; StibpAlwaysOn, bit 17,
+is masked since the native campaign's CPUID dump lacks it). -/
+theorem cpuid_ext8_gpr (c : Cpu) : (cpuid c 0x80000008 0).2.1 = 0x317 ||| 0x0100D000 := by
   rw [cpuid_epyc]; simp [epycCpuid, amdTable]; decide
 
 end X86

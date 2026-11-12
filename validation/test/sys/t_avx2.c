@@ -598,9 +598,10 @@ void test_avx2_model(void) {
 	WRCR(0, RDCR(0) & ~0x40000);
 	kprintf("avx2m.ac: maskmov_4=%x maskmov_16=%x maskmov_none_4=%x gather_2=%x gather_4=%x gatherq_4=%x\n",
 		ac[0], ac[1], ac[2], ac[3], ac[4], ac[5]);
-	/* #UD before #NM (QEMU checks VEX.W after CR0.TS) */
+	/* #UD before #NM (QEMU checks VEX.W after CR0.TS); VPERMQ needs VEX.L = 1 (its VEX.W is ignored on the
+	   EPYC 7742) */
 	cr0set(8);
-	kprintf("avx2m.ud_before_nm: permq_w0=%x gather_dm=%x cvtph2ps_w1=%x\n", N(GM, 0xC4, 0xE3, 0x7D, 0x00, 0xC1, 0x1B),
+	kprintf("avx2m.ud_before_nm: permq_l0=%x gather_dm=%x cvtph2ps_w1=%x\n", N(GM, 0xC4, 0xE3, 0xF9, 0x00, 0xC1, 0x1B),
 		N(GM, 0xC4, 0xE2, 0x7D, 0x90, 0x04, 0x8E), N(GM, 0xC4, 0xE2, 0xF9, 0x13, 0xC1));
 	cr0set(0);
 	/* random F16C cases with binary16 denormals, DAZ and FTZ (test/avx2_ref.py) */

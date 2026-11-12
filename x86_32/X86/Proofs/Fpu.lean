@@ -28,16 +28,24 @@ theorem trigFinite_zero (which : Nat) {a : F80} (cw : UInt32) (h : a.isZero = tr
     Trans.trigFinite which a cw = (if which == 1 then F80.one else a, 0) := by
   simp [Trans.trigFinite, h]
 
-/-- F2XM1 at the ends of its domain is exact: 2^1 - 1 = 1 and 2^-1 - 1 = -1/2. -/
-theorem f2xm1_one (cw : UInt32) : Trans.f2xm1 F80.one cw = (F80.one, 0) := rfl
+/-- F2XM1 at the ends of its domain, as the EPYC 7742 computes it (native campaign family
+`x87_transcendental`): 2^-1 - 1 = -1/2 with PE (the result is exact, the precision exception is
+reported anyway), and for +1 the rounding of a value just below 1 with PE: 1 with C1 = 1 in the
+round-to-nearest and round-up modes, 1 - 2^-64 in the others (`#guard`s in `Proofs/EpycHw.lean`). -/
+theorem f2xm1_one (cw : UInt32) : Trans.f2xm1 F80.one cw = round80 false (2 ^ 128 - 1) 1 (-128) 64 cw := rfl
 theorem f2xm1_neg_one (cw : UInt32) :
-    Trans.f2xm1 (F80.one.withNeg true) cw = ({ sig := 0x8000000000000000, se := 0xBFFE }, 0) := rfl
+    Trans.f2xm1 (F80.one.withNeg true) cw = ({ sig := 0x8000000000000000, se := 0xBFFE }, FPF.PE) := rfl
 
-/-- F2XM1 outside its domain (|x| ≥ 2, including ±∞; the SDM leaves it undefined) is an invalid
-operation with the QNaN indefinite as the masked result. -/
+/-- F2XM1 outside its domain (finite |x| ≥ 2; the SDM leaves it undefined): the EPYC 7742 returns the
+operand unchanged with the precision exception (native `x87_transcendental`/`x87_trans_boundary`). -/
 theorem f2xm1_out_of_domain {a : F80} (cw : UInt32) (hu : a.unsupported = false) (hn : a.isNaN = false)
-    (he : a.exp > 16383) : Trans.f2xm1 a cw = (F80.indefinite, FPF.IE) := by
+    (hi : a.isInf = false) (he : a.exp > 16383) : Trans.f2xm1 a cw = (a, FPF.PE) := by
   have hz : a.isZero = false := by simp [F80.isZero]; omega
-  simp [Trans.f2xm1, hu, hn, hz, he]
+  simp [Trans.f2xm1, hu, hn, hz, hi, he]
+
+/-- F2XM1 of ±∞: 2^∞ - 1 = ∞ and 2^-∞ - 1 = -1, exactly, without exceptions (EPYC 7742). -/
+theorem f2xm1_inf (n : Bool) (cw : UInt32) :
+    Trans.f2xm1 (F80.inf n) cw = (if n then F80.one.withNeg true else F80.inf false, 0) := by
+  cases n <;> rfl
 
 end X86

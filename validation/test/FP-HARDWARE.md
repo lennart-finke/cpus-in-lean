@@ -251,8 +251,10 @@ reported, not failed: the outcomes the manuals leave to the implementation). The
 combines deterministic matrices with 10,000 seeded random x87 cases and 10,000 seeded random SSE
 cases; the Zen 2 families are listed in `validation/README.md` with the layer each belongs to
 (`gpr_*`, `sse3_*` .. `sse4a`, `misalign_sse`, `aes*`, `pclmulqdq*`, `sha*`, `xsave_*`, `avx_*`,
-`avx2_*`, `fma_special`, `f16c`, `alignment_check`, `longmode`, `open_questions*`). The base campaign
-covers:
+`avx2_*`, `fma_special`, `f16c`, `alignment_check`, `longmode`, `open_questions*`). Bundles prepared
+after the first EPYC 7742 run (`validation/README.md`, "First run") also have `sse_rcp_sweep` (12,400
+'observe' cases, `test/native_rcp.py`): the whole RCPPS/RSQRTPS tables, so that a later round can
+reproduce AMD's results exactly. The base campaign covers:
 
 - x87 arithmetic, reverse/pop forms, square root, rounding, scaling, extraction,
   remainder, comparisons, conditional moves, sign operations, stack moves,

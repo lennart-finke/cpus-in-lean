@@ -173,7 +173,9 @@ def load_x87(s, mem):
     # AMD APM vol. 5 FXRSTOR: ES (and B) recomputed from the flags and masks
     es = fsw & ~fcw & 0x3F != 0
     fsw = (fsw & 0x7F7F) | (0x8080 if es else 0)
-    s.fcw, s.fsw, s.ftw, s.fop = fcw, fsw, ftw, fop & 0x7FF
+    # the control word's reserved bits 7 and 13..15 read as 0 and bit 6 as 1 (observed on the EPYC 7742
+    # for FRSTOR, native campaign family alignment_check; Bochs masks every FCW load the same way)
+    s.fcw, s.fsw, s.ftw, s.fop = (fcw & 0x1F3F) | 0x40, fsw, ftw, fop & 0x7FF
     s.fip, s.fcs, s.fdp, s.fds = fip, fcs, fdp, fds          # XSaveErPtr: always loaded
     s.st = [struct.unpack_from('<QH', mem, 32 + 16 * k) for k in range(8)]
 

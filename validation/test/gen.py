@@ -360,6 +360,10 @@ def gen_one():
         if op in (0xD4, 0xD5): fm &= ~(OF | AF | CF)
     else:
         if op in (0xA4, 0xA5, 0xAC, 0xAD):
+            if op in (0xA5, 0xAD) and opsz == 2 and g.regs[1] & 0x1F > 16:
+                # 16-bit SHLD/SHRD with a count of 17..31: undefined; the model follows the EPYC 7742
+                # (native family open_questions), TCG differs: not generated (as for the imm8 forms)
+                return gen_one()
             cnt = (imm[0] if op in (0xA4, 0xAC) else g.regs[1] & 0xFF) & 0x1F
             if cnt != 0:
                 fm &= ~AF

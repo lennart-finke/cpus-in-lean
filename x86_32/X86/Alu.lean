@@ -129,8 +129,18 @@ def shiftDouble (left : Bool) (sz : Sz) (dst src cnt : UInt32) : Option (UInt32 
   let mask := sz.mask
   let d := dst.toUInt64
   let s := src.toUInt64
-  -- concatenate into 64 bits (for 16-bit operands with count > 16 the result is
-  -- architecturally undefined; we follow the dst:src:dst concatenation)
+  -- 16-bit operands with a count of 17..31 (architecturally undefined): the EPYC 7742 shifts the
+  -- 32-bit concatenation dst:src (SHLD) / src:dst (SHRD) with zeros coming in and sets AF (native
+  -- campaign family open_questions, `shld_shrd_r16_count`: 5 cases, counts 17, 20, 31, all with
+  -- src = 0, so only partly determined); QEMU and Intel's documentation use dst:src:dst
+  if sz == 2 && cnt > 16 then
+    let v : UInt64 := if left then (d <<< 16) ||| s else (s <<< 16) ||| d
+    let r := (if left then (v <<< cnt) >>> 16 else v >>> cnt).toUInt32 &&& mask
+    let cf := if left then (v >>> (32 - cnt)) &&& 1 != 0 else (v >>> (cnt - 1)) &&& 1 != 0
+    let of := (r ^^^ dst) &&& sz.msb != 0
+    some (r, szp sz r ||| AF ||| (if cf then CF else 0) ||| (if of then OF else 0))
+  else
+  -- concatenate into 64 bits (a 16-bit operand with count 16: dst:src:dst)
   let (r, cf) :=
     if left then
       let v : UInt64 := if sz == 4 then (d <<< 32) ||| s else (d <<< 48) ||| (s <<< 32) ||| (d <<< 16)

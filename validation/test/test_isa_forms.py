@@ -268,6 +268,10 @@ IMPLEMENTED_DIFFERENCES = [
          '(then MOV CR0, or, with ModRM.mod != 11b, nothing: it requires mod = 11b). AMD APM vol. 3 MOV '
          'CRn: with a LOCK prefix MOV CR0 accesses CR8 outside 64-bit mode (CPUID 8000_0001:ECX[4] '
          'AltMovCr8); SDM vol. 2B MOV (control registers): "The 2 bits in the mod field are ignored"'),
+    Diff('VPERMQ/VPERMPD with VEX.W = 0',
+         lambda p, t: p['enc'] == 'vex' and p['map'] == 3 and p['op'] in (0x00, 0x01) and p['W'] == 0,
+         'LLVM requires VEX.W1 (SDM/APM "VEX.256.66.0F3A.W1 00"); the AMD EPYC 7742 executes VPERMQ with '
+         'W0 as VPERMQ (native campaign family avx2_encoding), and the model follows it'),
 ]
 
 NOT_ZEN2 = ('not a Zen 2 instruction (LLVM decodes the instructions of every CPU whatever -mcpu says): '
@@ -277,6 +281,11 @@ NOT_ZEN2 = ('not a Zen 2 instruction (LLVM decodes the instructions of every CPU
 
 # Undefined encodings (the 'ud' family expects #UD) that LLVM decodes.
 UNDEFINED_DIFFERENCES = [
+    Diff('VPEXTRQ/VPINSRQ (VEX.W1) outside 64-bit mode',
+         lambda p, t: p['enc'] == 'vex' and p['map'] == 3 and p['op'] in (0x16, 0x22) and p['W'] == 1
+         and mnemonic(t) in ('vpextrq', 'vpinsrq'),
+         'LLVM decodes the 64-bit-mode forms; the AMD EPYC 7742 raises #UD for VEX.66.0F3A.W1 16/22 in '
+         '32-bit mode (native campaign family avx_encoding)'),
     # --- LLVM ignores a prefix that the hardware checks ---
     Diff('VEX after a 66/F2/F3/LOCK prefix', lambda p, t: p['enc'] == 'vex' and any(b in p['pfx'] for b in b'\x66\xf2\xf3\xf0'),
          'LLVM decodes the legacy prefix separately or ignores it. SDM vol. 2A 2.3.2: "Any VEX-encoded '

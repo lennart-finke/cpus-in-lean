@@ -270,7 +270,10 @@ def implemented : Feature → Bool
   | .ibpb => true
   | .ibrs => true
   | .stibp => true
-  | .stibpAlwaysOn => true
+  -- StibpAlwaysOn: set in InstLatx64's dump, clear on the 7742 the native campaign ran on (microcode
+  -- 0x830107c; validation/test/fixtures/epyc7742-native-cpuid.txt): a preference the firmware and
+  -- microcode set, and the model reports only bits both real dumps have (`cpuid_epyc_native_dump`)
+  | .stibpAlwaysOn => false
   | .ssbd => true
   -- INT_WBINVD, IbrsPreferred, IbrsSameMode (hints about WBINVD interruptibility and IBRS use) and
   -- bits 6, 10 (reserved in APM rev. 3.33): hints the model's timing-free execution cannot honour,

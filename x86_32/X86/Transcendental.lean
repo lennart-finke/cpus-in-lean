@@ -307,14 +307,29 @@ def piQuarter (k : Nat) (neg : Bool) (cw : UInt32) : F80 × UInt32 :=
 Each returns the value for the destination and the status bits; DE is reported as in `F80.arith`
 (not when a masked invalid-operation or zero-divide response decides the result). -/
 
-/-- F2XM1: 2^x - 1 for -1 ≤ x ≤ 1. The SDM leaves other operands undefined; as in QEMU, they
-(including ±∞) are invalid operations. -/
+/-- The EPYC 7742 reports a precision exception for every finite nonzero result of F2XM1, FYL2X and
+FYL2XP1, also when it is exact (FYL2X of 2^63 by 1 is 63 with PE; native `x87_transcendental`): an
+exact result `r` gets PE and, if it is tiny (a denormal) with UE masked, UE, as an inexact tiny result
+does. (An unmasked underflow already wrapped it in `round80`.) -/
+def forcePE (r : F80 × UInt32) (cw : UInt32) : F80 × UInt32 :=
+  let (v, fl) := r
+  if v.isZero || v.exp == 0x7FFF then r
+  else (v, fl ||| FPF.PE ||| (if v.exp == 0 && cw &&& FPF.UE != 0 then FPF.UE else 0))
+
+/-- F2XM1: 2^x - 1. The SDM defines it for -1 ≤ x ≤ 1 and leaves other operands undefined; the EPYC
+7742 (native `x87_transcendental`, `x87_trans_boundary`: 202 cases) returns a finite x with |x| > 1
+unchanged with PE, +∞ for +∞ and -1 for -∞ without exceptions, -0.5 with PE for -1, and for +1 a
+value just below 1, rounded (1 with C1 = 1 for round to nearest or up, 1 - 2^-64 for down or toward
+zero), with PE. (QEMU, whose behaviour the model had, raises an invalid operation outside [-1, 1].) -/
 def f2xm1 (a : F80) (cw : UInt32) : F80 × UInt32 :=
   if a.unsupported then (F80.indefinite, FPF.IE)
   else if a.isNaN then (a.quiet, if a.isSNaN then FPF.IE else 0)
   else if a.isZero then (a, 0)
-  else if a.exp > 16383 || (a.exp == 16383 && a.sig != 0x8000000000000000) then (F80.indefinite, FPF.IE)
-  else if a.exp == 16383 then (if a.neg then { sig := 0x8000000000000000, se := 0xBFFE } else a, 0)
+  else if a.isInf then (if a.neg then F80.one.withNeg true else a, 0)
+  else if a.exp > 16383 || (a.exp == 16383 && a.sig != 0x8000000000000000) then (a, FPF.PE)
+  else if a.exp == 16383 then
+    if a.neg then ({ sig := 0x8000000000000000, se := 0xBFFE }, FPF.PE)
+    else round80 false (2^128 - 1) 1 (-128) 64 cw
   else
     let de := if a.isDenormal then FPF.DE else 0
     let (n, e) := a.dyadic
@@ -355,28 +370,33 @@ def fyl2x (x y : F80) (cw : UInt32) : F80 × UInt32 :=
       let (nx, ex) := x.dyadic
       let (ny, ey) := y.dyadic
       if nx &&& (nx - 1) == 0 then
-        -- x = 2^k: the exact product y·k
+        -- x = 2^k: the exact product y·k, reported inexact as the EPYC 7742 does (`forcePE`)
         let k : Int := ex + nx.log2
-        let (v, fl) := round80 (y.neg != decide (k < 0)) (ny * k.natAbs) 1 ey 64 cw
+        let (v, fl) := forcePE (round80 (y.neg != decide (k < 0)) (ny * k.natAbs) 1 ey 64 cw) cw
         (v, fl ||| de)
       else
         let (v, fl) := ziv cw fun p => ((exact (signed y.neg ny) ey).mul p (log2Ball p nx ex)).toOpen
         (v, fl ||| de)
 
 /-- The FYL2XP1 domain √2/2 - 1 ≤ x ≤ √2 - 1 (AMD's; Intel documents |x| < 1 - √2/2 and leaves the
-rest undefined). As in QEMU, operands outside it are invalid. The bounds are the floors of the
-irrational limits at the scale of the binade [1/4, 1/2). -/
+rest undefined), where the result is computed with the series below. The bounds are the floors of
+the irrational limits at the scale of the binade [1/4, 1/2). -/
 def lnp1Domain (x : F80) : Bool :=
   x.isZero || x.exp < 16381 ||
     (x.exp == 16381 && x.sig ≤ (if x.neg then 0x95F619980C4336F7 else 0xD413CCCFE7799211))
 
-/-- FYL2XP1: y · log2(x + 1), x = ST(0), y = ST(1) (SDM table "FYL2XP1 Results"; log2(1 ± 0) = ±0). -/
+/-- FYL2XP1: y · log2(x + 1), x = ST(0), y = ST(1) (SDM table "FYL2XP1 Results"; log2(1 ± 0) = ±0).
+Outside the documented domain the EPYC 7742 (native `x87_transcendental`, `x87_trans_boundary`: 118
+cases) computes y · log2(x + 1) for every finite x > -1 and returns x itself with PE for a finite
+x ≤ -1 (QEMU, whose behaviour the model had, raises an invalid operation outside the domain); x = ±∞
+stays an invalid operation (not observed). Finite nonzero results report PE (`forcePE`). -/
 def fyl2xp1 (x y : F80) (cw : UInt32) : F80 × UInt32 :=
   match F80.special2 x y with
   | some r => r
   | none =>
   let de := F80.denFlag x y
-  if !lnp1Domain x then (F80.indefinite, FPF.IE)
+  if x.isInf then (F80.indefinite, FPF.IE)
+  else if x.neg && !x.isZero && F80.cmpVal x (F80.one.withNeg true) ≤ 0 then (x, FPF.PE ||| de)
   else if x.isZero then
     if y.isInf then (F80.indefinite, FPF.IE) else (F80.zero (x.neg != y.neg), de)
   else if y.isInf then (F80.inf (x.neg != y.neg), de)
@@ -385,13 +405,27 @@ def fyl2xp1 (x y : F80) (cw : UInt32) : F80 × UInt32 :=
     let (nx, ex) := x.dyadic
     let (ny, ey) := y.dyadic
     let sx := signed x.neg nx
-    -- s = x/(2 + x) = sx/(2^(1-e) + sx), |s| ≤ 3 - 2√2 (|x| < 1/2, so e < 0)
-    let D : Int := ((1 <<< (1 - ex).toNat : Nat) : Int)
-    let (v, fl) := ziv cw fun p =>
-      let s := div p (exact sx) (exact (D + sx))
-      let l2 := ((s.mul p (atanhRel p (s.mul p s))).mulNat p 2).div p (ln2 p)
-      ((exact (signed y.neg ny) ey).mul p l2).toOpen
-    (v, fl ||| de)
+    if lnp1Domain x then
+      -- s = x/(2 + x) = sx/(2^(1-e) + sx), |s| ≤ 3 - 2√2 (|x| < 1/2, so e < 0)
+      let D : Int := ((1 <<< (1 - ex).toNat : Nat) : Int)
+      let (v, fl) := ziv cw fun p =>
+        let s := div p (exact sx) (exact (D + sx))
+        let l2 := ((s.mul p (atanhRel p (s.mul p s))).mulNat p 2).div p (ln2 p)
+        ((exact (signed y.neg ny) ey).mul p l2).toOpen
+      (v, fl ||| de)
+    else
+      -- x + 1 = N · 2^E exactly (N > 0, as x > -1)
+      let (N, E) : Nat × Int :=
+        if ex ≥ 0 then (nx * 2^ex.toNat + 1, 0)
+        else ((sx + ((1 <<< (-ex).toNat : Nat) : Int)).toNat, ex)
+      if N &&& (N - 1) == 0 then
+        -- x + 1 = 2^k: the exact product y·k, reported inexact (`forcePE`)
+        let k : Int := E + N.log2
+        let (v, fl) := forcePE (round80 (y.neg != decide (k < 0)) (ny * k.natAbs) 1 ey 64 cw) cw
+        (v, fl ||| de)
+      else
+        let (v, fl) := ziv cw fun p => ((exact (signed y.neg ny) ey).mul p (log2Ball p N E)).toOpen
+        (v, fl ||| de)
 
 /-- atan(a/b) for 0 ≤ a/b ≤ 1/2. -/
 def atanW (p : Nat) (a b : Nat) : Ball :=

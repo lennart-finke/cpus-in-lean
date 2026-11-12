@@ -170,13 +170,20 @@ def round80 (negative : Bool) (n d : Nat) (e : Int) (p : Nat) (cw : UInt32) : F8
   if n == 0 then (F80.zero negative, 0) else
   let rc := (cw >>> 10) &&& 3
   let r := rnd (fmtExt p) negative n d e rc
+  -- the biased exponent of the unbounded result; a wrapped result whose exponent is still out of range
+  -- (only FSCALE gets there) is the "massive" overflow/underflow of SDM vol. 1, 8.5.4/8.5.5: a signed
+  -- ∞ or 0. The EPYC 7742 also reports PE, and C1 = 1 for ∞ (native `x87_exceptions`/`x87_random`
+  -- FSCALE cases)
+  let ub : Int := r.uulp + (r.uq.log2 : Int) + 16383
   if r.overflow then
     if cw &&& FPF.OE != 0 then
       if ovfToInf negative rc then (F80.inf negative, FPF.OE ||| FPF.PE ||| FPF.C1)
       else (enc80 negative (2^p - 1) (16383 - (p - 1)), FPF.OE ||| FPF.PE)
+    else if ub - 24576 > 0x7FFE then (F80.inf negative, FPF.OE ||| FPF.PE ||| FPF.C1)
     else (enc80 negative r.uq r.uulp (-24576),
           FPF.OE ||| (if r.uinexact then FPF.PE else 0) ||| (if r.uup then FPF.C1 else 0))
   else if r.tiny && cw &&& FPF.UE == 0 then
+    if ub + 24576 < 1 then (F80.zero negative, FPF.UE ||| FPF.PE) else
     (enc80 negative r.uq r.uulp 24576,
      FPF.UE ||| (if r.uinexact then FPF.PE else 0) ||| (if r.uup then FPF.C1 else 0))
   else
@@ -377,10 +384,10 @@ def toIeee (a : F80) (fb ebits : Nat) (cw : UInt32) : Option UInt64 × UInt32 :=
   else if a.isInf then (some (sgn ||| expAll), 0)
   else if a.isZero then (some sgn, 0)
   else
-    let de := if a.isDenormal then FPF.DE else 0
+    -- a denormal ST(0) is not a denormal-operand exception for FST/FSTP m32/m64: the SDM lists only
+    -- #IS, #IA, #U, #O, #P for FST, and the EPYC 7742 reports no DE (native `x87_memory`, 48 cases)
     let (n, e) := a.dyadic
-    let (v, fl) := roundIeee f fb bias a.neg n 1 e cw
-    (v, fl ||| de)
+    roundIeee f fb bias a.neg n 1 e cw
 
 /-- FSCALE: a · 2^trunc(b). -/
 def scale (a b : F80) (cw : UInt32) : F80 × UInt32 :=
@@ -414,15 +421,25 @@ def xtract (a : F80) : (F80 × F80) × UInt32 :=
 /-- FPREM (`ieee = false`, truncating quotient) and FPREM1 (round-to-nearest quotient): the
 (partial) remainder, the low three quotient bits, and whether the reduction is complete. Exponent
 differences of 64 or more are reduced by 32..63 bits per step (as QEMU and AMD document). -/
-def prem (a b : F80) (ieee : Bool) : (F80 × Nat × Bool) × UInt32 :=
+def prem (a b : F80) (ieee : Bool) (cw : UInt32 := 0x37F) : (F80 × Nat × Bool) × UInt32 :=
   match special2 a b with
   | some (v, fl) => ((v, 0, true), fl)
   | none =>
   let de := denFlag a b
+  -- The remainder is exact, but a denormal (tiny) one is an underflow when UE is unmasked: the
+  -- result is delivered with the exponent wrapped by 24576 and UE set (EPYC 7742, native
+  -- `x87_exceptions`: FPREM/FPREM1 of a denormal by a huge or infinite divisor, 4 cases); masked, the
+  -- exact denormal is delivered without UE (`round80` of the exact value does both).
+  let res := fun (neg : Bool) (n : Nat) (e : Int) =>
+    if n == 0 then (zero neg, (0 : UInt32)) else round80 neg n 1 e 64 cw
   if a.isInf || b.isZero then ((indefinite, 0, true), FPF.IE)
   -- the dividend is the result; a pseudo-denormal is delivered in its canonical encoding (exponent
   -- field 1): pseudo-denormals are accepted as operands but never produced (SDM vol. 1, 8.2.2)
-  else if b.isInf || a.isZero then ((a.canon, 0, true), de)
+  else if a.isZero then ((a.canon, 0, true), de)
+  else if b.isInf then
+    let (na, ea) := a.dyadic
+    let (v, fl) := res a.neg na ea
+    ((v, 0, true), de ||| fl)
   else
     let (na, ea) := a.dyadic
     let (nb, eb) := b.dyadic
@@ -437,7 +454,8 @@ def prem (a b : F80) (ieee : Bool) : (F80 × Nat × Bool) × UInt32 :=
       let x := na * 2^(ea - e).toNat
       let y := nb * 2^(eb + sh - e).toNat
       let r := x % y
-      ((enc80 a.neg r e, 0, false), de)
+      let (v, fl) := res a.neg r e
+      ((v, 0, false), de ||| fl)
     else
       let e := min ea eb
       let x := na * 2^(ea - e).toNat
@@ -447,8 +465,8 @@ def prem (a b : F80) (ieee : Bool) : (F80 × Nat × Bool) × UInt32 :=
       let (q, rmag, rneg) :=
         if ieee && (2 * r0 > y || (2 * r0 == y && q0 % 2 == 1)) then (q0 + 1, y - r0, !a.neg)
         else (q0, r0, a.neg)
-      let v := if rmag == 0 then zero a.neg else enc80 rneg rmag e
-      ((v, q % 8, true), de)
+      let (v, fl) := if rmag == 0 then (zero a.neg, 0) else res rneg rmag e
+      ((v, q % 8, true), de ||| fl)
 
 end F80
 

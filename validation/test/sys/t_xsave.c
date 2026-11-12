@@ -225,6 +225,10 @@ void test_xsave(void) {
 			*(u32 *)(area + 24) = rnd() & 0xFFFF;      /* MXCSR (reserved bits: model-only) */
 			memset(area + 6, 0, 18);                   /* FOP, FIP, FCS, FDP, FDS = 0 */
 			*(u16 *)(area + 2) &= 0x7F7F;              /* FSW.ES = B = 0 */
+			/* FCW: the EPYC 7742 reads the reserved bits 7, 13..15 as 0 and bit 6 as 1 whatever is
+			   loaded (native campaign family alignment_check); TCG keeps them. The model-only xsavem
+			   table loads reserved FCW bits. */
+			*(u16 *)area = (*(u16 *)area & 0x1F3F) | 0x40;
 		}
 		else memset(area + 6, 0, 2);   /* FOP: TCG does not write it (the model writes the state's FOP, 0 here) */
 		xsetbv(0, xcr0);

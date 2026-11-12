@@ -10,8 +10,10 @@ exception responses (SDM vol. 1, chapter 8):
 
 * Stack overflow (push onto a non-empty register) and underflow (an empty source) are invalid
   operations with SF set, C1 = 1 / 0. Masked, the result is the QNaN indefinite.
-* An unmasked IE, DE or ZE suppresses the result (registers and TOP unchanged); unmasked OE / UE
-  deliver a wrapped result to a register but nothing to memory; any unmasked exception sets ES and
+* An unmasked IE, DE or ZE suppresses the result (registers and TOP unchanged) — except the result
+  of a comparison (EFLAGS or C3/C2/C0), which the EPYC 7742 writes anyway (`fpCompare`); unmasked
+  OE / UE deliver a wrapped result to a register (beyond the wrapped range: ±∞ / ±0, FSCALE's
+  "massive" case) but nothing to memory; any unmasked exception sets ES and
   B, and the next waiting x87 instruction (or WAIT) raises #MF with CR0.NE = 1. With CR0.NE = 0 the
   FERR# output drives IRQ13 (as on PC/AT compatibles) and execution continues.
 * CR0.EM or CR0.TS make every ESC instruction raise #NM; WAIT raises #NM only with TS and MP.
@@ -19,6 +21,12 @@ exception responses (SDM vol. 1, chapter 8):
 
 The transcendental instructions (F2XM1, FYL2X, FYL2XP1, FPTAN, FPATAN, FSIN, FCOS, FSINCOS) deliver
 correctly rounded results (`X86/Transcendental.lean`).
+
+Where the EPYC 7742's behaviour (the native campaign, `validation/README.md`, "First run") settles a
+point the SDM leaves open or contradicts its pseudocode, the model follows the hardware: compare
+results with unmasked exceptions, FLD ST(i)'s underflow over overflow, FXTRACT's overflow before the
+operand's exceptions, the control word's reserved bits (`fcwLoad`) and the FFFFh upper halves of the
+32-bit protected-mode environment image.
 -/
 namespace X86
 
@@ -50,6 +58,22 @@ def ftagWord (c : Cpu) : UInt32 := Id.run do
   for k in [0:8] do w := w ||| (c.ftagOf k <<< (2 * k).toUInt32)
   return w
 end Cpu
+
+/-- The x87 control word as loaded by FLDCW, FLDENV, FRSTOR, FXRSTOR and XRSTOR: the reserved bits 7
+and 13..15 read as 0 and bit 6 reads as 1, as the reset value 0040h has it (AMD APM vol. 2, table
+14-1). Observed on the EPYC 7742 for FRSTOR (native `alignment_check`: an image with control word
+1F80h, 001Fh or 8000h loads 1F40h, 005Fh, 0040h); the same register takes the other loads. Bit 12
+(the 287's infinity control) is kept. -/
+@[inline] def fcwLoad (v : UInt32) : UInt16 := ((v &&& 0x1F3F) ||| 0x40).toUInt16
+
+/-- The status word as loaded by FLDENV, FRSTOR, FXRSTOR and XRSTOR: ES (bit 7) and B are cleared when
+no unmasked exception flag is set (otherwise ES is loaded as stored), and B (bit 15) mirrors ES ("for
+8087 compatibility only; it reflects the contents of the ES flag", SDM vol. 1, 8.1.3.1). The EPYC
+7742 shows B set after its XRSTOR of a signal frame whose status word had ES = 1 and B = 0 (native
+`xsave_save`, `xsave_compacted`, 36 cases). -/
+@[inline] def fswLoad (sw cw : UInt16) : UInt16 :=
+  if sw.toUInt32 &&& ~~~cw.toUInt32 &&& 0x3F == 0 then sw &&& 0x7F7F
+  else (sw &&& 0x7FFF) ||| (if sw &&& 0x80 != 0 then 0x8000 else 0)
 
 /-- FERR# asserts IRQ13 (the slave PIC's input 5) while an unmasked exception is pending. -/
 def setFerr (on : Bool) : M Unit := modM fun m => { m with pic1 := m.pic1.setLine 5 on }.syncIntr
@@ -118,7 +142,12 @@ def fpArith (op : F80.Op) (a b : Option F80) (dst : Nat) (pops : Nat := 0) (extr
     fpResult r (fl ||| extra) dst pops
   | _, _ => fpResult F80.indefinite stackUnderflow dst pops
 
-/-- Compare; condition codes (C3, C2, C0) or, with `eflags`, ZF/PF/CF. -/
+/-- Compare; condition codes (C3, C2, C0) or, with `eflags`, ZF/PF/CF. The result (unordered for an
+invalid or empty operand) is written whether or not the exception is masked; an unmasked IE or DE
+only suppresses the pops. The SDM's pseudocode sets "111" only when IM = 1, but the EPYC 7742 writes
+the comparison result with IE or DE unmasked too, for FCOM/FUCOM/FTST/FCOMI/FUCOMI and their popping
+forms (native campaign families `x87_exceptions`, `x87_random`: 895 cases); QEMU's TCG does the
+same (`helper_fcomi_ST0_FT0` always sets the flags). -/
 def fpCompare (a b : Option F80) (quiet eflags : Bool) (pops : Nat) (extra : UInt32 := 0) : M Unit := do
   let cw := (← cpu).fcw
   let (o, fl) := match a, b with
@@ -126,7 +155,6 @@ def fpCompare (a b : Option F80) (quiet eflags : Bool) (pops : Nat) (extra : UIn
     | _, _ => (none, stackUnderflow)
   let fl := fl ||| extra
   fpStatus (fl &&& ~~~FPF.C1)
-  if fpUnmasked fl cw (FPF.IE ||| FPF.DE) then return
   if eflags then
     let f : UInt32 := match o with
       | some 1 => 0 | some 0 => Flag.ZF | some _ => Flag.CF
@@ -134,6 +162,7 @@ def fpCompare (a b : Option F80) (quiet eflags : Bool) (pops : Nat) (extra : UIn
     setFlags (Flag.ZF ||| Flag.PF ||| Flag.CF ||| Flag.OF ||| Flag.SF ||| Flag.AF) f
   else
     fpCC (match o with | some 1 => 0 | some 0 => 0x4000 | some _ => 0x100 | none => 0x4500)
+  if fpUnmasked fl cw (FPF.IE ||| FPF.DE) then return
   modCpu fun c => Id.run do
     let mut c := c
     for _ in [0:pops] do c := c.fpop
@@ -188,10 +217,12 @@ def fpWrite (s : UInt8) (off : UInt32) (n : Nat) (v : Nat) : M Unit := do
 def fpMemOperand (i : Inst) : M (F80 × UInt32) := do
   let off ← fpEa i
   match i.op with
-  -- a binary32/64 SNaN operand is converted (quieted, IE) before the NaN rules of the operation apply,
-  -- as QEMU and Bochs do (the SDM does not say which comes first)
-  | 0xD8 => return F80.ofIeee (← fpRead i.seg off 4).toUInt64 23 8
-  | 0xDC => return F80.ofIeee (← fpRead i.seg off 8).toUInt64 52 11
+  -- a binary32/64 SNaN operand stays an SNaN for the NaN rules of the operation (an SNaN and a QNaN
+  -- give the QNaN, with IE): the EPYC 7742 returns ST(0)'s QNaN for FADD/FMUL with an SNaN m32/m64
+  -- (native campaign family open_questions, `x87_snan_memory`, 3 cases; open question F1). QEMU and
+  -- Bochs quiet it first (and then pick the larger significand).
+  | 0xD8 => return F80.ofIeee (← fpRead i.seg off 4).toUInt64 23 8 (quietSNaN := false)
+  | 0xDC => return F80.ofIeee (← fpRead i.seg off 8).toUInt64 52 11 (quietSNaN := false)
   | 0xDA => return (F80.ofInt (sext' 32 (← fpRead i.seg off 4)), 0)
   | _ => return (F80.ofInt (sext' 16 (← fpRead i.seg off 2)), 0)
 
@@ -209,10 +240,14 @@ def fpEnvBytes (opsz : Sz) (real : Bool) (c : Cpu) : Nat × Nat :=
       let dp := c.fdp.toNat
       if opsz == 4 then [cw, sw, tw, ip % 65536, ((ip / 65536) % 65536) * 4096 + fop, dp % 65536, ((dp / 65536) % 65536) * 4096]
       else [cw, sw, tw, ip % 65536, ((ip / 65536) % 16) * 4096 + fop, dp % 65536, ((dp / 65536) % 16) * 4096]
-    else if opsz == 4 then [cw, sw, tw, c.fip.toNat, c.fcs.toNat + fop * 65536, c.fdp.toNat, c.fds.toNat]
+    -- the reserved upper halves of the control, status, tag and FDS dwords of the 32-bit protected-mode
+    -- layout are stored as FFFFh (EPYC 7742: the FNSTENV and FNSAVE images of the native
+    -- `alignment_check` family, 24 cases; QEMU stores 0)
+    else if opsz == 4 then [cw + 0xFFFF0000, sw + 0xFFFF0000, tw + 0xFFFF0000, c.fip.toNat,
+                            c.fcs.toNat + fop * 65536, c.fdp.toNat, c.fds.toNat + 0xFFFF0000]
     else [cw, sw, tw, c.fip.toNat % 65536, c.fcs.toNat, c.fdp.toNat % 65536, c.fds.toNat]
   let w := if opsz == 4 then 4 else 2
-  -- the reserved upper halves of the 32-bit layout are stored as zero
+  -- the reserved upper halves of the 32-bit real-mode layout are stored as zero (no hardware evidence)
   let v := (ws.zipIdx).foldl (fun acc (x, k) => acc + x * 2^(8 * w * k)) 0
   (v, 7 * w)
 
@@ -230,13 +265,10 @@ def fpLoadEnv (opsz : Sz) (real : Bool) (s : UInt8) (off : UInt32) : M Unit := d
       (f 3 + (f 4 / 4096 % hi) * 65536, 0, f 4 % 2048, f 5 + (f 6 / 4096 % hi) * 65536, 0)
     else if opsz == 4 then (f 3, f 4 % 65536, (f 4 / 65536) % 2048, f 5, f 6 % 65536)
     else (f 3, f 4, 0, f 5, f 6)
-  modCpu fun c => { c with fcw := (f 0).toUInt16, fsw := (f 1).toUInt16, fempty := empty,
-                           fip := ip.toUInt32, fcs := cs.toUInt16, fop := op.toUInt16,
+  -- a pending unmasked exception in the loaded status word sets ES and B (`fswLoad`)
+  modCpu fun c => { c with fcw := fcwLoad (f 0).toUInt32, fsw := fswLoad (f 1).toUInt16 (fcwLoad (f 0).toUInt32),
+                           fempty := empty, fip := ip.toUInt32, fcs := cs.toUInt16, fop := op.toUInt16,
                            fdp := dp.toUInt32, fds := ds.toUInt16 }
-  -- a pending unmasked exception in the loaded status word asserts ES/FERR#
-  let c ← cpu
-  if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F == 0 then
-    modCpu fun c => { c with fsw := c.fsw &&& 0x7F7F }
 
 def fninit : M Unit := do
   modCpu fun c => { c with fcw := 0x37F, fsw := 0, fempty := 0xFF, fip := 0, fcs := 0, fop := 0,
@@ -437,7 +469,14 @@ def x87D9reg (i : Inst) : M Unit := do
   let c ← cpu
   let cw := c.fcw.toUInt32
   match i.reg with
-  | 0 => fpPush ((c.stOpt k).getD F80.indefinite) (if c.stEmpty k then stackUnderflow else 0)
+  | 0 =>
+    -- FLD ST(i) from an empty ST(i): stack underflow (C1 = 0) even when the destination ST(7) is in use
+    -- too (EPYC 7742, native `x87_exceptions`/`x87_random`: 77 cases; the overflow's C1 = 1 is not
+    -- reported); the masked response pushes the QNaN indefinite
+    if c.stEmpty k then
+      fpStatus stackUnderflow
+      if cw &&& FPF.IE != 0 then modCpu (·.fpushRaw F80.indefinite)
+    else fpPush (c.st k) 0
   | 1 => fxch k
   | 2 => if k == 0 then fpStatus (c.fsw.toUInt32 &&& FPF.C1) else ud   -- FNOP
   | 3 => -- FSTP1 (alias of FSTP ST(i))
@@ -462,14 +501,17 @@ def x87D9reg (i : Inst) : M Unit := do
       | none => fpPush2Fault stackUnderflow
       | some a =>
         let ((ex, sg), fl) := a.xtract
-        if fpUnmasked fl c.fcw then fpStatus fl
-        else if !c.stEmpty 7 then fpPush2Fault (FPF.IE ||| FPF.SF ||| FPF.C1)
+        -- the stack overflow of the push (ST(7) in use) is detected before the operand's invalid,
+        -- denormal and zero-divide exceptions (EPYC 7742, native `x87_exceptions`/`x87_random`: 22
+        -- cases; with them unmasked the model used to report those instead)
+        if !c.stEmpty 7 then fpPush2Fault (FPF.IE ||| FPF.SF ||| FPF.C1)
+        else if fpUnmasked fl c.fcw then fpStatus fl
         else fpPush2 ex sg fl
     | 0xF5 | 0xF8 => -- FPREM1 / FPREM
       match c.stOpt 0, c.stOpt 1 with
       | some a, some b =>
-        let ((r, q, done), fl) := F80.prem a b (i.modrm == 0xF5)
-        fpStatus fl
+        let ((r, q, done), fl) := F80.prem a b (i.modrm == 0xF5) cw
+        fpStatus (if fpUnmasked fl c.fcw then fpStopped fl else fl)
         if !fpUnmasked fl c.fcw then
           modCpu (·.setSt 0 r)
           fpCC (if done then
@@ -529,7 +571,7 @@ def x87 (i : Inst) : M Unit := do
       | 4 => fpLoadEnv i.opsz (!c.pe || c.vm86) i.seg (← fpEa i)
       | 5 =>
         let v ← fpRead i.seg (← fpEa i) 2
-        modCpu fun c => { c with fcw := v.toUInt16 }
+        modCpu fun c => { c with fcw := fcwLoad v.toUInt32 }
         let c ← cpu
         modCpu fun c => { c with fsw := if c.fsw.toUInt32 &&& ~~~c.fcw.toUInt32 &&& 0x3F != 0
                                          then c.fsw ||| 0x8080 else c.fsw &&& 0x7F7F }

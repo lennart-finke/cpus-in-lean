@@ -2,9 +2,9 @@
 
    test_crypto (compared with QEMU):
    - crypto.exc: for every instruction, the register and aligned memory forms, CR4.OSFXSR = 0 (#UD),
-     CR0.EM (#UD), CR0.TS (#NM), a misaligned memory operand (#GP(0)), LOCK and every wrong
-     mandatory prefix (#UD). TCG runs the SHA instructions with a 66/F2/F3 prefix and with misaligned
-     operands; qemu-deviations.txt rewrites those fields to the SDM result (exception class 4, "NP").
+     CR0.EM (#UD), CR0.TS (#NM), a misaligned memory operand (#GP(0); the SHA instructions execute
+     it, as on the EPYC 7742), LOCK and every wrong mandatory prefix (#UD). TCG runs the SHA
+     instructions with a 66/F2/F3 prefix; qemu-deviations.txt rewrites those fields ("NP").
    - crypto.fips: FIPS-197 C.1-C.3 (AES-128/192/256, key expansion by AESKEYGENASSIST, encryption
      by AESENC/AESENCLAST, decryption by AESIMC/AESDEC/AESDECLAST), the FIPS 180-4 "abc" digests by
      the SHA instructions, and GCM test case 2 (H, ciphertext, tag; GHASH by PCLMULQDQ), each

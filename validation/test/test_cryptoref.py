@@ -65,8 +65,7 @@ class Generators(unittest.TestCase):
             if src.startswith('m'):
                 ea = int(src[1:], 16)
                 self.assertTrue(gen.DATA <= ea <= gen.DATA + gen.DATA_SIZE - 16)
-                if name.startswith('sha'):
-                    self.assertEqual(ea % 16, 0)
+                # misaligned operands: #GP(0) for AES/PCLMULQDQ, executed by the SHA instructions (EPYC 7742)
         self.assertEqual(set(names), set(cryptoref.FORMS.values()))
 
     def test_native_families(self):

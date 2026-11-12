@@ -117,8 +117,8 @@ class DotProductAndHorizontal(unittest.TestCase):
 
     def test_vhadd_nan_order(self):
         n = R.pack([0x7FC00001, 0x7FC00002, 0, 0, 0x7FC00011, 0x7FC00012, 0, 0], 32)
-        r, _ = R.vhop(1, 32, False, n, 0, 0x1F80)
-        self.assertEqual((R.el(r, 32, 0), R.el(r, 32, 4)), (0x7FC00002, 0x7FC00012))
+        r, _ = R.vhop(1, 32, False, n, 0, 0x1F80)   # the lower element's NaN (EPYC 7742)
+        self.assertEqual((R.el(r, 32, 0), R.el(r, 32, 4)), (0x7FC00001, 0x7FC00011))
         r, _ = R.vhop(1, 32, True, n, 0, 0x1F80)
         self.assertEqual((R.el(r, 32, 0), R.el(r, 32, 4)), (0x7FC00001, 0x7FC00011))
 
