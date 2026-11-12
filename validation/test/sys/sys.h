@@ -126,6 +126,7 @@ void test_simd(void);
 void test_simd_exc(void);
 void test_simd_model(void);
 void test_paging_fuzz(void);
+void test_paging_tlb_fuzz(void);
 void test_debug_fuzz(void);
 void test_debug_fuzz_model(void);
 void test_paging_fuzz_model(void);
@@ -153,5 +154,8 @@ void test_avx(void);
 void test_avx_model(void);
 void test_avx2(void);
 void test_avx2_model(void);
+/* regression tests for review findings (t_review.c) */
+void test_review(void);
+void test_review_model(void);
 
 #endif

@@ -66,7 +66,9 @@ The #UD conditions come before #NM: both are instruction-decode faults of the sa
 * **Three operands**: VEX.vvvv is the first source (`src1`), ModRM.r/m the second, ModRM.reg the
   destination; the VEX immediate shifts (VEX.0F 71..73) write VEX.vvvv instead.
 * **is4** (`is4`): the fourth register operand of VBLENDVPx/VPBLENDVB is imm8[7:4]; imm8[7] is
-  ignored in 32-bit mode (SDM vol. 2A, 2.3.? "imm8[7:4] ... in 32-bit mode imm8[7] is ignored").
+  ignored in 32-bit mode (SDM vol. 2A, 2.3.9 "VBLENDVPD, VBLENDVPS, and PBLENDVB use imm8[7:4] to
+  encode one of the source registers", and 3.1.1.2, /is4: "a source register specifier in either
+  imm8[7:4] (for 64-bit mode) or imm8[6:4] (for 32-bit mode)"; rev. 084).
 * **Lanes**: `lanes L f a b` applies a 128-bit kernel to the low halves and, for VEX.256, the high
   halves: every SSE kernel of `X86/Simd.lean`/`X86/Ext/Sse.lean` used by a VEX.256 form works within
   128-bit lanes.

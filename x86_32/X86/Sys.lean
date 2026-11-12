@@ -360,6 +360,8 @@ def callGate (gsel : UInt16) (g : Desc) (call : Bool) : M Unit := do
       let o := nesp - j.toUInt32 * gsz.toUInt32
       if !segAllowed nss (if nss.big then o else o &&& 0xFFFF) gsz.toUInt32 true then
         exc Vec.SS (some (nssSel.toUInt32 &&& 0xFFFC))
+    -- the parameters are read from the caller's stack at the caller's CPL (before CS changes), as
+    -- QEMU does; neither manual's CALL pseudocode says at which privilege (visible only with SMAP)
     let mut params : Array UInt32 := #[]
     for k in [0:pc] do params := params.push (← peek gsz (k.toUInt32 * gsz.toUInt32))
     if off > d.limit then gp 0
@@ -479,6 +481,12 @@ def farRet (opsz : Sz) (imm : UInt32) : M Unit := do
 
 /-! ## Interrupts and exceptions -/
 
+/-- The state in which an interrupt or exception from virtual-8086 mode pushes its frame: the ring-0
+stack and handler CS loaded and EFLAGS.VM cleared, so that the pushes are made at CPL 0
+(`leaveV86_cpl`, `Proofs/ExtSysB.lean`). -/
+@[inline] def Cpu.leaveV86 (c : Cpu) (ss : SegReg) (esp : UInt32) (cs : SegReg) : Cpu :=
+  { c with ss, esp, cs, eflags := c.eflags &&& ~~~Flag.VM }
+
 /-- Deliver interrupt/exception `vec`. `soft` marks INT n / INT3 / INTO (gate DPL is checked);
 `ext` marks an external event (sets the EXT bit of error codes). EIP must already hold
 the return address. -/
@@ -529,10 +537,14 @@ def deliver (vec : UInt8) (err : Option UInt32) (soft ext : Bool) : M Unit := do
   let clr := Flag.TF ||| Flag.NT ||| Flag.RF ||| Flag.VM ||| (if gtype &&& 1 == 0 then Flag.IF else 0)
   if c.vm86 then
     -- from virtual-8086 mode: only to a non-conforming ring-0 handler, on the ring-0 stack; the
-    -- data segment registers are saved on the stack and nulled
+    -- data segment registers are saved on the stack and nulled. VM is cleared before the pushes:
+    -- they are made at CPL 0, i.e. supervisor accesses (not user accesses, no #AC; SDM vol. 3,
+    -- INT pseudocode INTERRUPT-FROM-VIRTUAL-8086-MODE: "VM ← 0; ... CPL ← 0" before "Push(GS)";
+    -- AMD APM vol. 2, 8.9.3; SDM vol. 3, 4.6: accesses made while CPL < 3 are supervisor accesses).
+    -- The pushed EFLAGS image is the one before the event (VM = 1).
     if d.conforming || d.dpl != 0 then gp serr
     let (_, nss, nesp) ← innerStack 0 extB
-    modCpu fun c => { c with ss := nss, esp := nesp, cs := d.toSeg (sel &&& 0xFFFC) }
+    modCpu fun c => c.leaveV86 nss nesp (d.toSeg (sel &&& 0xFFFC))
     for sr in [c.gs, c.fs, c.ds, c.es] do push gsz sr.sel.toUInt32
     push gsz c.ss.sel.toUInt32
     push gsz c.esp

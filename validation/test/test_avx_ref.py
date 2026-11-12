@@ -101,6 +101,28 @@ class Moves(unittest.TestCase):
         self.assertTrue(R.check_line(line.replace('r=0', 'r=1', 1)))
 
 
+class DotProductAndHorizontal(unittest.TestCase):
+    def test_vdpps_staging_spans_lanes(self):
+        one = 0x3F800000
+        a = R.pack([0x7F800001] + [one] * 7, 32)                            # low lane: SNaN product
+        b = R.pack([one] * 5 + [0, 0x33800000, 0], 32)                      # high lane: 1 + 2^-24 last
+        r, mxo, xm = R.vdpps(1, a, b, 0xF1, 0x1F00)
+        self.assertEqual((r, mxo, xm), (None, 0x1F01, True))                # IE only, no PE
+        r, mxo, xm = R.vdpps(1, a, b, 0xF1, 0x1F80)                         # all masked: both lanes
+        self.assertFalse(xm)
+        self.assertEqual(mxo, 0x1FA1)
+        self.assertEqual(R.half(r, 1) & 0xFFFFFFFF, one)
+        r, mxo, xm = R.vdpps(0, R.half(b, 1), R.half(b, 1), 0xF1, 0x1F00)  # VEX.128 of the high lane alone: PE
+        self.assertEqual((mxo, xm), (0x1F20, False))
+
+    def test_vhadd_nan_order(self):
+        n = R.pack([0x7FC00001, 0x7FC00002, 0, 0, 0x7FC00011, 0x7FC00012, 0, 0], 32)
+        r, _ = R.vhop(1, 32, False, n, 0, 0x1F80)
+        self.assertEqual((R.el(r, 32, 0), R.el(r, 32, 4)), (0x7FC00002, 0x7FC00012))
+        r, _ = R.vhop(1, 32, True, n, 0, 0x1F80)
+        self.assertEqual((R.el(r, 32, 0), R.el(r, 32, 4)), (0x7FC00001, 0x7FC00011))
+
+
 class Transcript(unittest.TestCase):
     def test_model_transcript(self):
         path = os.path.join(HERE, 'sys', 'out', 'model.txt')

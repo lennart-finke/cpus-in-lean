@@ -10,7 +10,8 @@ import Std.Tactic.BVDecide
   `gather_zero_mask` (with no mask element selected a gather makes no memory access, changes only the
   CPU registers and finishes by clearing the mask register); `vex?_gather` (the hook dispatches
   VEX.66.0F38 90..93 to `gather`, and AVX's hook does not take them).
-* No FMA4 on Zen 2: `vexExec_fma4` (VEX.0F3A 5C..5F, 68..6F, 78..7F raise #UD).
+* No FMA4 on Zen 2: `vexExec_fma4` (VEX.0F3A 5C..5F, 68..6F, 78..7F raise #UD); `vexExec_np70`:
+  VEX.NP.0F 70 (either length) raises #UD.
 * Per-lane AVX2: `pshufb256_lanes`, `palignr256_lanes`, `int256_lanes` (the VEX.256 packed-integer
   forms of the 0F map compute each 128-bit half from the same half of the sources), and
   `shiftXmm_count` (the shifts by an XMM count use one count for both halves).
@@ -126,6 +127,20 @@ theorem vexExec_fma4 {i : Inst} {m : Machine} (hm : i.op >>> 8 = 3) (hb : i.byte
   have hn : Gpr.vex? i = none ∧ Avx.vex? i = none ∧ Avx2.vex? i = none := by
     rcases hb with h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h <;>
       simp [Gpr.vex?, Gpr.vexBody?, Avx.vex?, Avx.map3, Avx2.vex?, Avx2.map3, hm', h, implemented]
+  obtain ⟨hg, ha, h2⟩ := hn
+  simp only [vexExec, cpu, bind, EStateM.bind, hg, ha, h2, hooked]
+  split <;> simp_all [ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind]
+  split <;> simp_all [ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind]
+
+/-- VEX.NP.0F 70 (no mandatory prefix), VEX.128 or VEX.256, is no instruction: no hook takes it, so
+`vexExec` raises #UD with the state unchanged (only the 66, F3 and F2 forms VPSHUFD/VPSHUFHW/VPSHUFLW
+exist, SDM vol. 2 and AMD APM vol. 4). -/
+theorem vexExec_np70 {i : Inst} {m : Machine} (hm : i.op >>> 8 = 1) (hb : i.byte = 0x70) (hp : i.pp = 0) :
+    vexExec i m = .error (.exc Vec.UD none 0) m := by
+  have hm' : i.map = 1 := hm
+  have hn : Gpr.vex? i = none ∧ Avx.vex? i = none ∧ Avx2.vex? i = none := by
+    simp [Gpr.vex?, Gpr.vexBody?, Avx.vex?, Avx.map1, Avx.intMoves, Avx2.vex?, Avx2.map1, hm', hb, hp,
+      implemented, isPint]
   obtain ⟨hg, ha, h2⟩ := hn
   simp only [vexExec, cpu, bind, EStateM.bind, hg, ha, h2, hooked]
   split <;> simp_all [ud, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind]

@@ -99,3 +99,7 @@
 ^(smm\.[a-z]+: .* rev=)00020000 	\g<1>00030064 	# AMD64 processors save the SMM state in the AMD64 save-state map in every mode, revision identifier xx64h with bits 16 (I/O restart) and 17 (SMBASE relocation) "always set to 1" (AMD APM vol. 2, 10.2.3, 10.2.4; vol. 3 RSM); qemu-system-i386 has no long mode and uses the legacy 32-bit map (revision 20000h). The test handler reads either map.
 ^(lm\.smm: .* rev=)00020064 (cs_sel=00000008 cs_attr=0000c09)a 	\g<1>00030064 \g<2>b 	# (same: QEMU's AMD64 map reports revision 20064h; the APM says bit 16, I/O instruction restart, is always set by AMD64 implementations; and the saved CS cache has the accessed bit that loading CS sets, as for smm.*.more above)
 ^(smp\.start: .*) fcw=0000037f ftw=0000ffff$	\1 fcw=00000040 ftw=00005555	# RESET sets the x87 control word to 0040h and the tag word to 5555h, and INIT does not modify the x87 state (AMD APM vol. 2, table 14-1, 14.2.3; SDM vol. 3, table 12-1): an AP that has run no x87 code since RESET has them after INIT/STARTUP. QEMU's reset loads the FNINIT values (037Fh, FFFFh), which its INIT keeps.
+^(pgt \d+\.\d+: .* vec=0000000e err=000000[01])8	\g<1>9	# reserved-bit #PF in the TLB fuzzer: P=1 (SDM 4.7), as for pgf above; TCG reports P=0.
+^(pgt \d+\.\d+: .* vec=0000000e err=000000[01])a	\g<1>b	# (same)
+^(pgt \d+\.\d+: .* vec=0000000e err=000000[01])c	\g<1>d	# (same)
+^(pgt \d+\.\d+: .* vec=0000000e err=000000[01])e	\g<1>f	# (same)

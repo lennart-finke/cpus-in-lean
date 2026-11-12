@@ -197,6 +197,88 @@ def cmp_scalar(bits, pred, a, b, daz):
     return low, fl
 
 
+# ---- DPPS (VEX.256) and horizontal adds, with sse_ref's exact binary32/binary64 arithmetic ----
+
+def vdpps(L, a, b, imm, mx):
+    """VDPPS (SDM DPPS "DP_primitive" per 128-bit lane; "Exceptions are determined separately for each
+    add and multiply operation, in the order of their execution. Unmasked exceptions will leave the
+    destination operands unchanged"). The three stages are the multiplies, the two first additions and
+    the last addition; for VEX.256 a stage comprises the operations of that kind in both lanes. Within a
+    stage, an unmasked IE/DE/ZE suppresses OE/UE/PE (the SSE rule for one operation over all elements);
+    a stage with an unmasked exception ends the instruction (#XM). Returns (result, mxcsr after,
+    faulted)."""
+    import sse_ref as S
+    f = S.Fmt(32)
+    stage = [0, 0, 0]
+    res = []
+    for h in range(2 if L else 1):
+        A, B = S.lanes(half(a, h), 32), S.lanes(half(b, h), 32)
+        p = []
+        for k in range(4):
+            if imm >> (4 + k) & 1:
+                v, fl = S.arith(f, 'mul', A[k], B[k], mx)
+                stage[0] |= fl
+            else:
+                v = 0
+            p.append(v)
+        s1, f1 = S.arith(f, 'add', p[0], p[1], mx)
+        s2, f2 = S.arith(f, 'add', p[2], p[3], mx)
+        t, f3 = S.arith(f, 'add', s1, s2, mx)
+        stage[1] |= f1 | f2
+        stage[2] |= f3
+        res.append(S.join([t if imm >> k & 1 else 0 for k in range(4)], 32))
+    out = mx
+    for fl in stage:
+        unmasked = fl & ~(mx >> 7) & 0x3F
+        out |= (fl & 7) if unmasked & 7 else fl
+        if unmasked:
+            return None, out, True
+    return halves(res[0], res[1] if L else 0), out, False
+
+
+def vhop(L, width, sub, a, b, mx):
+    """VHADDPx/VHSUBPx: sse_ref.hop on each 128-bit lane (SDM: the VEX.256 form repeats the 128-bit
+    operation on bits 255:128). Returns (result, flags)."""
+    import sse_ref as S
+    lo, f0 = S.hop(width, sub, half(a, 0), half(b, 0), mx)
+    if not L:
+        return lo, f0
+    hi, f1 = S.hop(width, sub, half(a, 1), half(b, 1), mx)
+    return halves(lo, hi), f0 | f1
+
+
+def check_avxm(line):
+    """The model-only lines avxm.dpps256 and avxm.hnan256/hnan256pd (t_avx.c); None for other lines."""
+    t = line.split()
+    if not t or t[0] not in ('avxm.dpps256:', 'avxm.hnan256:', 'avxm.hnan256pd:'):
+        return None
+    if t[0] == 'avxm.dpps256:':
+        kv = dict(x.split('=', 1) for x in t[1:] if '=' in x)
+        r, mxo, xm = vdpps(1, int(kv['a'], 16), int(kv['b'], 16), int(kv['imm'], 16), int(kv['mx'], 16))
+        bad = []
+        if (0x13 if xm else 0xFFFF) != int(kv['vec'], 16):
+            bad.append(('vec', 0x13 if xm else 0xFFFF, int(kv['vec'], 16)))
+        if mxo != int(kv['mxo'], 16):
+            bad.append(('mxcsr', mxo, int(kv['mxo'], 16)))
+        if xm and kv['unchanged'] != '1':
+            bad.append(('unchanged', 1, int(kv['unchanged'])))
+        return bad
+    mx, a, b = (int(t[k].split('=')[1], 16) for k in (1, 2, 3))
+    bad, k = [], 4
+    while k + 2 < len(t):
+        name, vec = t[k].split('=')
+        r, mxo = int(t[k + 1].split('=')[1], 16), int(t[k + 2].split('=')[1], 16)
+        er, fl = vhop(1, 32 if name.endswith('ps') else 64, 'hsub' in name, a, b, mx)
+        if int(vec, 16) != 0xFFFF:
+            bad.append((name + ' vec', 0xFFFF, int(vec, 16)))
+        if er != r:
+            bad.append((name, er, r))
+        if mx | fl != mxo:
+            bad.append((name + ' mxcsr', mx | fl, mxo))
+        k += 3
+    return bad
+
+
 # ---- transcript lines ----
 
 def expected(name, L, imm, d, a, src, c, mx_in):
@@ -307,6 +389,8 @@ def check(path):
     with open(path, errors='replace') as fh:
         for line in fh:
             r = check_line(line.strip())
+            if r is None:
+                r = check_avxm(line.strip())
             if r is None:
                 continue
             n += 1

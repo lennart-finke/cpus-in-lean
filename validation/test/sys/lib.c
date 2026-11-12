@@ -180,6 +180,7 @@ void sys_main(void) {
 	test_paging();
 	test_pae();
 	test_paging_fuzz();
+	test_paging_tlb_fuzz();
 	test_debug();
 	test_debug_fuzz();
 	test_callgate();
@@ -206,6 +207,7 @@ void sys_main(void) {
 	test_ioapic();
 	test_x2apic();
 	test_avx2();
+	test_review();
 	/* Below: checked against test/sys/model-only.expected (SDM-derived), not against QEMU. */
 	kputs("MODEL-ONLY\n");
 	test_task_trap();
@@ -227,5 +229,6 @@ void sys_main(void) {
 	test_ioapic_model();
 	test_x2apic_model();
 	test_avx2_model();
+	test_review_model();
 	sys_exit();
 }
