@@ -179,19 +179,24 @@ IMPLEMENTED = [
     F('sse42', 'Gpr', 'legacy', 2, 3, [0xF0, 0xF1]),               # CRC32
     F('adx', 'Gpr', 'legacy', 2, 1, [0xF6]),                       # ADCX
     F('adx', 'Gpr', 'legacy', 2, 2, [0xF6]),                       # ADOX
-    F('bmi1', 'Gpr', 'vex', 2, 0, [0xF2, 0xF3, 0xF7]),             # ANDN, BLSR/BLSMSK/BLSI, BEXTR
-    F('bmi2', 'Gpr', 'vex', 2, 0, [0xF5]),                         # BZHI
-    F('bmi2', 'Gpr', 'vex', 2, 1, [0xF7]),                         # SHLX
-    F('bmi2', 'Gpr', 'vex', 2, 2, [0xF5, 0xF7]),                   # PEXT, SARX
-    F('bmi2', 'Gpr', 'vex', 2, 3, [0xF5, 0xF6, 0xF7]),             # PDEP, MULX, SHRX
-    F('bmi2', 'Gpr', 'vex', 3, 3, [0xF0]),                         # RORX
+    # (BMI: VEX.L = 1 is #UD, APM vol. 3 and SDM "VEX.LZ"; VEX.W is ignored outside 64-bit mode)
+    F('bmi1', 'Gpr', 'vex', 2, 0, [0xF2, 0xF7], None, 0),          # ANDN, BEXTR
+    F('bmi1', 'Gpr', 'vex', 2, 0, [0xF3], (None, 1), 0),           # BLSR
+    F('bmi1', 'Gpr', 'vex', 2, 0, [0xF3], (None, 2), 0),           # BLSMSK
+    F('bmi1', 'Gpr', 'vex', 2, 0, [0xF3], (None, 3), 0),           # BLSI
+    F('bmi2', 'Gpr', 'vex', 2, 0, [0xF5], None, 0),                # BZHI
+    F('bmi2', 'Gpr', 'vex', 2, 1, [0xF7], None, 0),                # SHLX
+    F('bmi2', 'Gpr', 'vex', 2, 2, [0xF5, 0xF7], None, 0),          # PEXT, SARX
+    F('bmi2', 'Gpr', 'vex', 2, 3, [0xF5, 0xF6, 0xF7], None, 0),    # PDEP, MULX, SHRX
+    F('bmi2', 'Gpr', 'vex', 3, 3, [0xF0], None, 0),                # RORX
     F('rdrand', 'Gpr', 'legacy', 1, 0, [0xC7], ('reg', 6)),
     F('rdrand', 'Gpr', 'legacy', 1, 1, [0xC7], ('reg', 6)),
     F('rdseed', 'Gpr', 'legacy', 1, 0, [0xC7], ('reg', 7)),
     F('rdseed', 'Gpr', 'legacy', 1, 1, [0xC7], ('reg', 7)),
     F('rdpid', 'Gpr', 'legacy', 1, 2, [0xC7], ('reg', 7)),
-    F('monitor', 'Gpr', 'legacy', 1, None, [0x01], ('reg', 1)),     # C8 MONITOR, C9 MWAIT
-    F('rdtscp', 'Gpr', 'legacy', 1, None, [0x01], ('reg', 7)),      # F9 RDTSCP, FA MONITORX/MCOMMIT, FB MWAITX, FC CLZERO, FD RDPRU
+    # (0F 01 CC..CF, FE, FF: no instruction on Zen 2; F8 SWAPGS: 64-bit mode only, LongMode)
+    F('monitor', 'Gpr', 'legacy', 1, None, [0x01], ('reg', 1, (0, 1))),  # C8 MONITOR, C9 MWAIT
+    F('rdtscp', 'Gpr', 'legacy', 1, None, [0x01], ('reg', 7, (1, 2, 3, 4, 5))),   # F9 RDTSCP, FA MONITORX/MCOMMIT, FB MWAITX, FC CLZERO, FD RDPRU
     F('clflush', 'Gpr', 'legacy', 1, 0, [0xAE], ('mem', 7)),
     F('clflushopt', 'Gpr', 'legacy', 1, 1, [0xAE], ('mem', 7)),
     F('clwb', 'Gpr', 'legacy', 1, 1, [0xAE], ('mem', 6)),
