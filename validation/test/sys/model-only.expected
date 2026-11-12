@@ -106,7 +106,8 @@ irperf.write: 1001
 irperf.off: frozen=1 straight=0 write=500
 irperf.enable: 502
 irperf.wrap: hi=00000000 small=1
-msr8b.legacy: wr=0000ffff
+msr8b.amd: wr=0000000d
+msr.intel: 17=0000000d c1=0000000d c2=0000000d 186=0000000d 187=0000000d 1d9=0000ffff
 vme.cpuid: vme=1 cr4_wr=0000ffff cr4=00000003
 vme.fuzz: n=800 bad=0
 vme.irb.limit: 1 vec=0000000d err=00000000

@@ -502,9 +502,13 @@ static void test_irperf(void) {
 	u64 w = rdmsr(0xC00000E9);
 	kprintf("irperf.wrap: hi=%x small=%d\n", (u32)(w >> 32), w < 100);   /* 64-bit counter (OSRR 56255) wraps to 0 */
 	wrmsr(0xC0010015, hw);
-	/* MSR 8Bh: with the legacy (Intel) identity IA32_BIOS_SIGN_ID, writable; the AMD identity makes it
-	   read-only (PATCH_LEVEL, WRMSR #GP(0); theorem patchLevel_amd_wr) */
-	kprintf("msr8b.legacy: wr=%x\n", TRY(wrmsr(0x8B, 0)));
+	/* MSR 8Bh: PATCH_LEVEL with the AMD identity, read-only (WRMSR #GP(0); theorems patchLevel_amd_wr,
+	   coreMsr_patchLevel); the former Intel identity kept IA32_BIOS_SIGN_ID, which is writable */
+	kprintf("msr8b.amd: wr=%x\n", TRY(wrmsr(0x8B, 0)));
+	/* Intel's IA32_PLATFORM_ID, IA32_PMC0/1, IA32_PERFEVTSEL0/1 are not AMD MSRs (AMD APM vol. 2, appendix A):
+	   #GP(0) with the AMD identity; DebugCtl (1D9h) exists */
+	kprintf("msr.intel: 17=%x c1=%x c2=%x 186=%x 187=%x 1d9=%x\n", TRY((void)rdmsr(0x17)), TRY((void)rdmsr(0xC1)),
+	        TRY((void)rdmsr(0xC2)), TRY((void)rdmsr(0x186)), TRY(wrmsr(0x187, 0)), TRY((void)rdmsr(0x1D9)));
 }
 
 void test_sysb_model(void) {
