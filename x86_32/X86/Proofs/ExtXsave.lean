@@ -5,8 +5,8 @@ import X86.Proofs.Ext
 /-!
 # XSAVE (`X86/Ext/Xsave.lean`)
 
-* `cpuid_osxsave_legacy`, `amdLeaf_osxsave`: CPUID 1:ECX[27] is CR4.OSXSAVE, with the former and
-  with the AMD identity (whose raw dump value has the bit set).
+* `cpuid_osxsave`, `amdLeaf_osxsave`, `legacyLeaf_osxsave`: CPUID 1:ECX[27] is CR4.OSXSAVE (the raw dump
+  value has the bit set), also with the former identity.
 * `cpuid_leafD`, `leafD_0/1/2`, `leafD_unsupported`: CPUID leaf 0xD (x87, SSE and AVX; standard sizes 576/832,
   XSAVEOPT/XSAVEC/XGETBV1/XSAVES, no supervisor component, zeros for other components).
 * `xcr0Valid_iff`: XSETBV accepts exactly XCR0 = 1, 3 and 7; `xsetbv_invalid`, `xsetbv_cpl`,
@@ -20,12 +20,21 @@ import X86.Proofs.Ext
 namespace X86
 namespace Xsave
 
-theorem cpuid_osxsave_legacy (c : Cpu) (sub : UInt32) :
+theorem cpuid_osxsave (c : Cpu) (sub : UInt32) :
     (cpuid c 1 sub).2.2.1 &&& Cpuid.osxsaveBit =
+      (if c.cr4 &&& CR4.OSXSAVE != 0 then Cpuid.osxsaveBit else 0) := by
+  have hx : implemented .xsave = true := rfl
+  rw [cpuid_epyc]
+  simp only [epycCpuid, amdTable, Cpuid.osxsave, hx]
+  by_cases h : c.cr4 &&& CR4.OSXSAVE = 0 <;> simp [h, Cpuid.osxsaveBit] <;> decide
+
+/-- The former identity (`Cpuid.legacyLeaf`) mirrors CR4.OSXSAVE as well. -/
+theorem legacyLeaf_osxsave (c : Cpu) (sub : UInt32) :
+    (Cpuid.legacyLeaf c 1 sub).2.2.1 &&& Cpuid.osxsaveBit =
       (if c.cr4 &&& CR4.OSXSAVE != 0 then Cpuid.osxsaveBit else 0) := by
   have h12 : Cpuid.featBits 1 0 2 true = 0x76F8120B := by decide   -- AVX, x2APIC (SMP), FMA, F16C (Avx2)
   have hx : implemented .xsave = true := rfl
-  simp only [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.osxsave, hx, h12]
+  simp only [Cpuid.legacyLeaf, legacyMax_former, Cpuid.osxsave, hx, h12]
   by_cases h : c.cr4 &&& CR4.OSXSAVE = 0 <;> simp [h, Cpuid.osxsaveBit] <;> decide
 
 theorem amdLeaf_osxsave (c : Cpu) (sub : UInt32) :
@@ -45,9 +54,13 @@ theorem amdLeaf_osxsave (c : Cpu) (sub : UInt32) :
     have h' : (c.cr4 &&& CR4.OSXSAVE != 0) = true := by simpa using h
     rw [ho, hb]; simp only [h', ↓reduceIte]; bv_decide
 
-/-- With the former identity, leaf 0xD (in range: the highest basic leaf is 0xD) is `leafD`. -/
+/-- Leaf 0xD (in range: the highest basic leaf is 10h) is `leafD`. -/
 theorem cpuid_leafD (c : Cpu) (sub : UInt32) : cpuid c 0xD sub = Cpuid.leafD c sub := by
-  simp [cpuid, identity, Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf]
+  rw [cpuid_epyc]; simp [epycCpuid, amdTable]
+
+/-- So is it with the former identity (its highest basic leaf is 0xD). -/
+theorem legacyLeaf_leafD (c : Cpu) (sub : UInt32) : Cpuid.legacyLeaf c 0xD sub = Cpuid.leafD c sub := by
+  simp [Cpuid.legacyLeaf, legacyMax_former, Cpuid.amdLeaf]
 
 theorem leafD_0 (c : Cpu) : Cpuid.leafD c 0 = (7, Cpuid.xsaveSize c.xcr0, 0x340, 0) := by
   have hs : Cpuid.xcr0Supported = 7 := by decide
