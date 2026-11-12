@@ -20,6 +20,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 DUMP = os.path.join(HERE, 'fixtures', 'epyc7742-cpuid.txt')
+# The CPUID dump of the 7742 the native campaign ran on (`oracle cpuid`, comment lines added): the model
+# must report no feature bit this machine lacks either.
+NATIVE_DUMP = os.path.join(HERE, 'fixtures', 'epyc7742-native-cpuid.txt')
 DOC = os.path.join(ROOT, 'x86_32', 'CPUID.md')
 X86RUN = os.path.join(ROOT, 'validation', '.lake', 'build', 'bin', 'x86run')
 NCPU = 128          # the dump's package: 128 logical processors
@@ -85,6 +88,7 @@ REASONS = {
     'svmUnimpl': 'LbrVirt (no LBR stack), AVIC (no AVIC), GMET, and a bit reserved in the APM',
     'ppin': 'the protected processor inventory number MSRs are not modelled',
     'memEncrypt': 'SME/SEV/SEV-ES: no memory encryption is modelled',
+    'stibpAlwaysOn': 'set in this dump, clear on the 7742 the native campaign ran on (microcode 0x830107c, fixtures/epyc7742-native-cpuid.txt): a firmware/microcode preference; the model reports only bits both real dumps have',
 }
 
 # Leaves the dump fills that the model reports as zero: the feature that gates them.
@@ -124,6 +128,12 @@ def dump_regs(d, leaf, sub):
         # an invalid level: EAX = EBX = 0, ECX[7:0] echoes ECX (AMD APM vol. 3, E.3.7 Fn0000_000B)
         return (0, 0, sub & 0xFF, 0)
     return (0, 0, 0, 0)
+
+
+def parse_native(path=NATIVE_DUMP):
+    sys.path.insert(0, HERE)
+    import native_fp
+    return native_fp.parse_cpuid(''.join(l for l in open(path) if not l.startswith('#')))
 
 
 def run_model(x86run=X86RUN):
@@ -199,6 +209,14 @@ def analyse(regs, feats, d):
     for name, (leaf, sub, k, b) in native_fp.FEATURES.items():
         if not regs.get((leaf, sub), (0, 0, 0, 0))[k] >> b & 1:
             errors.append(f'native_fp.FEATURES[{name!r}] ({leaf:08X}.{sub} {REGS[k]}[{b}]) is not reported by the model')
+    native = parse_native()
+    for (leaf, sub, k) in BITS:
+        nv = native.get((leaf, sub), (0, 0, 0, 0))[k]
+        mv = regs.get((leaf, sub), (0, 0, 0, 0))[k]
+        if (leaf, sub, k) == (0xD, 0, 0):
+            continue   # XCR0 bits: the same in both dumps (OTHER)
+        if mv & ~nv & 0xFFFFFFFF:
+            errors.append(f'{leaf:08X}.{sub} {REGS[k]}: model reports {mv & ~nv:08X}, not in the native campaign\'s dump')
     for leaf, f in MASKED_LEAVES.items():
         if f not in masked:
             errors.append(f'leaf {leaf:08X} gated by {f}, which is not masked')
@@ -217,7 +235,9 @@ def render(rows, d):
            'logical CPU #0); `cpuid_table.py check` (a unit test) fails if the model, the reasons or this file',
            'drift apart. Do not edit by hand. The Lean side: `X86/Cpuid.lean` (`implemented`, with the same',
            'reasons) and `X86/Proofs/Ext.lean` (`cpuid_epyc`, `cpuid_epyc_dump`: no reported bit is missing',
-           'from the dump).', '',
+           'from the dump), `X86/Proofs/EpycHw.lean` (`cpuid_epyc_native_dump`: nor from the dump of the 7742 the',
+           'native campaign ran on, `validation/test/fixtures/epyc7742-native-cpuid.txt`; the two dumps\' feature',
+           'bits differ only in 8000_0008h EBX[17] StibpAlwaysOn, `dumps_feature_diff`).', '',
            f'Feature bits set in the dump: {len(rows)}; reported by the model: {rep}; not reported: {len(msk)}.',
            'Identity, brand string, cache/TLB descriptors (8000_0005/6/19/1D), address sizes (8000_0008),',
            'MONITOR (5), the topology (1, 0Bh, 8000_0008 ECX, 8000_001E) and the SVM revision/ASIDs equal the dump',
