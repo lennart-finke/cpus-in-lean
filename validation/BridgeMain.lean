@@ -18,7 +18,8 @@ perform that 64-bit instruction, which neither model does, so the hand-off is on
 For the long-mode system test (`test/sys/t_long.c`) every 64-bit target is one of the test's stubs:
 the bridge runs the stub in the `x86_64` model up to its final IRETQ (where `X64` stops), and checks
 it against `LongStub.run` (the stub emulation `x86sys` uses): the record and the IRETQ frame the stub
-writes, and the registers at the IRETQ, must be identical. It then continues the IA-32 run from the
+writes, and the registers at the IRETQ, must be identical (a stub at CPL > 0 whose IRETQ to ring 0
+faults is followed into the #GP handler's stub on both sides). It then continues the IA-32 run from the
 emulated IRETQ. The UART output of the kernel goes to stdout as in `x86sys`.
 
 The state mapping (IA-32 → X64): general registers zero-extended (`LongModeState` holds RIP/RSP bits
@@ -152,6 +153,14 @@ def main (args : List String) : IO UInt32 := do
         IO.println s!"BRIDGE stop {stops}: {m.cpu.lmx.entry} rip={hex (LongMode.rip m.cpu)}: not a test stub; x86_64 model: {xr} at rip={hex x.cpu.rip} after {x.icount - (m.icount + m.cpu.sysx.tscOff)} instructions"
         done := true
       | some m' =>
+        -- a stub whose IRETQ faults (a stub entered at CPL 1..3 returning to ring 0: #GP) continues in
+        -- the ring-0 stub of the #GP, which X64 runs as well: follow the emulation to that stub's IRETQ
+        let mut m' := m'
+        for _ in [0:4] do
+          if LongMode.in64 m'.cpu then
+            match LongStub.resume (X86.step m') with
+            | some m'' => m' := m''
+            | none => pure ()
         -- X64 stops at the stub's IRETQ (to compatibility mode); compare the stub's memory writes and
         -- registers with the emulation: the record (rax/rbx/rcx/r11 slots and the copy) and the frame
         let iretOk := match x.fatal with

@@ -40,6 +40,25 @@ The machine is a function of its state; nothing depends on the host:
   steps with logged stores) describes; the two models are kept apart: `MpMachine` gives one
   deterministic, sequentially consistent execution of a whole platform (devices, paging, APICs),
   `TMachine` all TSO executions of programs within its supported subset.
+* **What the quantum may change.** A CPU that does not run is, architecturally, a CPU stalled in its
+  current instruction, which hardware permits for any length of time. Every message to it is accepted
+  by its local APIC at once and in arrival order (fixed and lowest-priority vectors enter IRR with
+  their TMR bit; STARTUP is accepted in, or while entering, the INIT state; `Machine.recv`); its APIC
+  timer fires at its due instruction as far as other CPUs can observe it (before arbitration and remote
+  reads, `Machine.peersTimers`); I/O APIC remote IRR and EOIs are immediate; a store to a line it
+  monitors is recorded when it happens (`Machine.watch`). Its core takes the resulting events at its
+  next instruction boundary in the priority order of APM table 8-9, as a core receiving them during one
+  long instruction would: INIT before SMI before NMI before INTR, a STARTUP accepted after the INIT is
+  taken after it, NMI and SMI wait until STARTUP, and events of one kind coalesce as hardware coalesces
+  them (one IRR bit per vector, one NMI and one SMI latch, the PIC acknowledged when the core takes the
+  ExtINT). So the quantum changes only (a) the interleaving of the CPUs' instructions, hence the
+  outcome of racy programs, (b) how many of several identical events (same fixed vector, NMIs, SMIs,
+  ExtINTs, timer expiries) that reach a CPU while it does not run are taken, as for events arriving
+  during one instruction, and (c) the instruction counts and TSC values at which things happen.
+  Quantum-independent: which CPUs an INIT/STARTUP sequence starts and at which vector, the state INIT
+  leaves, the APIC state other CPUs observe, lowest-priority arbitration, remote IRR, and every
+  MWAIT wake-up; the transcripts of `t_smp.c` (quanta 1 to 10^6) and of the SMP Linux boot and
+  workload (quanta 100 to 10^6, `guest/smp-check.sh` with `QUANTA`) are identical.
 * **MONITOR/MWAIT**: an MWAIT in progress (`SmpState.mwait`, set by `Gpr.mwait`) ends when a store
   writes its monitored 64-byte line (any store, also one that writes the same value or is undone
   later: `physWr` records it in `Machine.watchHit` while the waiting CPU does not run) or the line
