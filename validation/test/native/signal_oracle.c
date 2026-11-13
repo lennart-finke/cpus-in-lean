@@ -10,7 +10,23 @@
  * component (YMM_Hi128, at the offset CPUID.(0DH,2).EBX gives) of the XSAVE area in
  * the signal frame, and the observed values plus an availability flag (0 when the
  * kernel's frame has no AVX state) follow each output row.
+ * Format v3 (bits 63 and 62 of the count): a further 128-byte extension follows each record: +0 flags
+ * (bit 0: install the x87 FOP/FIP/FDP below in the frame, which uses the 64-bit FXSAVE layout: FIP and
+ * FDP are 64-bit offsets, no FCS/FDS; bit 1: report 64 arena bytes at the offset below), +4 FOP, +6 the
+ * dump offset, +8 FIP, +16 FDP, +24 the number (0..8) of dword patches of the arena at +32 (8 bytes
+ * each: offset u16, dword count u16 (0 = 1), value u32: the value is stored count times from the offset),
+ * applied in order after the 64-byte patch. Rows add the observed
+ * 64-bit FIP and FDP and the eight dump quadwords.
  * `oracle cpuid` prints every CPUID leaf and subleaf of the machine instead.
+ *
+ * Sandbox (FP-HARDWARE.md, "Safety"): below 4 GiB the process has only the data arena (0x10000, 8 KiB),
+ * the code page (0x20000) and its own image (0x100000, one RWX segment); a mapping audit of
+ * /proc/self/maps checks this at startup. While the instruction runs, the image is read/execute only
+ * (mprotect in the handler, both ways), so a stray store cannot reach the oracle's state: it faults and
+ * the oracle stops with an error. In addition a digest of the whole image is taken just before the
+ * instruction and checked just after it (an integrity canary, `oracle i386-unguarded` runs without the
+ * write protection to test it). FS and GS hold the flat user data selector 0x2B like DS and ES (base 0,
+ * as the model's segment registers).
  * Every record is validated before it runs (record_check.h; a refused record ends the batch with an
  * ERROR line naming the reason), and `oracle check < campaign.bin` is that validation alone, as a dry run
  * over a whole campaign: nothing is executed, refused records are listed (exit status 3).
@@ -40,7 +56,15 @@ static struct fp_input fp_input;
 _Static_assert(sizeof(struct fp_input)==208,"FP extension layout");
 /* v2: YMM0..7[255:128] input; observed values; YMM_Hi128 offset (0: no AVX in frames) */
 static u64 ymm_input[16],ymm_observed[16];
-static u32 ymm_offset,ymm_ok,v2;
+static u32 ymm_offset,ymm_ok,v2,v3;
+/* v3: the extension of the current record and the dumped arena bytes */
+static u8 ext_input[128];
+static u64 dump_observed[8];
+/* the image's extent (signal_enter.S), its write protection while an instruction runs, its digest */
+extern char oracle_image_end[];
+#define IMAGE_START 0x100000ull
+static u64 image_len,image_hash;
+static int guard=1;
 #include "record_check.h"
 static unsigned check_target; /* RC_AMD, RC_MISALIGN_SSE of this processor (CPUID) */
 #endif
@@ -73,6 +97,20 @@ static void hex(int fd,u64 v) {
 static void fail(const char *operation,long value) {
  text(2,"ERROR: ");text(2,operation);text(2," (value/negative errno: ");hex(2,(u64)value);text(2,")\n");finish(1);
 }
+#ifdef NATIVE_FP
+/* The digest of the oracle's image, without the word that holds it (FNV-style over 64-bit words). */
+static u64 image_digest(void) {
+ const volatile u64 *p=(const volatile u64 *)IMAGE_START,*e=(const volatile u64 *)(IMAGE_START+(((u64)oracle_image_end-IMAGE_START)&~7ull));
+ u64 h=14695981039346656037ull;
+ for(;p<e;p++){if(p==(const volatile u64 *)&image_hash)continue;h=(h^*p)*1099511628211ull;h^=h>>29;}
+ return h;
+}
+/* 5 = read/execute while the instruction runs, 7 = read/write/execute (the ELF segment's own) */
+static void protect(int prot) {
+ if(!guard)return;
+ long r=call(10,IMAGE_START,image_len,prot,0,0,0);if(r<0)fail("mprotect of the oracle image",r);
+}
+#endif
 static void read_all(void *p,u64 n) {
  u8 *b=p;while(n){long k=call(0,0,(long)b,n,0,0,0);if(k==-4)continue;if(k<=0)fail("truncated input",k);b+=k;n-=k;}
 }
@@ -114,6 +152,9 @@ static int ymm_frame(struct fpregs *fp,u64 uc_flags) {
 }
 #endif
 static void handler(int sig,int *info,struct ucontext *u) {
+#ifdef NATIVE_FP
+ protect(7); /* first: nothing of the image is written before this */
+#endif
  struct context *c=&u->cpu;
  if(!c->fpstate)fail("missing signal FPU context",sig);
  struct fpregs *fp=(struct fpregs *)c->fpstate;
@@ -125,6 +166,9 @@ static void handler(int sig,int *info,struct ucontext *u) {
 #ifdef NATIVE_FP
   fp->cwd=fp_input.cw;fp->swd=fp_input.sw;fp->ftw=fp_input.tw;
   fp->fop=0;fp->rip=0;fp->rdp=0;
+  if(v3 && (ext_input[0]&1)) { /* the input x87 error pointers and opcode (64-bit layout) */
+   fp->fop=*(u16 *)(ext_input+4)&0x7ff;fp->rip=*(u64 *)(ext_input+8);fp->rdp=*(u64 *)(ext_input+16);
+  }
   for(int i=0;i<32;i++)fp->st[i]=fp_input.st[i];
 #endif
   for(int i=0;i<32;i++){fp->xmm[2*i]=(u32)input.xmm[i];fp->xmm[2*i+1]=(u32)(input.xmm[i]>>32);}
@@ -136,9 +180,19 @@ static void handler(int sig,int *info,struct ucontext *u) {
    *(u64 *)((u8 *)fp+512)|=4; /* XSTATE_BV: AVX state present */
   }
 #endif
-  phase=1;return;
+  phase=1;
+#ifdef NATIVE_FP
+  image_hash=image_digest();
+  protect(5);
+#endif
+  return;
  }
  if(phase!=1 || sig==10)fail("unexpected signal outside instruction",sig);
+#ifdef NATIVE_FP
+ if(image_digest()!=image_hash)fail("the oracle image changed while the instruction ran (integrity canary)",c->rip);
+ if(c->trapno==14 && c->cr2>=IMAGE_START && c->cr2<IMAGE_START+image_len)
+  fail("the instruction accessed the oracle image (write-protected while it runs)",c->cr2);
+#endif
  if(c->rip<0x20000 || c->rip>=0x21000)fail("signal outside instruction buffer",c->rip);
  observed=*c;observed_fp=*fp;observed_signal=sig;observed_code=info[2];
 #ifdef NATIVE_FP
@@ -218,6 +272,12 @@ static void memory_prepare(void) {
  }
 #ifdef NATIVE_FP
  memcpy(arena,fp_input.memory,64);
+ /* v3: up to eight further dword patches anywhere in the arena (record_check bounds them) */
+ if(v3)for(int k=0;k<ext_input[24] && k<8;k++) {
+  u32 off=*(u16 *)(ext_input+32+8*k),n=*(u16 *)(ext_input+34+8*k);
+  if(!n)n=1;
+  if(off+4*n<=8192)for(u32 i=0;i<n;i++)*(u32 *)(arena+off+4*i)=*(u32 *)(ext_input+36+8*k);
+ }
 #endif
  memcpy(initial,arena,8192);
  for(int p=0;p<2;p++) {
@@ -274,6 +334,10 @@ static void memory_check(void) {
  /* Flat user DS/ES are required for compatibility-mode data accesses.
   * This freestanding process has no TLS or libc segment dependencies. */
  __asm__ volatile("mov $0x2b,%%ax; mov %%ax,%%ds; mov %%ax,%%es":::"rax","memory");
+#ifdef NATIVE_FP
+ /* FS and GS too: the model's segment registers are all flat (base 0); this process has no TLS */
+ __asm__ volatile("mov $0x2b,%%ax; mov %%ax,%%fs; mov %%ax,%%gs":::"rax","memory");
+#endif
  input.flags=0x202;input.seed=1;input.mxcsr=0x1f80;input.pte[0]=input.pte[1]=0x67;
  input.r[3]=0x10000;input.code[0]=2;input.code[1]=0x8b;input.code[2]=3;
  memory_prepare();execute();memory_restore();
@@ -284,6 +348,15 @@ static void memory_check(void) {
     0x42021
 #endif
     || observed.rip!=0x20103)fail("memory load calibration",observed.trapno);
+#ifdef NATIVE_FP
+ /* FS and GS overrides address the arena with base 0 */
+ for(int s=0;s<2;s++) {
+  input.code[0]=3;input.code[1]=s?0x65:0x64;input.code[2]=0x8b;input.code[3]=3;
+  memory_prepare();execute();memory_restore();
+  if(observed.trapno!=3 || observed.rax!=*(u32 *)fp_input.memory || observed.rip!=0x20104)fail("FS/GS override calibration",s);
+ }
+ input.code[0]=2;input.code[2]=3;
+#endif
  input.r[0]=0x12345678;input.code[1]=0x89;
  memory_prepare();execute();memory_restore();
  if(observed.trapno!=3 || *(u32 *)arena!=0x12345678)fail("memory store calibration",observed.trapno);
@@ -306,21 +379,50 @@ static void read_record(void) {
  read_all(&input,sizeof(input));
  read_all(&fp_input,sizeof(fp_input));
  if(v2)read_all(ymm_input,128);
+ if(v3)read_all(ext_input,128);
 }
 /* `oracle check`: record_check on every record of a campaign, without executing anything. */
 static void check_input(void) {
  u64 count;read_all(&count,8);
- v2=count>>63;count&=~(1ull<<63);
+ v2=count>>63;v3=v2 && (count>>62&1);count&=~(3ull<<62);
  if(!count || count>1000000)fail("invalid count",count);
  u64 refused=0;
  text(1,"CHECK ");hex(1,count);text(1,"\n");
  for(u64 index=0;index<count;index++) {
   read_record();
-  u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,check_target,&value);
+  u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,v3?ext_input:0,check_target,&value);
   if(why){text(1,"REJECT ");hex(1,index);hex(1,value);text(1,why);text(1,"\n");refused++;}
  }
  u8 extra;if(call(0,0,(long)&extra,1,0,0,0)!=0)fail("trailing input",0);
  text(1,"END ");hex(1,refused);text(1,"\n");finish(refused?3:0);
+}
+#endif
+#ifdef NATIVE_FP
+static u64 hexdigit(char ch) {return ch>='0'&&ch<='9'?(u64)(ch-'0'):ch>='a'&&ch<='f'?(u64)(ch-'a'+10):99;}
+/* The process's mappings below 4 GiB must be exactly the arena, the code page and the image: a stray
+ * access of a mistranslated instruction can then reach nothing else (FP-HARDWARE.md, "Safety"). */
+static char maps[1<<14];
+static void audit_maps(void) {
+ long fd=call(2,(long)"/proc/self/maps",0,0,0,0,0);
+ if(fd<0){text(2,"WARNING: /proc/self/maps is not readable; the audit of the low address space is skipped\n");return;}
+ u64 n=0;
+ for(;;){long k=call(0,fd,(long)maps+n,sizeof(maps)-1-n,0,0,0);if(k==-4)continue;if(k<=0)break;n+=k;if(n>=sizeof(maps)-1)fail("/proc/self/maps too long",n);}
+ call(3,fd,0,0,0,0,0);
+ u64 i=0,count=0;
+ while(i<n) {
+  u64 a=0,b=0;
+  while(i<n && hexdigit(maps[i])<16)a=a*16+hexdigit(maps[i++]);
+  if(i>=n || maps[i]!='-')fail("malformed /proc/self/maps",i);
+  i++;
+  while(i<n && hexdigit(maps[i])<16)b=b*16+hexdigit(maps[i++]);
+  while(i<n && maps[i]!='\n')i++;
+  i++;count++;
+  if(a<0x100000000ull && !((a>=0x10000 && b<=0x12000) || (a>=0x20000 && b<=0x21000) ||
+                           (a>=IMAGE_START && b<=IMAGE_START+image_len)))
+   fail("a mapping below 4 GiB other than the arena, the code page and the oracle image",a);
+ }
+ if(!count)fail("empty /proc/self/maps",0);
+ text(2,"PASS: below 4 GiB only the arena, the code page and the oracle image are mapped\n");
 }
 #endif
 /* Every leaf up to the reported maxima of the standard, hypervisor (if any) and
@@ -342,10 +444,16 @@ static void cpuid_dump(void) {
  text(1,"END\n");finish(0);
 }
 void start(u64 *stack) {
- if(stack[0]!=2){text(2,"usage: oracle i386|x86_64|cpuid|check < native.bin\n");finish(2);}
+ if(stack[0]!=2){text(2,"usage: oracle i386|i386-unguarded|x86_64|cpuid|check|layout < native.bin\n");finish(2);}
  const char *arch=(const char *)stack[2];compat=arch[0]=='i';
  if(arch[0]=='c' && arch[1]=='p')cpuid_dump();
 #ifdef NATIVE_FP
+ image_len=((u64)oracle_image_end-IMAGE_START+4095)&~4095ull;
+ if((u64)oracle_image_end<=IMAGE_START || image_len>(1u<<24))fail("oracle image layout",(long)oracle_image_end);
+ if(arch[0]=='l'){text(1,"IMAGE ");hex(1,IMAGE_START);hex(1,(u64)oracle_image_end);text(1,"\n");finish(0);}
+ /* `i386-unguarded` (tests only): no write protection of the image, so that the integrity canary can be
+  * seen to catch a store into it */
+ if(compat && arch[4]=='-')guard=0;
  {
   u32 r[4];cpuid(0,0,r);
   if(r[1]==0x68747541 && r[3]==0x69746e65 && r[2]==0x444d4163)check_target|=RC_AMD; /* AuthenticAMD */
@@ -357,7 +465,7 @@ void start(u64 *stack) {
  if(arch[0]=='c'){text(2,"usage: oracle i386|x86_64|cpuid|check < native.bin\n");finish(2);}
  u64 count;read_all(&count,8);
 #ifdef NATIVE_FP
- v2=count>>63;count&=~(1ull<<63);
+ v2=count>>63;v3=v2 && (count>>62&1);count&=~(3ull<<62);
  if(v2) {
   u32 r[4];cpuid(0,0,r);
   if(r[0]>=0xd){cpuid(0xd,2,r);ymm_offset=r[1];}
@@ -367,6 +475,10 @@ void start(u64 *stack) {
  pid=call(39,0,0,0,0,0,0);
  long mapping=call(9,0x20000,4096,3,0x22,-1,0);if(mapping!=0x20000)fail("cannot map code at 0x20000",mapping);code=(u8 *)mapping;
  long alt=call(9,0,1024*1024,3,0x22,-1,0);if(alt<0)fail("alternate signal stack allocation",alt);
+#ifdef NATIVE_FP
+ /* the signal frames and the runner's stack must be out of reach of 32-bit addresses */
+ if((u64)alt<0x100000000ull || (u64)stack<0x100000000ull)fail("stack below 4 GiB",alt);
+#endif
  struct stack ss={(u64)alt,0,0,1024*1024};long res=call(131,(long)&ss,0,0,0,0,0);if(res<0)fail("sigaltstack",res);
  struct action action={(u64)handler,0x0c000004,(u64)signal_restorer,~0ull};
  int signals[]={4,5,7,8,10,11};
@@ -382,12 +494,16 @@ void start(u64 *stack) {
 #ifdef NATIVE_MEMORY
  memory_check();
 #endif
+#ifdef NATIVE_FP
+ audit_maps();
+ if(!guard)text(2,"WARNING: i386-unguarded: the oracle image is not write-protected (a test mode)\n");
+#endif
  text(1,"BEGIN ");hex(1,count);text(1,"\n");
  for(u64 index=0;index<count;index++) {
 #ifdef NATIVE_FP
   read_record();
   {
-   u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,check_target,&value);
+   u64 value;const char *why=record_check((const u8 *)&input,(const u8 *)&fp_input,v3?ext_input:0,check_target,&value);
    if(why)fail(why,value);
   }
 #else
@@ -399,6 +515,13 @@ void start(u64 *stack) {
   execute();
 #ifdef NATIVE_MEMORY
   memory_restore();
+#endif
+#ifdef NATIVE_FP
+  if(v3) {
+   u32 off=*(u16 *)(ext_input+6);
+   for(int q=0;q<8;q++)dump_observed[q]=0;
+   if((ext_input[0]&2) && off<=8192-64)memcpy(dump_observed,arena+off,64);
+  }
 #endif
   hex(1,index);hex(1,observed_signal);hex(1,(u32)observed_code);hex(1,observed.rip);hex(1,observed.cs);hex(1,observed.flags);
   u64 r[16];get_regs(&observed,r);for(int k=0;k<16;k++)hex(1,r[k]);
@@ -415,6 +538,7 @@ void start(u64 *stack) {
    hex(1,observed_fp.st[4*i+2]&0xffff);
   }
   if(v2){for(int i=0;i<16;i++)hex(1,ymm_observed[i]);hex(1,ymm_ok);}
+  if(v3){hex(1,observed_fp.rip);hex(1,observed_fp.rdp);for(int q=0;q<8;q++)hex(1,dump_observed[q]);}
 #endif
   text(1,"\n");
  }

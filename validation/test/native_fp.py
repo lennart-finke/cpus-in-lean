@@ -28,6 +28,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -39,6 +40,17 @@ REPO=ROOT.parent
 KINDS={'ia32-fp-v1':dict(size=648,native=83,model=55),'ia32-fp-v2':dict(size=776,native=100,model=71)}
 KIND='ia32-fp-v2'
 SIZE=KINDS[KIND]['size']
+# Campaign format 3 (in an ia32-fp-v2 bundle; the campaign's manifest entry has format 3 and its count
+# header bits 63 and 62): each v2 record is followed by a 128-byte extension (x87 FIP/FDP/FOP inputs, a
+# 64-byte dump window, arena patches: native_ext.record3); native rows add the 64-bit FIP and FDP and the
+# eight dump quadwords (10 columns), model rows FIP, FDP, CR2 of a #PF and the dump (11 columns). The
+# campaigns of the earlier families stay format 2, bit for bit.
+FORMAT3=dict(size=904,native=110,model=82)
+
+
+def cols_of(kind,spec):
+    """Record size and row widths of one campaign."""
+    return FORMAT3 if spec.get('format',2)==3 else KINDS[kind]
 # CPUID features a case family may require (fp_cases.FAMILIES): leaf, subleaf, register
 # (0 EAX .. 3 EDX), bit; names as in x86_32/X86/Cpuid.lean.
 FEATURES={
@@ -59,6 +71,8 @@ FEATURES.update({'clfsh':(1,0,3,19),'monitor':(1,0,2,3),'mcommit':(0x80000008,0,
 FEATURES.update({'lm':(0x80000001,0,3,29)})  # long-mode family (native_longmode.py)
 
 HEX16=re.compile('[0-9a-f]{16}')
+# the generator modules of the extended families (format 3), copied into the bundle's sources
+EXT_MODULES=['native_ext','native_fuzz','native_int','native_depth','native_x87rules']
 # The Linux signal of every exception vector a user-mode instruction can raise (arch/x86/kernel/traps.c,
 # mm/fault.c): #DE, #MF, #XM SIGFPE; #DB, #BP SIGTRAP; #OF, #BR, #GP, #PF SIGSEGV; #UD SIGILL;
 # #NP, #SS, #AC SIGBUS. The oracle handles exactly these signals (signal_oracle.c, `signals[]`, plus
@@ -67,6 +81,9 @@ VECTOR_SIGNAL={0:8,1:5,3:5,4:11,5:11,6:4,11:7,12:7,13:11,14:11,16:8,17:7,19:8}
 CODE_PAGE=range(0x20000,0x21000)   # the oracle's code page (0xCC outside the instruction at 0x20100)
 # A campaign whose oracle process fails this many times (one case each), or times out this often, is
 # given up (its remaining cases are recorded as not run).
+# --smoke: a uniform share (by record hash) of the families with many instructions of one name
+SMOKE_SHARE={'enc_fuzz':0.02,'int_core':0.005,'int_directed':0.02,'avx_random':0.01,'fma_random':0.01,
+             'shift16_rules':0.03,'avx_unmasked':0.02,'sse_unmasked_ext':0.03}
 MAX_CASE_FAILURES=50
 MAX_TIMEOUTS=3
 
@@ -146,7 +163,8 @@ def normalize(h):
     if VECTOR_SIGNAL.get(h[55])!=h[1]: raise ValueError('unexpected signal/vector pair')
     ip=h[3]-(h[55]==3)
     row=[h[0],h[55],h[56],ip,h[5]]+[r&0xffffffff for r in h[6:14]]+h[22:38]+[h[54]]+h[61:83]+h[58:61]
-    if len(h)==100: row+=h[83:99] if h[99]==1 else [None]*16
+    if len(h)>=100: row+=h[83:99] if h[99]==1 else [None]*16
+    if len(h)==110: row+=[h[100],h[101],h[57] if h[55]==14 else 0]+h[102:110]   # format 3
     return row
 
 
@@ -154,18 +172,29 @@ LABELS=['index','vector','error','eip','eflags']+[f'r{k}' for k in range(8)]+[
     f'xmm{k//2}.{("lo","hi")[k%2]}' for k in range(16)]+[
     'mxcsr','fcw','fsw','ftw','fop','fip','fdp']+[
     f'st{k//2}.{("sig","se")[k%2]}' for k in range(16)]+['memory.fnv32','page0.fnv64','page1.fnv64']+[
-    f'ymmh{k//2}.{("lo","hi")[k%2]}' for k in range(16)]
+    f'ymmh{k//2}.{("lo","hi")[k%2]}' for k in range(16)]+['fip64','fdp64','cr2']+[f'dump{q}' for q in range(8)]
+# the native oracle's raw row (signal_oracle.c), for the determinism check of repeated runs
+NATIVE_LABELS=(['index','signal','code','rip','cs','eflags']+[f'r{k}' for k in range(16)]+
+               [f'xmm{k//2}.{("lo","hi")[k%2]}' for k in range(32)]+['mxcsr','trapno','error','cr2',
+               'memory.fnv32','page0.fnv64','page1.fnv64','fcw','fsw','ftw','fop','fip','fdp']+
+               [f'st{k//2}.{("sig","se")[k%2]}' for k in range(16)]+[f'ymmh{k//2}.{("lo","hi")[k%2]}' for k in range(16)]+
+               ['ymm_ok','fip64','fdp64']+[f'dump{q}' for q in range(8)])
+POINTERS=(33,34,35,71,72)   # FOP, FIP, FDP, FIP64, FDP64: compared only where a case asks for it
 
 
 def differences(meta,h,m):
     out=[]
     for k,(a,b) in enumerate(zip(h,m)):
-        if k in (33,34,35): continue # Pointer/opcode update policies vary by CPU; retain raw observations.
+        # Pointer/opcode update policies vary by CPU: retained, compared only where the case asks for it
+        if k in POINTERS and not meta.get('compare_pointers'): continue
         if a is None: continue # YMM state not available on this machine (normalize)
         if k==4:
+            # documented-undefined flags of the case (native_flags): compared, reported as observations
+            fo=meta.get('flags_observe',0)
+            if fo and (a^b)&fo: out.append(dict(field='eflags.undefined',hardware=f'{a&fo:x}',model=f'{b&fo:x}'))
             mask=meta['flags_mask'];a&=mask;b&=mask
-        if k==30:
-            a&=0x1f7f;b&=0x1f7f # Reserved bits 7 and 13..15.
+        if k==30 and not meta.get('fcw_full'):
+            a&=0x1f7f;b&=0x1f7f # Reserved bits 7 and 13..15 (compared where the case asks: x87_control_load).
         if k==31:
             mask=meta['sw_mask'];a&=mask;b&=mask
             if meta['instruction'] in ('fprem','fprem1') and (a|b)&0x400:
@@ -182,12 +211,17 @@ def differences(meta,h,m):
 
 
 def classify(meta,diff):
+    # per-case observe fields (native_ext.os_dependent: CPUID, RDTSC, ...; '*' = every field)
+    fields=set(meta.get('observe_fields',()))|{'eflags.undefined'}
+    if '*' in fields: return 'observations'
+    diff=[d for d in diff if d['field'] not in fields]
+    if not diff: return 'observations'
     if meta.get('policy')!='observe':return 'strict_mismatches'
     for d in diff:
         if meta['family'].startswith('x87_') and d['field'].startswith('st'):continue
         # RCP/RSQRT approximations (and avx_ops' other observe rows) write only the destination XMM0/YMM0
         if meta['family'] in ('sse_random','sse_rcp_sweep') and d['field'] in ('xmm0.lo','xmm0.hi'):continue
-        if meta['family']=='avx_ops' and d['field'] in ('xmm0.lo','xmm0.hi','ymmh0.lo','ymmh0.hi'):continue
+        if meta['family'] in ('avx_ops','avx_random') and d['field'] in ('xmm0.lo','xmm0.hi','ymmh0.lo','ymmh0.hi'):continue
         if d['field']=='fsw' and (int(d['hardware'],16)^int(d['model'],16))&~0x23f==0:continue
         return 'strict_mismatches'
     return 'observations'
@@ -233,13 +267,16 @@ def check_records(checker,path,count,requires=()):
 
 def model_problems(metadata,model_rows):
     """Cases whose model result the oracle could not observe: an exception vector without a Linux signal
-    the oracle handles, or control leaving the oracle's code page (it would stop the batch)."""
+    the oracle handles, or control leaving the oracle's code page (it would stop the batch); for format 3
+    (whose rows carry CR2) also a #PF outside the low 256 KiB (an access outside the model's memory)."""
     out=[]
     for meta,m in zip(metadata,model_rows):
         if m[1] not in VECTOR_SIGNAL:
             out.append(dict(meta,problem=f'model raises vector {m[1]}, which has no handled Linux signal'))
         elif m[3] not in CODE_PAGE:
             out.append(dict(meta,problem=f'model EIP {m[3]:#x} leaves the oracle code page'))
+        elif len(m)==FORMAT3['model']+1 and m[1]==14 and m[74]>=0x40000:
+            out.append(dict(meta,problem=f'model #PF at {m[74]:#x}, outside the low 256 KiB'))
     return out
 
 
@@ -318,7 +355,6 @@ def _evaluate(sources,out,model,jobs,tmp):
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     kind=sources[0]['manifest']['kind']
     if any(s['manifest']['kind']!=kind for s in sources): raise ValueError('bundles of different formats')
-    cols=KINDS[kind]
     candidates=collections.defaultdict(list)
     for s in sources:
         for spec in s['manifest']['campaigns']:
@@ -328,11 +364,16 @@ def _evaluate(sources,out,model,jobs,tmp):
         best=None
         for s,spec in candidates[name]:
             if not spec.get('included',True): continue
-            state=hardware_state(s['result'],spec,s['host']['results'].get(name),cols['native'],keep=False)
+            state=hardware_state(s['result'],spec,s['host']['results'].get(name),cols_of(kind,spec)['native'],keep=False)
             if best is None or RANK[state[0]]<RANK[best[2][0]]: best=(s,spec,state)
         plan[name]=best
     # the current model on every input (recompare), in parallel, into a temporary directory
     model_files={}
+    if model is None:
+        for name,p in plan.items():
+            if p is not None and p[2][0] in ('ok','partial') and not (p[0]['bundle']/(name+'.model')).exists():
+                raise ValueError(f'{p[0]["bundle"]} carries no model results: compare with recompare (the current or a '
+                                 'given model; the manifest\'s model_output_sha256 tells whether it equals the prepare-time model)')
     if model is not None:
         def replay(name,s,spec):
             path=tmp/(name+'.model')
@@ -353,7 +394,9 @@ def _evaluate(sources,out,model,jobs,tmp):
                  not_included=0,ymm_unavailable=0,incomplete_campaigns=[],not_included_campaigns=[],
                  campaigns={},families={},
                  excluded_fields=['reserved FCW bits','undefined FSW condition codes',
-                                  'empty x87 register payloads','FIP/FDP/FOP (raw values retained)'])
+                                  'empty x87 register payloads','FIP/FDP/FOP (raw values retained)'],
+                 model_changed_since_prepare=[],
+                 determinism=dict(campaigns=0,identical=0,differing_cases=0,expected=0,unexpected=0,not_compared=[],examples=[]))
     families=collections.defaultdict(collections.Counter)
     with (out/'mismatches.jsonl').open('w') as bad:
         for name,p in plan.items():
@@ -365,6 +408,7 @@ def _evaluate(sources,out,model,jobs,tmp):
                 summary['not_included_campaigns'].append(name)
                 continue
             s,spec,(status,_,_)=p
+            cols=cols_of(kind,spec)
             status,native,missing=hardware_state(s['result'],spec,s['host']['results'].get(name),cols['native'])
             count=spec['count'];summary['total_cases']+=count
             entry=dict(status=status,count=count,source=str(s['result']))
@@ -382,7 +426,10 @@ def _evaluate(sources,out,model,jobs,tmp):
                 entry['compared']=0;summary['campaigns'][name]=entry;continue
             metadata=json.loads((s['bundle']/(name+'.json')).read_text())
             if len(metadata)!=count: raise ValueError(name+': metadata count changed')
+            determinism(summary['determinism'],name,s['host']['results'].get(name,{}),metadata)
             model_path=model_files[name] if model is not None else s['bundle']/(name+'.model')
+            if model is not None and spec.get('model_output_sha256') and digest(model_path)!=spec['model_output_sha256']:
+                summary['model_changed_since_prepare'].append(name)
             model_rows=list(rows(model_path,count,cols['model']))
             counts=collections.Counter();pointer_diffs=0;no_ymm=0
             for h in native:
@@ -413,11 +460,34 @@ def _evaluate(sources,out,model,jobs,tmp):
     return exit_code(summary)
 
 
+def determinism(det,name,run,metadata):
+    """Add one campaign's repeated passes (run --repeat) to the summary: a case observed differently by two
+    passes is expected only where all its differing fields are the case's observe fields (RDTSC, ...)."""
+    for e in run.get('repeat',[]):
+        det['campaigns']+=1
+        if e.get('identical') is None:
+            det['not_compared'].append(f"{name} ({e.get('stem')}: {e.get('error','')})");continue
+        if e['identical']: det['identical']+=1;continue
+        det['differing_cases']+=e['differing_count']
+        listed=0
+        for d in e['differing']:
+            listed+=1
+            fields=set(metadata[d['index']].get('observe_fields',())) if d['index']<len(metadata) else set()
+            ok='*' in fields or set(d['fields'])<=fields
+            det['expected' if ok else 'unexpected']+=1
+            if not ok and len(det['examples'])<20:
+                det['examples'].append(dict(campaign=name,index=d['index'],fields=d['fields'][:6],cpu=e.get('cpu')))
+        det['unexpected']+=e['differing_count']-listed   # beyond the listed ones: not classified
+
+
 def exit_code(summary):
-    """1: strict mismatches, or cases of the given bundles without a hardware observation (rejected, failed,
-    not run); 2: only observations; 0: exact agreement. Campaigns in none of the bundles (a resume bundle
-    compared alone) are listed but do not count."""
-    return 1 if summary['strict_mismatches'] or summary['not_compared'] else 2 if summary['observations'] else 0
+    """1: strict mismatches, cases of the given bundles without a hardware observation (rejected, failed,
+    not run) or cases two passes of a repeated run observed differently (outside their observe fields);
+    2: only observations; 0: exact agreement. Campaigns in none of the bundles (a resume bundle compared
+    alone) are listed but do not count."""
+    det=summary.get('determinism',{})
+    if summary['strict_mismatches'] or summary['not_compared'] or det.get('unexpected') or det.get('not_compared'): return 1
+    return 2 if summary['observations'] else 0
 
 
 def name_list(names):
@@ -437,6 +507,14 @@ def headline(summary):
           f"{s['observations']} approximation/domain observations"+
           (f"; {s['skipped']} skipped (CPUID feature missing)" if s['skipped'] else '')+
           (f"; YMM not compared in {s['ymm_unavailable']} (no AVX state in the signal frame)" if s['ymm_unavailable'] else ''))
+    det=s.get('determinism')
+    if det and det['campaigns']:
+        line+=(f"\nDeterminism (repeated passes on two CPUs): {det['identical']} of {det['campaigns']} campaign passes identical; "
+               f"{det['differing_cases']} cases differ ({det['expected']} only in their observe fields, {det['unexpected']} otherwise)"+
+               (f"; not compared: {', '.join(det['not_compared'])}" if det['not_compared'] else ''))
+    if s.get('model_changed_since_prepare'):
+        line+=(f"\nThe model's results differ from the prepare-time model's in {len(s['model_changed_since_prepare'])} campaigns "
+               f"({name_list(s['model_changed_since_prepare'])})")
     if s['not_compared']:
         by=collections.defaultdict(list)
         for n in s['incomplete_campaigns']: by[s['campaigns'][n]['status']].append(n)
@@ -524,9 +602,9 @@ def parse_only(text):
 def completed(bundle,result):
     """{campaign name: .bin sha256} of the campaigns with a complete run in an earlier result."""
     s=load_source(bundle,result);done={}
-    cols=KINDS[s['manifest']['kind']]['native']
     for spec in s['manifest']['campaigns']:
         if not spec.get('included',True): continue
+        cols=cols_of(s['manifest']['kind'],spec)['native']
         status,_,_=hardware_state(s['result'],spec,s['host']['results'].get(spec['name']),cols,keep=False)
         if status=='ok': done[spec['name']]=dict(count=spec['count'],sha256=s['manifest']['sha256'][spec['name']+'.bin'])
     return s,done
@@ -568,24 +646,33 @@ def prepare(args):
     sources+=[ROOT/'test/fp_cases_sse.py',ROOT/'test/native_avx2.py',ROOT/'test/gen_avx2.py',
               ROOT/'test/native_longmode.py',ROOT/'test/native_openq.py']   # Sse, Avx2, long-mode, open questions
     sources+=[ROOT/'test/native/record_check.h',ROOT/'test/native/check_records.c']   # input validation
+    sources+=[ROOT/f'test/{n}.py' for n in EXT_MODULES]+[ROOT/'test/gen.py',ROOT/'test/gen_sys.py',ROOT/'test/xsave_gen.py',
+              ROOT/'test/gen_gpr.py']   # the extended families (format 3) and the generators they reuse
     for source in sources:
         target=out/'sources'/source.relative_to(REPO)
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+    sources=sorted(set(sources),key=str)
     manifest=dict(kind=KIND,seed=args.seed,count=args.count,smoke=args.smoke,
                   sources={str(p.relative_to(REPO)):digest(p) for p in sources},
-                  model_sha256=digest(ROOT/'.lake/build/bin/x86fp'),model_args=['--compat'],campaigns=[],sha256={})
+                  model_sha256=digest(ROOT/'.lake/build/bin/x86fp'),model_args=['--compat'],campaigns=[],sha256={},
+                  model_files=not args.no_model_files)
+    if args.repeat>1 or args.pin:
+        manifest['run_defaults']=dict(repeat=args.repeat,pin=args.pin or 'auto')
     # Bounded batches keep signal runs, model replay and failure artifacts manageable.
     batch=[];metadata=[];families=collections.Counter();smoke_counts=collections.Counter()
     requires=[]   # CPUID features required by every case of the current batch
+    group=None    # (format, campaign group) of the current batch: the extended families start new campaigns
     problems=[]   # records the oracle would refuse, model results it could not observe
     included_cases=0
     def flush():
         nonlocal included_cases
         if not batch:return
         number=len(manifest['campaigns']);name=f'campaign-{number:03d}'
-        data=(len(batch)|1<<63).to_bytes(8,'little')+b''.join(batch)
+        v3=len(batch[0])==FORMAT3['size']
+        data=(len(batch)|1<<63|(1<<62 if v3 else 0)).to_bytes(8,'little')+b''.join(batch)
         sha=hashlib.sha256(data).hexdigest()
-        entry=dict(name=name,count=len(batch),**(dict(requires=requires[:]) if requires else {}),bin_sha256=sha)
+        entry=dict(name=name,count=len(batch),**(dict(requires=requires[:]) if requires else {}),bin_sha256=sha,
+                   **(dict(format=3) if v3 else {}))
         include=include_campaign(name,number,len(batch),sha,done,select)
         with tempfile.NamedTemporaryFile(suffix='.bin',dir=work.name,delete=False) as f: f.write(data)
         rejected=check_records(checker,Path(f.name),len(batch),requires)
@@ -598,11 +685,15 @@ def prepare(args):
         if include:
             (out/(name+'.bin')).write_bytes(data)
             write_json(out/(name+'.json'),metadata)
-            with (out/(name+'.model')).open('w') as log:
+            model_out=Path(work.name)/(name+'.model')
+            with model_out.open('w') as log:
                 subprocess.run([str(ROOT/'.lake/build/bin/x86fp'),'--compat',str(out/(name+'.bin'))],
                                stdout=log,check=True,timeout=args.timeout)
             problems.extend(dict(p,campaign=name) for p in
-                            model_problems(metadata,rows(out/(name+'.model'),len(batch),KINDS[KIND]['model'])))
+                            model_problems(metadata,rows(model_out,len(batch),cols_of(KIND,entry)['model'])))
+            entry['model_output_sha256']=digest(model_out)
+            if manifest['model_files']: shutil.move(model_out,out/(name+'.model'))
+            else: model_out.unlink()
             included_cases+=len(batch)
             print(name,len(batch),'model cases complete',flush=True)
         else:
@@ -613,14 +704,20 @@ def prepare(args):
     for raw,meta in cases(args.seed,args.count):
         if any(f not in FEATURES for f in meta.get('requires',[])):
             raise ValueError(f'unknown CPUID feature in {meta["family"]}: {meta["requires"]}')
-        if meta.get('requires',[])!=requires:
-            flush();requires=meta.get('requires',[])
+        key=(len(raw),meta.get('campaign_group'))
+        if meta.get('requires',[])!=requires or key!=group:
+            flush();requires=meta.get('requires',[]);group=key
         if args.smoke:
-            # Retain a sample from every family/instruction; don't take a prefix.
-            key=(meta['family'],meta['instruction'])
-            smoke_counts[key]+=1
-            if smoke_counts[key]>2: continue
-        assert len(raw)==SIZE
+            # Retain a sample from every family/instruction; don't take a prefix. The encoding fuzz and the
+            # random integer core keep a larger sample of their own (the oracle must survive them under TCG).
+            share=SMOKE_SHARE.get(meta['family'])
+            if share:
+                if zlib.crc32(raw)%10000>=share*10000: continue
+            else:
+                skey=(meta['family'],meta['instruction'])
+                smoke_counts[skey]+=1
+                if smoke_counts[skey]>2: continue
+        assert len(raw) in (SIZE,FORMAT3['size'])
         meta=dict(meta,index=len(batch));batch.append(raw);metadata.append(meta)
         families[meta['family']]+=1
         if len(batch)==args.batch_size: flush()
@@ -637,6 +734,9 @@ def prepare(args):
                                 base_hardware_sha256=digest(base['result']/'hardware.json'),
                                 completed_in_base=sorted(done))
     manifest['families']=dict(families)
+    # what the model-in-the-loop selection of the extended families refused, by reason (their blind spots)
+    import native_ext
+    if native_ext.STATS: manifest['selection']={f:dict(c) for f,c in native_ext.STATS.items()}
     for p in sorted(out.rglob('*')):
         if p.is_file():manifest['sha256'][str(p.relative_to(out))]=digest(p)
     write_json(out/'manifest.json',manifest)
@@ -670,15 +770,16 @@ def tail(path,lines=20):
     except OSError: return ''
 
 
-def run_campaign(directory,spec,result,kind,timeout):
+def run_campaign(directory,spec,result,kind,timeout,stem_name=None,env=None):
     """Run one campaign with case-level recovery: the oracle's dry run (`oracle check`) first, refused
     records are reported and skipped; when the oracle process fails or times out during a case, that case
     is recorded as failed and the oracle is restarted on the remaining ones (at most MAX_CASE_FAILURES
     times, MAX_TIMEOUTS timeouts). The rows of all executed cases go to <name>.out with their campaign
     indices; the outputs of the individual oracle processes are kept (<name>.raw, <name>.partN.raw/.log)."""
-    name=spec['name'];count=spec['count'];size=KINDS[kind]['size'];cols=KINDS[kind]['native']
+    name=spec['name'];count=spec['count'];size=cols_of(kind,spec)['size'];cols=cols_of(kind,spec)['native']
     oracle=str(directory/'oracle');data=(directory/(name+'.bin')).read_bytes()
-    flag=int.from_bytes(data[:8],'little')&1<<63
+    flag=int.from_bytes(data[:8],'little')&3<<62
+    name=stem_name or name   # the files of a repeated pass: <name>.rep2.out, ...
     started=time.monotonic()
     rec=dict(status='ok',returncode=0)
     check=subprocess.run([oracle,'check'],input=data,capture_output=True,timeout=timeout)
@@ -697,7 +798,7 @@ def run_campaign(directory,spec,result,kind,timeout):
         timed_out=False;rc=None
         with raw.open('w') as o,log.open('w') as e:
             try:
-                rc=subprocess.run([oracle,'i386'],input=sub,stdout=o,stderr=e,timeout=timeout).returncode
+                rc=subprocess.run([oracle,'i386'],input=sub,stdout=o,stderr=e,timeout=timeout,env=env).returncode
             except subprocess.TimeoutExpired:
                 rc=None;timed_out=True
         header,got,complete=complete_prefix(raw,len(pending),cols)
@@ -731,6 +832,57 @@ def run_campaign(directory,spec,result,kind,timeout):
     return rec
 
 
+def cpu_topology(text):
+    """{logical CPU: (physical id, core id)} from /proc/cpuinfo."""
+    out={}
+    for block in text.split('\n\n'):
+        f={}
+        for line in block.splitlines():
+            k,_,v=line.partition(':');f[k.strip()]=v.strip()
+        if f.get('processor','').isdigit():
+            out[int(f['processor'])]=(f.get('physical id'),f.get('core id'))
+    return out
+
+
+def choose_cpus(pin,allowed,topology):
+    """The two logical CPUs of a repeated run: given ('A,B'), or (auto) the first allowed CPU and the first
+    allowed one on another physical core (/proc/cpuinfo); without core ids two different CPUs; with one
+    CPU that one twice."""
+    allowed=sorted(allowed)
+    if pin and pin!='auto':
+        cpus=[int(x) for x in pin.split(',')]
+        if len(cpus)!=2 or any(c not in allowed for c in cpus): raise ValueError(f'--pin {pin}: not two CPUs this process may use ({allowed[:8]}...)')
+        return cpus,'given'
+    first=allowed[0];core=topology.get(first)
+    if core is not None and None not in core:
+        for c in allowed[1:]:
+            if topology.get(c) is not None and topology[c]!=core: return [first,c],'different physical cores (/proc/cpuinfo)'
+    if len(allowed)>1: return [first,allowed[1]],'different logical CPUs (core ids unknown)'
+    return [first,first],'one CPU available'
+
+
+def repeat_differences(path1,path2,count,cols,missing1,missing2):
+    """[(index, [native labels])] of the cases two passes observed differently (rows present in both).
+    CR2 is ignored unless the case raised #PF (the frame's CR2 is stale otherwise), and so is EFLAGS.RF."""
+    a={r[0]:r for r in rows(path1,count,cols,frozenset(missing1))}
+    out=[]
+    for r in rows(path2,count,cols,frozenset(missing2)):
+        h=a.get(r[0])
+        if h is None: continue
+        # EFLAGS.RF of the frame depends on where an interrupt hit (timing): not compared
+        fields=[NATIVE_LABELS[k] for k,(x,y) in enumerate(zip(h,r)) if x!=y and not (NATIVE_LABELS[k]=='cr2' and h[55]!=14)
+                and not (NATIVE_LABELS[k]=='eflags' and (x^y)&~0x10000==0)]
+        if fields: out.append((r[0],fields))
+    return out
+
+
+def missing_of(rec,count):
+    m=set(r['index'] for r in rec.get('rejected',[]))|set(r['index'] for r in rec.get('failed_cases',[]))
+    for a,b in rec.get('not_run',[]): m.update(range(a,b+1))
+    if rec.get('status')=='error': m=set(range(count))
+    return m
+
+
 def run(args):
     directory=args.directory.resolve();manifest=json.loads((directory/'manifest.json').read_text())
     verify(directory,manifest)
@@ -741,6 +893,21 @@ def run(args):
               uname=list(platform.uname()),cpuinfo=tail(Path('/proc/cpuinfo'),100000),
               execution='native Linux signals, IA-32 compatibility mode; no KVM/TCG backend',
               runner='case-level recovery',started=time.time(),results={})
+    # determinism: every campaign twice (or --repeat N), each pass pinned to its CPU (from different
+    # physical cores); the first pass is compared with the model, the others with the first, byte for byte
+    defaults=manifest.get('run_defaults',{})
+    repeat=getattr(args,'repeat',None) or defaults.get('repeat',1)
+    pin=getattr(args,'pin',None) or defaults.get('pin')
+    cpus=None;original=None
+    if repeat>1 or pin:
+        if hasattr(os,'sched_setaffinity'):
+            original=os.sched_getaffinity(0)
+            try: topo=cpu_topology(Path('/proc/cpuinfo').read_text())
+            except OSError: topo={}
+            cpus,how=choose_cpus(pin,original,topo)
+            host['repeat']=dict(passes=repeat,cpus=cpus,cores=[topo.get(c) for c in cpus],choice=how)
+        else:
+            host['repeat']=dict(passes=repeat,cpus=None,choice='not pinned: no sched_setaffinity')
     write_json(result/'hardware.json',host)
     print('Results:',result,flush=True)
     trouble=[]
@@ -761,17 +928,46 @@ def run(args):
                 host['results'][name]=dict(skipped='missing CPUID features: '+' '.join(missing))
                 write_json(result/'hardware.json',host);continue
             print(name,spec['count'],'native cases...',flush=True)
-            try:
-                rec=run_campaign(directory,spec,result,manifest['kind'],args.timeout)
-            except Exception as exc:   # one campaign's failure never ends the run
-                rec=dict(status='error',returncode=None,error=f'{type(exc).__name__}: {exc}')
+            passes=[]
+            for k in range(repeat):
+                if cpus: os.sched_setaffinity(0,{cpus[k%2]})
+                stem=name if k==0 else f'{name}.rep{k+1}'
+                try:
+                    r=run_campaign(directory,spec,result,manifest['kind'],args.timeout,stem_name=stem,
+                                   env=dict(os.environ,FP_PASS=str(k+1)))
+                except Exception as exc:   # one campaign's failure never ends the run
+                    r=dict(status='error',returncode=None,error=f'{type(exc).__name__}: {exc}')
+                if cpus: r['cpu']=cpus[k%2]
+                passes.append((stem,r))
+            if original is not None: os.sched_setaffinity(0,original)
+            rec=passes[0][1]
+            if repeat>1:
+                rec['repeat']=[]
+                cols=cols_of(manifest['kind'],spec)['native']
+                for stem,r in passes[1:]:
+                    entry=dict(stem=stem,status=r['status'],**{k:r[k] for k in ('cpu','output_sha256','error') if k in r})
+                    try:
+                        if rec['status']=='error' or r['status']=='error': raise ValueError('a pass has no output')
+                        d=repeat_differences(result/(name+'.out'),result/(stem+'.out'),spec['count'],cols,
+                                             missing_of(rec,spec['count']),missing_of(r,spec['count']))
+                        entry.update(identical=not d,differing_count=len(d),
+                                     differing=[dict(index=i,fields=f) for i,f in d[:500]])
+                        if d: print(f'  {name}: {len(d)} cases differ between the passes',flush=True)
+                    except (ValueError,OSError) as exc:
+                        entry.update(identical=None,error=f'not compared: {exc}')
+                    rec['repeat'].append(entry)
             host['results'][name]=rec;write_json(result/'hardware.json',host)
             if rec['status']!='ok':
                 trouble.append(name)
                 print(f'  {name}: {rec["status"]}: {len(rec.get("rejected",[]))} rejected, '
                       f'{len(rec.get("failed_cases",[]))} failed'+(f'; {rec["error"]}' if 'error' in rec else ''),flush=True)
         host['finished']=time.time();write_json(result/'hardware.json',host)
-        code=compare(directory,result)
+        if manifest.get('model_files',True):
+            code=compare(directory,result)
+        else:
+            code=0
+            print('This bundle carries no model results (they are regenerated at home: native_fp.py recompare); '
+                  'not compared here.',flush=True)
         if trouble: print('Campaigns with rejected, failed or unrun cases:',' '.join(trouble),flush=True)
         return 1 if trouble else code
     except Exception as exc:
@@ -824,8 +1020,18 @@ def main():
             q.add_argument('--resume',nargs=2,type=Path,metavar=('BUNDLE','RESULT'),
                            help='include only the campaigns without a complete run in RESULT (of BUNDLE); '
                                 'the others must regenerate bit-identically')
+            q.add_argument('--no-model-files',action='store_true',
+                           help='leave the model results out of the bundle (recompare regenerates them; the '
+                                'manifest keeps their sha256)')
+            q.add_argument('--repeat',type=int,default=1,help='the default number of passes of `run` (determinism check)')
+            q.add_argument('--pin',help="the default CPU pinning of `run`: 'auto' or 'A,B'")
         else:
             q.add_argument('--result',type=Path)
+        if name=='run':
+            q.add_argument('--repeat',type=int,help='run every campaign this often (default: the bundle\'s, else 1); '
+                           'the first pass is compared with the model, the others byte for byte with the first')
+            q.add_argument('--pin',help="pin the passes to two logical CPUs: 'auto' (two physical cores, from "
+                           "/proc/cpuinfo) or 'A,B' (default: the bundle's)")
         if name in ('compare','recompare'):
             q.add_argument('--merge',nargs=2,type=Path,action='append',metavar=('BUNDLE','RESULT'),
                            help='further (bundle, results) pairs, e.g. a resume run; each campaign is taken from the most complete run')
