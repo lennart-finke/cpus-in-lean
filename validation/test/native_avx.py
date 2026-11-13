@@ -96,7 +96,7 @@ def avx_ops(rng, count):
             xmm, ymmh = regs256(vals)
             kw = {}
             if 'Q' in fl:
-                kw = dict(policy='observe', reason='VRCPPS/VRSQRTPS approximations are implementation specific')
+                kw = {}   # VRCPPS/VRSQRTPS: strict since the model computes the EPYC 7742's table (X86/Zen2Rcp.lean)
             elif ('nf' in fl or 'nd' in fl or 'n0' in fl) and \
                     nans(bits, vals[1], 256 // bits) + nans(bits, vals[2] if not mem else vals[2], 256 // bits) >= (1 if 'n0' in fl else 2):
                 kw = dict(policy='observe', reason='two NaN operands of one operation (first-operand rule; TCG differs)')

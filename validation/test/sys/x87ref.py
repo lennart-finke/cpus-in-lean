@@ -11,8 +11,9 @@ Specification (the model's, see x86_32/README.md):
   defines the result (the native campaign's x87_transcendental/x87_trans_boundary families,
   validation/README.md): F2XM1 returns a finite x with |x| > 1 unchanged with PE, +inf for +inf and
   -1 for -inf (no flags), -0.5 with PE for -1 and, for +1, the rounding of a value just below 1 with
-  PE; FYL2XP1 computes y * log2(1 + x) for every finite x > -1 and returns x with PE for x <= -1
-  (x = +-inf stays invalid, not observed). F2XM1, FYL2X and FYL2XP1 report PE for every finite
+  PE; FYL2XP1 computes y * log2(1 + x) for every finite x > -1 and returns x with PE for x <= -1, except
+  x = -1 with y = +-0 or +-inf (-+0, -+inf); x = +inf gives +-inf by the sign of y (y = +-0: invalid),
+  x = -inf stays invalid (native x87_trans_special). F2XM1, FYL2X and FYL2XP1 report PE for every finite
   nonzero result, also an exact one (and UE if that result is a denormal).
 
 Method (deliberately unlike the model's ball arithmetic): exp, ln, sqrt and division come from Python's
@@ -332,8 +333,12 @@ def fyl2xp1(x, y, rc):
     if sp:
         return sp
     de = denf(x, y)
+    # x = +inf: +-inf by the sign of y without an exception (y = +-0: invalid); x = -1 with y = +-0 or
+    # +-inf: y * log2(0) = -+0, -+inf without an exception (EPYC 7742, native x87_trans_special)
     if not finite(x):
-        return INDEF, IE
+        return (inf(sgn(y)), de) if not sgn(x) and not iszero(y) else (INDEF, IE)
+    if not iszero(x) and val(x) == -1 and (iszero(y) or isinf(y)):
+        return (zero(1 - sgn(y)) if iszero(y) else inf(1 - sgn(y))), de
     if not iszero(x) and val(x) <= -1:
         return x, PE | de
     if iszero(x):
@@ -633,6 +638,10 @@ def hw_rule(op, a, b):
                 'the exact value')
     if op == 0 and isinf(a):
         return 'F2XM1 of +-inf: the EPYC 7742 returns +inf / -1 without exceptions (native x87_transcendental); TCG raises an invalid operation'
+    if op == 2 and ((isinf(a) and not sgn(a)) or (finite(a) and not iszero(a) and val(a) == -1 and (iszero(b) or isinf(b)))):
+        return ('outside the documented domain: the EPYC 7742 returns +-inf by the sign of y for FYL2XP1(+inf, y) '
+                'and y * log2(0) = -+0, -+inf for FYL2XP1(-1, +-0 or +-inf), without an exception (native '
+                'x87_trans_special); TCG raises an invalid operation')
     if op == 2 and finite(a) and not iszero(a) and not (LNP1_LO <= val(a) <= LNP1_HI):
         return ('outside the documented domain: the EPYC 7742 computes y log2(1 + x) for x > -1 and returns x '
                 'with PE for x <= -1 (native x87_transcendental); TCG raises an invalid operation')

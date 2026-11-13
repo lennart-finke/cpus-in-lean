@@ -5,8 +5,10 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fp_cases import cases, X87, TRANS, SIZE
+import native_fp
 from native_fp import (classify, differences, rows, verify, digest, normalize, compare, write_json,
                        parse_cpuid, has_feature, KINDS)
 
@@ -470,7 +472,7 @@ class ExtendedRules(unittest.TestCase):
                 (v3('ff23',regs={3:0x30000}),'outside the arena'),
                 # bytes after the instruction: only with TF; not after MOV/POP SS; MOV/POP SS not with TF
                 (v3('9090'),'bytes after the instruction'),(v3('9090',flags=0x302),None),(v3('0f38f0c11c'),None),
-                (v3('8fe878c2c105'),None),(v3('8fe878c2c10590'),'bytes after'),(v3('17'),None),(v3('17',flags=0x302),'MOV/POP SS'),
+                (v3('8fe878c2c1'),None),(v3('8fe878c2c105'),'bytes after'),(v3('17'),None),(v3('17',flags=0x302),'MOV/POP SS'),
                 (v3('8ed090',flags=0x302),'MOV/POP SS'),(v3('3e3e3e3e3e3e3e3e3e3e3e3e3e3e90'),None),
                 # the extension
                 (v3('90',ext=struct.pack('<I',4)),'extension flags'),(v3('90',ext=struct.pack('<IHH',2,0,8129)),'dump window'),
@@ -525,17 +527,24 @@ class ExtendedRules(unittest.TestCase):
         self.assertEqual(r[71:74],[0x20123,0x10345,0x11000]);self.assertEqual(r[74:],list(range(1,9)))
         h[55]=13;self.assertEqual(normalize(h)[73],0)   # CR2 only for #PF
         meta=dict(instruction='x',flags_mask=0x8d5,sw_mask=0xb8ff)
-        m=list(r);m[71]^=1;m[33]^=1
-        self.assertEqual(differences(meta,r,m),[])                       # pointers: only on request
-        self.assertEqual({d['field'] for d in differences(dict(meta,compare_pointers=True),r,m)},{'fop','fip64'})
+        m=list(r);m[71]^=1
+        self.assertEqual(differences(meta,r,m),[])                       # FIP64/FDP64: only on request
+        self.assertEqual({d['field'] for d in differences(dict(meta,compare_pointers=True),r,m)},{'fip64'})
+        m[33]^=1   # FOP/FIP/FDP: always (x86fp reports them as the signal frame's XSAVE stores them)
+        self.assertEqual({d['field'] for d in differences(meta,r,m)},{'fop'})
+        self.assertEqual(classify(dict(meta,observe_fields=['fop','fip64']),differences(meta,r,m)),'strict_mismatches')
         m=list(r);m[75]^=1
         self.assertEqual(differences(meta,r,m)[0]['field'],'dump1')
-        # undefined flags: compared, an observation; observe fields; '*'
+        # undefined flags: the pinned ones (every arithmetic flag since the extended EPYC run) strictly,
+        # others compared as observations; observe fields; '*'
         m=list(r);m[4]^=0x800
         dm=dict(meta,flags_mask=0xd5,flags_observe=0x800)
-        diff=differences(dm,r,m);self.assertEqual(diff[0]['field'],'eflags.undefined')
-        self.assertEqual(classify(dm,diff),'observations')
-        m[4]^=0x801;diff=differences(dm,r,m);self.assertEqual(classify(dm,diff),'strict_mismatches')
+        diff=differences(dm,r,m);self.assertEqual(diff[0]['field'],'eflags')
+        self.assertEqual(classify(dm,diff),'strict_mismatches')
+        with mock.patch.object(native_fp,'PINNED_UNDEFINED',0):
+            diff=differences(dm,r,m);self.assertEqual(diff[0]['field'],'eflags.undefined')
+            self.assertEqual(classify(dm,diff),'observations')
+            m[4]^=0x801;diff=differences(dm,r,m);self.assertEqual(classify(dm,diff),'strict_mismatches')
         self.assertEqual(classify(dict(meta,observe_fields=['r0']),[dict(field='r0')]),'observations')
         self.assertEqual(classify(dict(meta,observe_fields=['r0']),[dict(field='r0'),dict(field='r1')]),'strict_mismatches')
         self.assertEqual(classify(dict(meta,observe_fields=['*']),[dict(field='vector')]),'observations')

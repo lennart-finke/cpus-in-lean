@@ -5,8 +5,11 @@ Written from the manuals, not from the Lean model: Intel SDM vol. 1, chapter 13 
 13.6 XINUSE/XMODIFIED, 13.7-13.12) and the vol. 2 pseudocode of XSAVE, XSAVEOPT, XSAVEC, XSAVES,
 XRSTOR and XRSTORS; AMD APM vol. 2, 11.5 (table 11-3 initial values) and vol. 4; AMD APM vol. 3,
 appendix E, CPUID Fn8000_0008_EBX[2] XSaveErPtr: "FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save
-error pointers and FXRSTOR, XRSTOR, XRSTORS always restore error pointers". The few points where the manuals leave the processor
-latitude are fixed the way x86_32/X86/Ext/Xsave.lean documents them:
+error pointers and FXRSTOR, XRSTOR, XRSTORS always restore error pointers" -- but the EPYC 7742 itself
+saves them only when FSW.ES = 1 (zeros otherwise) and restores them always, and writes the padding bytes
+10..15 of the x87 register slots as zeros (native campaign families fpu_pointers, xsave_padding;
+validation/README.md, "The EPYC 7742 runs"), which this reference follows. The other points where the
+manuals leave the processor latitude are fixed the way x86_32/X86/Ext/Xsave.lean documents them:
   * XINUSE[i] = (bit i set by the last XRSTOR*/cleared by its init) OR (component i not in its
     initial configuration); the generated cases reset that bit with an XRSTOR before every case,
   * no modified optimization applies (the case instruction never follows an XRSTOR directly),
@@ -144,13 +147,19 @@ def compact_offset(fmt, i):
 
 
 # ---- component save/load ----
+def pointers(s):
+    """(FOP, FIP, FCS, FDP, FDS) as FXSAVE and XSAVE store them: only with FSW.ES = 1 (EPYC 7742)."""
+    return (s.fop, s.fip, s.fcs, s.fdp, s.fds) if s.fsw & 0x80 else (0, 0, 0, 0, 0)
+
+
 def save_x87(s, mem):
-    # XSaveErPtr: the error pointers are always saved, as FXSAVE saves them (FOP 11 bits; FCS and FDS
-    # zero-extended to 32 bits: the 32-bit FXSAVE image layout of the legacy region)
-    struct.pack_into('<HHBBH', mem, 0, s.fcw, s.fsw, s.ftw, 0, s.fop)
-    struct.pack_into('<IIII', mem, 8, s.fip, s.fcs, s.fdp, s.fds)
+    # the error pointers (FOP 11 bits; FCS and FDS zero-extended to 32 bits: the 32-bit FXSAVE image layout
+    # of the legacy region) only with FSW.ES = 1; the register slots' padding as zeros (EPYC 7742)
+    fop, fip, fcs, fdp, fds = pointers(s)
+    struct.pack_into('<HHBBH', mem, 0, s.fcw, s.fsw, s.ftw, 0, fop)
+    struct.pack_into('<IIII', mem, 8, fip, fcs, fdp, fds)
     for k, (sig, se) in enumerate(s.st):
-        struct.pack_into('<QH', mem, 32 + 16 * k, sig, se)   # bytes 10..15 of the slot untouched
+        struct.pack_into('<QH6x', mem, 32 + 16 * k, sig, se)
 
 
 def save_mxcsr(s, mem):
@@ -270,8 +279,9 @@ def u32(mem, off): return struct.unpack_from('<I', mem, off)[0]
 def observe(s):
     """What t_xsave.c reads back: an FXSAVE image (into zeros) and YMM0-7[255:128]."""
     img = bytearray(512)
-    struct.pack_into('<HHBBH', img, 0, s.fcw, s.fsw, s.ftw, 0, s.fop)
-    struct.pack_into('<IIIIII', img, 8, s.fip, s.fcs, s.fdp, s.fds, s.mxcsr, 0)   # (mask not observed)
+    fop, fip, fcs, fdp, fds = pointers(s)   # (FXSAVE: the error pointers only with FSW.ES = 1)
+    struct.pack_into('<HHBBH', img, 0, s.fcw, s.fsw, s.ftw, 0, fop)
+    struct.pack_into('<IIIIII', img, 8, fip, fcs, fdp, fds, s.mxcsr, 0)   # (mask not observed)
     for k, (sig, se) in enumerate(s.st):
         struct.pack_into('<QH', img, 32 + 16 * k, sig, se)
     save_xmm(s, img)

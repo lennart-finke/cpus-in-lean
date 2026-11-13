@@ -30,7 +30,7 @@ import random
 import struct
 
 from native_ext import record3, meta3, layout, select, cached, STATS, ARITH
-from native_flags import undefined_flags
+from native_flags import observed_flags, PINNED
 
 DF = 0x400
 
@@ -43,7 +43,7 @@ def case(family, name, code, *, regs=None, flags=0x202, perms=(0x67, 0x67), mem=
         regs.setdefault(k, v)
     raw = record3(code, regs=regs, flags=flags, permissions=perms, mem=mem, patches=patches)
     m = meta3(family, name, code, **kw)
-    und = undefined_flags(code, regs)
+    und = observed_flags(code, regs)
     m['flags_mask'] = (ARITH | DF) & ~und if mask is None else mask
     if und: m['flags_observe'] = und
     return raw, m
@@ -76,8 +76,8 @@ def int_core_candidates(rng, count):
         raw = record3(insn, regs=regs, flags=flags, permissions=perms, mem=bytes(mem), patches=ext,
                       seed=rng.getrandbits(32) | 1)
         m = meta3('int_core', f'{layout(insn)[1]:03x}', insn)
-        und = ARITH & ~g.fmask
-        m['flags_mask'] = (ARITH | DF) & g.fmask
+        und = ARITH & ~g.fmask & ~PINNED   # gen.py's QEMU flag masks; the 7742's values are pinned
+        m['flags_mask'] = (ARITH | DF) & ~und
         if und: m['flags_observe'] = und
         if perms != (0x67, 0x67): m['permissions'] = perms
         yield raw, m
@@ -378,7 +378,7 @@ def code16_cases(rng, count):
         raw = record3(code, regs=c['regs'], xmm=c['xmm'], ymmh=c['ymmh'], mem=c['mem'], flags=c['flags'], mxcsr=c['mxcsr'],
                       permissions=c['permissions'], stack=c['stack'], cw=c['cw'], sw=c['sw'], tags=c['tags'], seed=c['seed'])
         m = meta3('code16', 'random_' + kind, code)
-        und = undefined_flags(code, c['regs'])   # (decoded as 32-bit code: an approximation of the undefined flags)
+        und = observed_flags(code, c['regs'])   # (decoded as 32-bit code: an approximation of the undefined flags)
         m['flags_mask'] = ARITH & ~und
         if und: m['flags_observe'] = und
         yield raw, m

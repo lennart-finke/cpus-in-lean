@@ -316,6 +316,10 @@ UNDEFINED_DIFFERENCES = [
          'a memory location")', True),
     Diff('3DNow! FEMMS', mn_in('femms'),
          NOT_ZEN2 + ' (3DNow!: CPUID 8000_0001:EDX[31] = 0; AMD APM vol. 5 FEMMS)'),
+    Diff('3DNow! (0F 0F /r ib)', lambda p, t: p['enc'] == 'legacy' and p['map'] == 1 and p['op'] == 0x0F,
+         NOT_ZEN2 + ' (3DNow!: CPUID 8000_0001:EDX[31] = 0, AMD APM vol. 5; LLVM decodes 3DNow! for every '
+         'CPU. The generated encoding has the 3DNow! layout, ModRM and imm8, which the EPYC 7742 decodes '
+         'before its #UD: native enc_fuzz, Decode.lean)'),
     Diff('VMX', mn_in('vmreadl', 'vmwritel', 'invept', 'invvpid'),
          NOT_ZEN2 + ' (Intel VMX: CPUID 1:ECX[5] = 0; Zen 2 has SVM)'),
     Diff('later legacy-map extensions',

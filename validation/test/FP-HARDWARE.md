@@ -194,6 +194,29 @@ differ (no #XM for unmasked SIMD exceptions, no #AC, the 16-byte limit #UD, RMW 
 3DNow!/VEX.NP forms TCG executes, x87 stack faults, the SHLD/SHRD 16-bit rule), except one model issue:
 ENTER with a 16-bit operand size and a 32-bit stack writes all of EBP (README, open question G10).
 
+### The EPYC 7742 run of the extended bundle
+
+The whole bundle ran on the EPYC 7742 (microcode 0x830107c, Linux 6.8), every campaign twice on two physical
+cores: 863,642 of 863,642 cases observed. Against the model of the bundle 3,999 strict mismatches and 46,162
+observations, all in the new families; after the fixes `recompare` gives **0 strict mismatches and 2,375
+observations** (instructions whose result depends on the OS, the machine or time; 43 transcendental results
+within 1 ulp; 36 64-bit x87 pointers). The triage, the undefined-flag rules, the RCP/RSQRT tables and the
+determinism results are in `validation/README.md`, "The EPYC 7742 runs". What changed in this tooling:
+
+* **State leaking between cases (point 6 above) was incomplete:** Linux's rt_sigreturn takes only FIX_EFLAGS
+  from the frame, so EFLAGS.ID and NT set by a POPF case persisted into the following cases of the same oracle
+  process (457 PUSHF cases stored them). The comparison runs the model on the start state the oracle really
+  had (`native_fp.oracle_start_flags`); the oracle clears ID and NT before every case for later bundles.
+* The documented-undefined flags are compared strictly (`native_fp.PINNED_UNDEFINED`; the generators mark
+  none, `native_flags.observed_flags`), and so are the RCP/RSQRT families and FOP/FIP/FDP in every case
+  (`x86fp` reports them as the signal frame's XSAVE stores them: only with FSW.ES = 1) and the image dumps;
+  FIP64/FDP64 stay observations where a case asks for them (their bits above 31 have no IA-32 counterpart).
+* `record_check.h`, `native_ext.layout` and `gen.py` decode undefined encodings with the hardware's lengths
+  (XOP, unknown VEX maps, 3DNow!, 0F 78, UD0/UD1, VEX.0F 8x); the `open_questions` XOP record lost the byte
+  that is now a trailing byte.
+* The determinism check found nothing unexpected: the 141 cases that differed between the cores are RDTSC,
+  RDRAND/RDSEED/RDPID, CPUID and RDPRU.
+
 ## The first EPYC 7742 run, and the resume bundle
 
 The first run of the full bundle (`ia32-epyc-linux`, seed 20261112, `--count 10000`: 189,240 cases in

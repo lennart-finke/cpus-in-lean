@@ -181,7 +181,19 @@ NATIVE_LABELS=(['index','signal','code','rip','cs','eflags']+[f'r{k}' for k in r
                'memory.fnv32','page0.fnv64','page1.fnv64','fcw','fsw','ftw','fop','fip','fdp']+
                [f'st{k//2}.{("sig","se")[k%2]}' for k in range(16)]+[f'ymmh{k//2}.{("lo","hi")[k%2]}' for k in range(16)]+
                ['ymm_ok','fip64','fdp64']+[f'dump{q}' for q in range(8)])
-POINTERS=(33,34,35,71,72)   # FOP, FIP, FDP, FIP64, FDP64: compared only where a case asks for it
+# FIP64, FDP64 (the 64-bit frame layout's whole pointers): compared only where a case asks for it. FOP, FIP
+# and FDP (columns 33..35, the IA-32 values) are compared in every case since the extended EPYC 7742 run:
+# the signal frame's XSAVE writes them only with FSW.ES = 1, and x86fp reports them that way (FpMain.lean);
+# all 858,603 cases of that run agree (they were excluded before: open question F5).
+POINTERS=(71,72)
+# observe fields of the extended bundle's metadata that the model now determines (x87 pointers as the frame
+# stores them, the 64-byte image dumps): compared strictly
+PINNED_FIELDS={'fop','fip','fdp'}|{f'dump{q}' for q in range(8)}
+# The model computes the EPYC 7742's value of every documented-undefined arithmetic flag of the integer
+# instructions (validation/README.md, "The EPYC 7742 runs", the undefined-flag table): the `flags_observe`
+# bits of a case are compared strictly. (The generators no longer mark them, `native_flags.observed_flags`;
+# the metadata of the extended bundle still lists them.)
+PINNED_UNDEFINED=0x8d5
 
 
 def differences(meta,h,m):
@@ -191,10 +203,10 @@ def differences(meta,h,m):
         if k in POINTERS and not meta.get('compare_pointers'): continue
         if a is None: continue # YMM state not available on this machine (normalize)
         if k==4:
-            # documented-undefined flags of the case (native_flags): compared, reported as observations
-            fo=meta.get('flags_observe',0)
+            # documented-undefined flags the model does not pin (native_flags): compared, observations
+            fo=meta.get('flags_observe',0)&~PINNED_UNDEFINED
             if fo and (a^b)&fo: out.append(dict(field='eflags.undefined',hardware=f'{a&fo:x}',model=f'{b&fo:x}'))
-            mask=meta['flags_mask'];a&=mask;b&=mask
+            mask=meta['flags_mask']|(meta.get('flags_observe',0)&PINNED_UNDEFINED);a&=mask;b&=mask
         if k==30 and not meta.get('fcw_full'):
             a&=0x1f7f;b&=0x1f7f # Reserved bits 7 and 13..15 (compared where the case asks: x87_control_load).
         if k==31:
@@ -214,16 +226,15 @@ def differences(meta,h,m):
 
 def classify(meta,diff):
     # per-case observe fields (native_ext.os_dependent: CPUID, RDTSC, ...; '*' = every field)
-    fields=set(meta.get('observe_fields',()))|{'eflags.undefined'}
+    fields=(set(meta.get('observe_fields',()))-PINNED_FIELDS)|{'eflags.undefined'}
     if '*' in fields: return 'observations'
     diff=[d for d in diff if d['field'] not in fields]
     if not diff: return 'observations'
     if meta.get('policy')!='observe':return 'strict_mismatches'
     for d in diff:
         if meta['family'].startswith('x87_') and d['field'].startswith('st'):continue
-        # RCP/RSQRT approximations (and avx_ops' other observe rows) write only the destination XMM0/YMM0
-        if meta['family'] in ('sse_random','sse_rcp_sweep') and d['field'] in ('xmm0.lo','xmm0.hi'):continue
-        if meta['family'] in ('avx_ops','avx_random') and d['field'] in ('xmm0.lo','xmm0.hi','ymmh0.lo','ymmh0.hi'):continue
+        # (RCP/RSQRT: the model computes the EPYC 7742's table function since the extended run; their lanes,
+        # formerly observations, are compared strictly like every other result)
         if d['field']=='fsw' and (int(d['hardware'],16)^int(d['model'],16))&~0x23f==0:continue
         return 'strict_mismatches'
     return 'observations'
@@ -332,6 +343,35 @@ def hardware_state(result,spec,run,cols,keep=True):
     return ('partial' if got else 'failed'),got,missing
 
 
+# EFLAGS bits a case cannot set or clear through its signal frame: Linux's rt_sigreturn takes only
+# FIX_EFLAGS (CF PF AF ZF SF TF DF OF AC RF) from the frame and keeps the others of the task, so ID (bit
+# 21) and NT (bit 14), which a POPF case may set, persist in the oracle process into the following cases
+# of the same process, whatever their records say (found by the extended EPYC run: PUSHF stores them;
+# fixed in the oracle for later bundles, `signal_oracle.c` `execute`).
+LEAKY_EFLAGS=0x204000
+
+
+def oracle_start_flags(s,spec,cols):
+    """{index: bits} of the LEAKY_EFLAGS bits the cases of one format-3 campaign started with on the
+    hardware, where they differ from the record's: those the previous executed case of the same oracle process
+    ended with (its row's EFLAGS; refused cases do not run, a failed case ends the process, a campaign
+    starts a fresh one). The model is run on these inputs (`_evaluate`); every other input is the
+    record's."""
+    run=s['host']['results'].get(spec['name'])
+    status,native,_=hardware_state(s['result'],spec,run,cols['native'])
+    if status not in ('ok','partial'): return {}
+    failed={f['index'] for f in (run or {}).get('failed_cases',[])}
+    data=(s['bundle']/(spec['name']+'.bin')).read_bytes();size=cols['size']
+    out={};prev=0;last=-1
+    for h in native:
+        i=h[0]
+        if any(last<f<i for f in failed): prev=0
+        rec=int.from_bytes(data[8+i*size+144:8+i*size+152],'little')
+        if rec&LEAKY_EFLAGS!=prev: out[i]=prev
+        prev=h[5]&LEAKY_EFLAGS;last=i
+    return out
+
+
 def load_source(bundle,result):
     bundle=Path(bundle).resolve();result=Path(result).resolve()
     manifest=json.loads((bundle/'manifest.json').read_text());verify(bundle,manifest)
@@ -379,8 +419,17 @@ def _evaluate(sources,out,model,jobs,tmp):
     if model is not None:
         def replay(name,s,spec):
             path=tmp/(name+'.model')
+            inputs=s['bundle']/(name+'.bin')
+            # the EFLAGS.ID/NT the cases really started with on the hardware (`oracle_start_flags`)
+            start=oracle_start_flags(s,spec,cols_of(kind,spec)) if spec.get('format',2)==3 else {}
+            if start:
+                data=bytearray(inputs.read_bytes());size=cols_of(kind,spec)['size']
+                for i,bits in start.items():
+                    o=8+i*size+144
+                    data[o:o+8]=(int.from_bytes(data[o:o+8],'little')&~LEAKY_EFLAGS|bits).to_bytes(8,'little')
+                inputs=tmp/(name+'.started.bin');inputs.write_bytes(bytes(data))
             with path.open('w') as log:
-                subprocess.run([str(model),*s['manifest'].get('model_args',['--compat']),str(s['bundle']/(name+'.bin'))],
+                subprocess.run([str(model),*s['manifest'].get('model_args',['--compat']),str(inputs)],
                                stdout=log,check=True,timeout=3600)
             return path
         with concurrent.futures.ThreadPoolExecutor(jobs or os.cpu_count()) as pool:
@@ -396,7 +445,7 @@ def _evaluate(sources,out,model,jobs,tmp):
                  not_included=0,ymm_unavailable=0,incomplete_campaigns=[],not_included_campaigns=[],
                  campaigns={},families={},
                  excluded_fields=['reserved FCW bits','undefined FSW condition codes',
-                                  'empty x87 register payloads','FIP/FDP/FOP (raw values retained)'],
+                                  'empty x87 register payloads','FIP64/FDP64 outside compare_pointers cases'],
                  model_changed_since_prepare=[],
                  determinism=dict(campaigns=0,identical=0,differing_cases=0,expected=0,unexpected=0,not_compared=[],examples=[]))
     families=collections.defaultdict(collections.Counter)

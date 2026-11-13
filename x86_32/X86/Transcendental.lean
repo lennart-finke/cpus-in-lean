@@ -395,7 +395,15 @@ def fyl2xp1 (x y : F80) (cw : UInt32) : F80 × UInt32 :=
   | some r => r
   | none =>
   let de := F80.denFlag x y
-  if x.isInf then (F80.indefinite, FPF.IE)
+  -- x = +∞ (outside the documented domain): y·log2(1 + x) = ±∞ by the sign of y, without an
+  -- exception (y = ±0: invalid); x = −1 with y = ±0 or ±∞: y·log2(0) = ∓0, ∓∞, without an exception.
+  -- EPYC 7742, native `x87_trans_special` (FYL2XP1 with the 20 special operands in both positions,
+  -- masked and unmasked: 52 cases); x = −∞ stays invalid; was: invalid for x = +∞ and x with PE for
+  -- x = −1.
+  if x.isInf then
+    if !x.neg && !y.isZero then (F80.inf y.neg, de) else (F80.indefinite, FPF.IE)
+  else if x.neg && !x.isZero && F80.cmpVal x (F80.one.withNeg true) == 0 && (y.isZero || y.isInf) then
+    ((if y.isZero then F80.zero (!y.neg) else F80.inf (!y.neg)), de)
   else if x.neg && !x.isZero && F80.cmpVal x (F80.one.withNeg true) ≤ 0 then (x, FPF.PE ||| de)
   else if x.isZero then
     if y.isInf then (F80.indefinite, FPF.IE) else (F80.zero (x.neg != y.neg), de)

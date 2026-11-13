@@ -97,7 +97,7 @@ def xsave_padding(rng, count):
                     a, b = VALUES[(j * 5 + window) % len(VALUES)], VALUES[(j * 3 + 2) % len(VALUES)]
                     yield record3(code, a=a, b=b, cw=cw, sw=sw, regs={3: EBX, 0: eax, 2: 0}, seed=seed, dump=OFF + window), \
                         meta3('xsave_padding', name, code, window=window, seed=seed, compare_pointers=True,
-                              observe_fields=['dump%d' % q for q in range(8)] + ['fop', 'fip', 'fdp', 'fip64', 'fdp64'],
+                              observe_fields=['fip64', 'fdp64'],   # (dumps, FOP/FIP/FDP: strict since the EPYC 7742 run)
                               reason='image bytes the manuals leave reserved (exact dump)')
 
 
@@ -137,7 +137,7 @@ def fenv16(rng, count):
                     yield record3(code, a=VALUES[top], b=VALUES[top + 3], cw=cw, sw=sw, tags=tags, regs={3: EBX}, dump=OFF + window,
                                   ext_flags=1, fop=0x5A5, fip=0x20123, fdp=0x10345, patches=patches), \
                         meta3('fenv16', name, code, top=top, es=es, window=window, compare_pointers=True,
-                              observe_fields=['fop', 'fip', 'fdp', 'fip64', 'fdp64'] + ['dump%d' % q for q in range(8)],
+                              observe_fields=['fip64', 'fdp64'],   # (dumps, FOP/FIP/FDP: strict since the EPYC 7742 run)
                               reason='x87 environment image layout and pointer fields (exact dump)')
 
 
@@ -158,7 +158,7 @@ def fpu_pointers(rng, count):
                     yield record3(code, a=(0, 0), b=ONE, cw=cw, sw=sw, regs={3: EBX, 0: 7, 2: 0}, ext_flags=1, fop=0x1A5,
                                   fip=fip, fdp=fdp, dump=OFF, patches=patches, mem=struct.pack('<f', 2.0) * 16), \
                         meta3('fpu_pointers', name, code, es=es, unmasked=unmasked, wide=fip > 0xFFFFFFFF, compare_pointers=True,
-                              observe_fields=['fop', 'fip', 'fdp', 'fip64', 'fdp64'] + ['dump%d' % q for q in range(8)],
+                              observe_fields=['fip64', 'fdp64'],   # (dumps, FOP/FIP/FDP: strict since the EPYC 7742 run)
                               reason='FIP/FDP/FOP update and save policy (open question F5, X6)')
 
 

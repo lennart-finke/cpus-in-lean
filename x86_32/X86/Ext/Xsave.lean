@@ -31,17 +31,17 @@ AMD APM vol. 2, 11.5.10). The legacy region uses the 32-bit FXSAVE layout, writt
 FXSAVE/FXRSTOR pieces of `X86/Simd.lean` (`fxsaveEnv`, `fxsaveRegs`, `fxsaveXmm`, `fxrstorEnv`,
 `fxrstorRegs`, `Cpu.loadFxX87`); MXCSR_MASK is `mxcsrMask`. Bytes the instructions do not write are
 left alone: 464..511 (SDM 13.4.1), the reserved bytes of the legacy region (5, 14..15, 22..23 are
-written as zero together with their fields, as FXSAVE does; bytes 10..15 of each x87 register slot
-and 288..463 are not written), the header beyond XSTATE_BV (XSAVE, XSAVEOPT) or XCOMP_BV (XSAVEC,
-XSAVES), and the areas of components that are not saved.
+written as zero together with their fields, as FXSAVE does; bytes 10..15 of each x87 register slot are
+written as zero, as the EPYC 7742 does (native `xsave_padding`); 288..463 are not written), the header
+beyond XSTATE_BV (XSAVE, XSAVEOPT) or XCOMP_BV (XSAVEC, XSAVES), and the areas of components that are
+not saved.
 
-**Error pointers**: the 7742 reports CPUID Fn8000_0008_EBX[2] XSaveErPtr, whose definition is
-"FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save error pointers and FXRSTOR, XRSTOR, XRSTORS
-always restore error pointers" (AMD APM vol. 3, appendix E, CPUID Fn8000_0008_EBX; the Linux commit
-"x86/cpufeatures: Make X86_BUG_FXSAVE_LEAK detectable in CPUID on AMD" quotes it). So XSAVE,
-XSAVEOPT, XSAVEC and XSAVES write FOP, FIP, FCS, FDP and FDS like FXSAVE, whether or not an x87
-exception is pending, and XRSTOR/XRSTORS always load them. (Writing them only with FSW.ES = 1 is the
-behaviour of AMD processors without XSaveErPtr, the "FXSAVE leak" of families before 17h.)
+**Error pointers**: the 7742 reports CPUID Fn8000_0008_EBX[2] (XSaveErPtr; "FXSAVE, XSAVE, FXSAVEOPT,
+XSAVEC, XSAVES always save error pointers and FXRSTOR, XRSTOR, XRSTORS always restore error pointers",
+AMD APM vol. 3, appendix E), but its FXSAVE and XSAVE write FOP, FIP, FCS, FDP and FDS only when
+FSW.ES = 1 and zeros otherwise, while the restoring instructions always load them (native
+`fpu_pointers`, 16 images; open questions F5, X6). The model follows the hardware for the whole family
+(XSAVEC/XSAVES not observed). (The model wrote them always before the extended run.)
 
 ## Tracking: init and modified optimizations (SDM vol. 1, 13.6, 13.8.3)
 
@@ -141,21 +141,30 @@ def probe (lin n : UInt32) (write : Bool) : M Unit := do
     let _ ← translate last write u
 
 /-- Linear address of the XSAVE area of the memory operand, `n` bytes of which are accessed:
-segment checks, 64-byte alignment, page translation (see the module documentation). -/
-def area (i : Inst) (n : UInt32) (write : Bool) : M UInt32 := do
-  let lin ← segAddr i.seg (← fpEa i) n write
-  if lin &&& 63 != 0 then gp 0
+64-byte alignment (#GP(0), before the segment-limit check, as the EPYC 7742 orders them: native
+`enc_fuzz`, an XSAVEOPT through SS wrapping past 4 GiB), segment checks, page translation (see the module
+documentation). `first`: an offset in the area that is translated before the others, as the EPYC 7742
+checks its areas: the last byte for a save (FXSAVE, XSAVE, XSAVEOPT; native `fxsave_align`: an area
+crossing into an unmapped page faults at its last byte, and `enc_fuzz`: an FXSAVE area wholly inside an
+unmapped page too) and the first header byte (offset 512) for XRSTOR (native `fxsave_align`, 8 cases).
+Areas whose both pages fault were not observed: the model reports that byte's fault. -/
+def area (i : Inst) (n : UInt32) (write : Bool) (first : Option UInt32 := none) : M UInt32 := do
+  let off ← fpEa i
+  if (((← cpu).getSeg i.seg).base + off) &&& 63 != 0 then gp 0
+  let lin ← segAddr i.seg off n write
+  if let some f := first then
+    let _ ← translate (lin + f) write (← isUser)
   probe lin n write
   return lin
 
 def rd64 (lin : UInt32) : M UInt64 := do return (← rdLin lin 8).lo
 def wr64 (lin : UInt32) (v : UInt64) : M Unit := wrLin lin 8 { lo := v }
 
-/-- The x87 component (legacy region bytes 0..23 without MXCSR, ST0..ST7), with the error pointers
-(XSaveErPtr: always saved). -/
+/-- The x87 component (legacy region bytes 0..23 without MXCSR, ST0..ST7): the error pointers only with
+FSW.ES = 1 (`fxsaveEnv`), the register slots' padding as zeros (EPYC 7742, native `xsave_padding`). -/
 def saveX87 (c : Cpu) (lin : UInt32) : M Unit := do
   fxsaveEnv c lin
-  fxsaveRegs c lin
+  fxsaveRegs c lin (pad := true)
 
 /-- MXCSR and MXCSR_MASK (bytes 24..31). -/
 def saveMxcsr (c : Cpu) (lin : UInt32) : M Unit := do
@@ -241,7 +250,7 @@ def xsave (i : Inst) (opt : Bool) : M Unit := do
   let rfbm := c.xcr0 &&& edxEax c
   let inuse := xinuse c
   let save := if opt then rfbm &&& inuse else rfbm
-  let lin ← area i (Cpuid.xsaveSize save) true
+  let lin ← area i (Cpuid.xsaveSize save) true (first := some (Cpuid.xsaveSize save - 1))
   let icount := (← getM).icount
   let save := if opt then save &&& ~~~unmodified c icount lin 0 else save
   let oldBv ← rd64 (lin + 512)
@@ -262,7 +271,7 @@ def xsavec (i : Inst) (sup : Bool) : M Unit := do
   let rfbm := (if sup then c.xcr0 ||| c.xss else c.xcr0) &&& edxEax c
   let comp := rfbm ||| 0x8000000000000000
   let inuse := xinuse c
-  let lin ← area i (Cpuid.compactSize rfbm) true
+  let lin ← area i (Cpuid.compactSize rfbm) true (first := some (Cpuid.compactSize rfbm - 1))
   let mx := if c.mxcsr != 0x1F80 && bit rfbm 1 then XCR0.SSE else 0
   let icount := (← getM).icount
   let save := rfbm &&& inuse
@@ -291,7 +300,7 @@ def xrstor (i : Inst) (sup : Bool) : M Unit := do
   let c ← cpu
   let enabled := if sup then c.xcr0 ||| c.xss else c.xcr0
   let rfbm := enabled &&& edxEax c
-  let lin ← area i 0x240 false
+  let lin ← area i 0x240 false (first := some 512)
   let bv ← rd64 (lin + 512)
   let comp ← rd64 (lin + 520)
   let compacted := comp >>> 63 != 0

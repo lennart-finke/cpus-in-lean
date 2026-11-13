@@ -23,8 +23,11 @@ Their ModRM/SIB/displacement/immediates are laid out as in the legacy map with t
 | `imm`, `imm2` | immediates; 66/F2 0F 78 (EXTRQ/INSERTQ) put their two imm8 in `imm` and `imm2` |
 | `map`, `byte` | `op >>> 8`, `op &&& 0xFF` |
 
-C4/C5 are VEX only if the next byte has bits 7:6 = 11 (else LES/LDS). 62 and 8F are not decoded as
-EVEX/XOP: on Zen 2 their mod=11 / reg≠0 forms stay the #UD forms of BOUND and POP. `decode_len`
+C4/C5 are VEX only if the next byte has bits 7:6 = 11 (else LES/LDS). 62 is not decoded as EVEX: on
+Zen 2 its mod=11 form stays the #UD form of BOUND. 8F with ModRM.reg ≠ 0 is decoded with the XOP layout
+the EPYC 7742 uses for its length (an unknown VEX map, #UD), and the other undefined encodings have the
+layouts of `Decode.lean`'s "Lengths of undefined encodings" (hardware-established; keep `opInfo`,
+`validation/test/native/record_check.h`, `native_ext.layout` and `gen.py`'s layouts in step). `decode_len`
 (`Proofs/State.lean`) depends on `decode`'s final `if n > 15 then gp 0`; keep it.
 
 ## Hooks: who owns what

@@ -1,6 +1,7 @@
 import X86.Fpu
 import X86.Float
 import X86.Cpuid
+import X86.Zen2Rcp
 /-!
 # MMX, SSE and SSE2 (Pentium 4 level), FXSAVE/FXRSTOR
 
@@ -29,16 +30,13 @@ instruction in the SDM opcode map (blank cells of tables A-3/A-4, e.g. F3 0F 58 
 F3 0F 54 is undefined) raises #UD. SSE3 and later extensions are in `X86/Ext/Sse.lean`.
 
 **RCPPS/RCPSS/RSQRTPS/RSQRTSS** return approximations whose exact bits are implementation
-specific (relative error ≤ 1.5·2^-12, SDM). This model defines them as the round-to-nearest-even
-values RNE(1/x) and RNE(1/RNE(√x)) (what QEMU computes in that rounding mode), independent of
-MXCSR.RC/DAZ/FTZ and without flags, with the SDM's special cases: ±0 and denormal inputs give ±∞,
-results below the normal range are flushed to ±0, RSQRT of a negative number is the QNaN
-indefinite, NaNs are returned quieted. This is a deliberate deviation from the EPYC 7742, whose
-results come from a table (12 fraction bits; on the 601 lanes of the first native run with a normal
-result every value differs from the model's, relative error to 1/x at most 1.0·2^-12, to 1/√x at
-most 0.83·2^-12; the special cases and the flushed results agree). The native family
-`sse_rcp_sweep` (`validation/test/native_rcp.py`) measures the whole table so that a later round can
-reproduce it.
+specific (relative error ≤ 1.5·2^-12, SDM). The model computes the EPYC 7742's function (`FP.rcp`,
+`FP.rsqrt`): a 4096-entry table indexed by fraction bits 22..11 of the operand (two tables by exponent
+parity for RSQRT), 12-bit result fractions, independent of MXCSR.RC/DAZ/FTZ and without flags
+(`X86/Zen2Rcp.lean`, reconstructed from the native family `sse_rcp_sweep`, every entry observed at four
+points, and checked against all 52,794 RCP/RSQRT lanes of the extended run). The former definition,
+RNE(1/x) and RNE(1/RNE(√x)), is kept as `FP.rcpSpec`/`FP.rsqrtSpec`; the table function is within the
+SDM's 1.5·2^-12 of exact 1/x and 1/√x over every entry (`Proofs/EpycHw.lean`).
 
 **FXSAVE/FXRSTOR** use the 512-byte 32-bit format. MXCSR_MASK is 0x2FFFF (all MXCSR bits
 including DAZ, and MM, bit 17, of AMD's Misaligned SSE mode; `mxcsrMask`). With CR4.OSFXSR = 0,
@@ -186,8 +184,10 @@ def isPint (b0 : UInt8) : Bool :=
 /-! ## Floating-point lanes -/
 
 namespace FP
-/-- Approximate reciprocal (RCPPS/RCPSS), see the module documentation. -/
-def rcp (x : UInt64) : UInt64 :=
+/-- The correctly rounded reciprocal RNE(1/x) with the SDM's special cases: the model's RCPPS/RCPSS
+before the EPYC 7742's table was known, kept as the specification the hardware function `rcp` is
+checked against (`Proofs/EpycHw.lean`: relative error ≤ 1.5·2^-12 over every table entry). -/
+def rcpSpec (x : UInt64) : UInt64 :=
   let f := binary32
   let s := x &&& 0x80000000
   if isNaN f x then x ||| f.quietBit
@@ -198,8 +198,8 @@ def rcp (x : UInt64) : UInt64 :=
     let (r, _) := pack f (s != 0) 1 n (-e) 0x1F80
     if expField f r == 0 then s else r
 
-/-- Approximate reciprocal square root (RSQRTPS/RSQRTSS), see the module documentation. -/
-def rsqrt (x : UInt64) : UInt64 :=
+/-- RNE(1/RNE(√x)) with the SDM's special cases (as `rcpSpec`, for RSQRTPS/RSQRTSS). -/
+def rsqrtSpec (x : UInt64) : UInt64 :=
   let f := binary32
   let s := x &&& 0x80000000
   if isNaN f x then x ||| f.quietBit
@@ -211,6 +211,35 @@ def rsqrt (x : UInt64) : UInt64 :=
     let (n, e) := dyadic f q
     let (r, _) := pack f false 1 n (-e) 0x1F80
     if expField f r == 0 then 0 else r
+
+/-- RCPPS/RCPSS (and VEX) of one binary32 lane on the EPYC 7742 (`X86/Zen2Rcp.lean`): NaN quieted;
+±0 and denormals (whatever DAZ) give ±∞; ±∞ gives ±0; a normal x with biased exponent E and fraction
+bits 22..11 = t gives the sign of x, biased exponent 253 − E and fraction `rcpTable[t]` << 11, or ±0
+when 253 − E ≤ 0 (whatever FTZ). No MXCSR effect or flag. -/
+def rcp (x : UInt64) : UInt64 :=
+  let s := x &&& 0x80000000
+  let e := (x >>> 23) &&& 0xFF
+  let t := ((x &&& 0x7FFFFF) >>> 11).toNat
+  if e == 0xFF && x &&& 0x7FFFFF != 0 then x ||| 0x400000
+  else if e == 0 then s ||| 0x7F800000
+  else if e == 0xFF then s
+  else if e ≥ 253 then s
+  else s ||| ((253 - e) <<< 23) ||| ((Zen2Rcp.rcpTable[t]!).toUInt64 <<< 11)
+
+/-- RSQRTPS/RSQRTSS (and VEX) of one binary32 lane on the EPYC 7742 (`X86/Zen2Rcp.lean`): NaN quieted
+(also a negative one); ±0 and denormals give ±∞; +∞ gives +0; other negative operands the default NaN
+FFC00000h; a positive normal x gives, for odd E, exponent (379 − E)/2 and fraction
+`rsqrtOddTable[t]` << 11, for even E, (380 − E)/2 and `rsqrtEvenTable[t]` << 11. No MXCSR effect. -/
+def rsqrt (x : UInt64) : UInt64 :=
+  let s := x &&& 0x80000000
+  let e := (x >>> 23) &&& 0xFF
+  let t := ((x &&& 0x7FFFFF) >>> 11).toNat
+  if e == 0xFF && x &&& 0x7FFFFF != 0 then x ||| 0x400000
+  else if e == 0 then s ||| 0x7F800000
+  else if s != 0 then 0xFFC00000
+  else if e == 0xFF then 0
+  else if e &&& 1 == 1 then (((379 - e) / 2) <<< 23) ||| ((Zen2Rcp.rsqrtOddTable[t]!).toUInt64 <<< 11)
+  else (((380 - e) / 2) <<< 23) ||| ((Zen2Rcp.rsqrtEvenTable[t]!).toUInt64 <<< 11)
 
 /-- MINPS/MAXPS lane: the second operand unless the first is strictly smaller/larger; any NaN
 gives the second operand and IE. -/
@@ -317,13 +346,18 @@ raises #GP(0); with MXCSR.MM = 1 (Misaligned SSE mode), except for `alignStrict`
 raises #AC(0) instead when alignment checking is enabled (CR0.AM, EFLAGS.AC, CPL 3) and nothing
 otherwise (AMD APM vol. 1, 4.2.2 and 4.3.2). -/
 def vecAddr (i : Inst) (n : UInt32) (write align : Bool) (acFirst : UInt32 := 0) : M UInt32 := do
-  let lin ← segAddr i.seg (← fpEa i) n write
-  -- `acFirst`: an #AC check at this alignment that comes before the 16-byte #GP check (FXSAVE)
-  if acFirst != 0 then acChk lin acFirst (← isUser)
-  if align && lin &&& 15 != 0 then
+  let off ← fpEa i
+  -- the alignment checks come before the segment-limit check: a misaligned 16-byte operand whose
+  -- range wraps past the 4 GiB limit of SS raises #GP(0), not #SS(0), on the EPYC 7742 (native
+  -- `enc_fuzz`: PMADDWD; wrapping operands without an alignment requirement raise #SS(0) there too)
+  let lin0 := ((← cpu).getSeg i.seg).base + off
+  -- `acFirst`: an #AC check at this alignment that comes before the 16-byte #GP check (FXSAVE, FXRSTOR)
+  if acFirst != 0 then acChk lin0 acFirst (← isUser)
+  if align && lin0 &&& 15 != 0 then
     match misalignExc (← cpu) i with
     | some v => exc v (some 0)
     | none => pure ()
+  let lin ← segAddr i.seg off n write
   -- alignment check of the operand (#AC at CPL 3: 64-bit media 8, 128-bit media 16, smaller operands
   -- by their size; AMD APM vol. 2, table 8-7; system A, `acChk`)
   acChk lin (if n > 16 then 16 else n) (← isUser)
@@ -447,7 +481,10 @@ def sseCvt (i : Inst) (b0 : UInt8) (p : Nat) : M Unit := do
   match b0, p with
   | 0x2A, 0 | 0x2A, 1 => -- CVTPI2PS xmm, mm/m64 / CVTPI2PD xmm, mm/m64
     sseCheck
-    if p == 0 || !i.isMem then sseMmx
+    -- a memory source touches no MMX register: no transition to MMX operation for CVTPI2PS m64 either
+    -- (EPYC 7742, native `enc_fuzz`: 8 cases with TOP ≠ 0 or registers empty; was: CVTPI2PS
+    -- transitioned for both forms, CVTPI2PD only for the register form)
+    if !i.isMem then sseMmx
     let src : V128 := { lo := ← rdME i }
     let (ls, fl) := cvtLanes none (if p == 0 then s32 else s64) false 2 src (← mx ())
     sseStatus fl
@@ -577,10 +614,17 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
   -- 7742, native `alignment_check`: MASKMOVDQU at offset 8 stores without #AC, offsets 1..6 and 12
   -- raise it; the APM's table 8-7 does not single out the masked stores)
   acChk (((← cpu).getSeg s).base + di) 8 (← isUser)
+  -- a #PF of a selected byte reports the first byte of the region on that byte's page, not the selected
+  -- byte (EPYC 7742, native `enc_fuzz`: MASKMOVQ and MASKMOVDQU with the region on an unmapped page, 19
+  -- cases: CR2 = DS:(E)DI whichever bytes are selected; was: the selected byte); a page holding only
+  -- unselected bytes is not checked (not observed: as before)
+  let lin0 := ((← cpu).getSeg s).base + di
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr s (di + k.toUInt32) 1 true
-    linProbeWr lin 1 (← isUser)
+    tryCatch (linProbeWr lin 1 (← isUser)) fun f => match f with
+      | .exc v e a => throw (.exc v e (if v == Vec.PF then max lin0 (a &&& 0xFFFFF000) else a))
+      | f => throw f
     lins := lins.push lin
   let u ← isUser
   for (k, lin) in sel.zip lins.toList do linWr lin 1 (data.lane 8 k).toUInt32 u
@@ -597,21 +641,25 @@ same layout (`X86/Ext/Xsave.lean`). -/
 
 /-- Bytes 0..23 of the FXSAVE image: FCW, FSW, abridged FTW (byte 5 written as 0), FOP, FIP, FCS,
 FDP, FDS (the upper halves of FCS and FDS written as 0). The error pointers (FOP, FIP, FCS, FDP, FDS)
-are always written, by FXSAVE and the XSAVE family alike: the 7742 reports CPUID
-Fn8000_0008_EBX[2] XSaveErPtr ("FXSAVE, XSAVE, FXSAVEOPT, XSAVEC, XSAVES always save error pointers";
-AMD APM vol. 3, appendix E, CPUID Fn8000_0008_EBX). -/
+are written only when FSW.ES = 1, as zeros otherwise, by FXSAVE and the XSAVE family alike: the EPYC
+7742 does so (native `fpu_pointers`: FXSAVE and XSAVE images with ES = 0 hold zeros although FNSTENV
+of the same state stores the pointers, 16 cases) although it reports CPUID Fn8000_0008_EBX[2]
+(XSaveErPtr / RstrFpErrPtrs; AMD APM vol. 3, appendix E: "... always save error pointers"); the
+restoring instructions load them always (the oracle's XRSTOR of a signal frame with ES = 0 loads the
+input pointers: FNSTENV shows them). Was: always written (open questions F5, X6). -/
 def fxsaveEnv (c : Cpu) (lin : UInt32) : M Unit := do
   let u ← isUser
+  let es := c.fsw &&& 0x80 != 0
   linWr lin 4 (c.fcw.toUInt32 ||| (c.fsw.toUInt32 <<< 16)) u
-  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| ((c.fop.toUInt32 &&& 0x7FF) <<< 16)) u
-  linWr (lin + 8) 4 c.fip u
-  linWr (lin + 12) 4 c.fcs.toUInt32 u
-  linWr (lin + 16) 4 c.fdp u
-  linWr (lin + 20) 4 c.fds.toUInt32 u
+  linWr (lin + 4) 4 ((~~~c.fempty).toUInt32 ||| (if es then (c.fop.toUInt32 &&& 0x7FF) <<< 16 else 0)) u
+  linWr (lin + 8) 4 (if es then c.fip else 0) u
+  linWr (lin + 12) 4 (if es then c.fcs.toUInt32 else 0) u
+  linWr (lin + 16) 4 (if es then c.fdp else 0) u
+  linWr (lin + 20) 4 (if es then c.fds.toUInt32 else 0) u
 
-/-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots. With `pad` (FXSAVE)
-bytes 10..15 of a slot are written as zero, as the EPYC 7742 does (the FXSAVE images of the native
-`alignment_check` family); the XSAVE family leaves them alone (not observed on hardware yet). -/
+/-- Bytes 32..159 of the FXSAVE image: ST0..ST7, 10 bytes each in 16-byte slots. With `pad` (FXSAVE and
+the XSAVE family's x87 component) bytes 10..15 of a slot are written as zero, as the EPYC 7742 does (the
+FXSAVE images of the native `alignment_check` family; XSAVE and XSAVEOPT: `xsave_padding`, 132 cases). -/
 def fxsaveRegs (c : Cpu) (lin : UInt32) (pad : Bool := false) : M Unit := do
   let u ← isUser
   for k in [0:8] do
@@ -668,9 +716,14 @@ def fxsave (i : Inst) : M Unit := do
   -- with alignment checking (CPL 3, CR0.AM, EFLAGS.AC) an operand that is not 4-byte aligned raises
   -- #AC before the 16-byte #GP(0) check; a 4-byte aligned misaligned one still raises #GP(0) (EPYC
   -- 7742, native `alignment_check`: offsets 1, 2, 3, 6 #AC, offsets 4, 8, 12 #GP; AMD APM vol. 2,
-  -- table 8-7 does not list FXSAVE). FXRSTOR keeps #GP(0) first (not observed).
-  let lin ← vecAddr i 512 true true (acFirst := 4)
+  -- table 8-7 does not list FXSAVE). FXRSTOR likewise (native `fxsave_align`, 12 cases).
+  let lin ← vecAddr i 512 false true (acFirst := 4)
   let u ← isUser
+  -- the last byte of the area is checked first: a #PF reports it when the area crosses into an unmapped
+  -- page and when the whole area lies in one (EPYC 7742, native `fxsave_align`: FXSAVE and FXRSTOR, 16
+  -- cases; `enc_fuzz`: 1 FXSAVE); then the area in address order
+  linProbeWr (lin + 511) 1 u
+  linProbeWr lin 512 u
   fxsaveEnv c lin
   let sse := c.cr4 &&& CR4.OSFXSR != 0
   if sse then
@@ -682,8 +735,9 @@ def fxsave (i : Inst) : M Unit := do
 def fxrstor (i : Inst) : M Unit := do
   let c ← cpu
   if c.cr0 &&& (CR0.EM ||| CR0.TS) != 0 then exc Vec.NM
-  let lin ← vecAddr i 512 false true
+  let lin ← vecAddr i 512 false true (acFirst := 4)
   let u ← isUser
+  let _ ← linRd (lin + 511) 1 u   -- the last byte first, as FXSAVE (see there)
   let env ← fxrstorEnv lin
   let sse := c.cr4 &&& CR4.OSFXSR != 0
   let mut mxcsr := c.mxcsr
@@ -716,10 +770,11 @@ def grp15 (i : Inst) : M Unit := do
       wrMem i.seg (← fpEa i) 4 (← cpu).mxcsr
     | _ => ud
 
-/-- EMMS: mark all x87 registers empty. -/
+/-- EMMS: mark all x87 registers empty and set TOP = 0 (SDM vol. 1, table 9-2; the EPYC 7742 clears
+TOP: native `enc_fuzz`, `code16`, `fpu_pointers`: 49 cases with TOP ≠ 0; was: TOP kept). -/
 def emms : M Unit := do
   mmxPre
-  modCpu fun c => { c with fempty := 0xFF }
+  modCpu fun c => { c.setTop 0 with fempty := 0xFF }
 
 /-- Moves and the remaining data-movement instructions of the 0F map. -/
 def sseMove (i : Inst) (b0 : UInt8) (p : Nat) : M Unit := do

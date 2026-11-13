@@ -153,8 +153,25 @@ the faulting one stay in the destination with their mask elements cleared, so th
 be restarted; SDM VPGATHERDD, AMD APM vol. 4 VGATHERDPS; `Ext/Avx2.lean`) and MXCSR: the exception
 flags of an unmasked SIMD exception are set when it is raised (#XM), and no instruction changes MXCSR
 before another fault can occur.
-ESP and EIP always retain their restart values. -/
-def faultCpu (saved current : Cpu) (i : Inst) : Cpu :=
+ESP and EIP always retain their restart values.
+
+The x87-to-MMX transition (TOP = 0, all registers valid) is kept when MASKMOVQ faults on its store
+(#PF, #AC) and when a conversion that uses an MMX register (CVTPI2PS/PD xmm, mm; CVT(T)PS2PI and
+CVT(T)PD2PI mm, xmm/m) raises #XM: the EPYC 7742 enters MMX operation before these faults (native
+`enc_fuzz`, `code16`: 30 cases); a fault on the memory operand of a conversion leaves the x87 state
+unchanged. -/
+def mmxFaultKeeps (i : Inst) (vec : UInt8) : Bool :=
+  !i.vex && i.map == 1 && (
+    (i.byte == 0xF7 && i.pp == 0 && !i.isMem) ||
+    (vec == Vec.XM && (i.pp == 0 || i.pp == 1) &&
+      ((i.byte == 0x2A && !i.isMem) || i.byte == 0x2C || i.byte == 0x2D)))
+
+def faultCpu (saved current : Cpu) (i : Inst) (vec : UInt8 := 0) : Cpu :=
+  let r := faultCpu0 saved current i
+  if mmxFaultKeeps i vec then
+    { r with fempty := current.fempty, fsw := (r.fsw &&& ~~~0x3800) ||| (current.fsw &&& 0x3800) }
+  else r
+where faultCpu0 (saved current : Cpu) (i : Inst) : Cpu :=
   if i.vex && i.op ≥ 0x290 && i.op ≤ 0x293 then { saved with sse := current.sse }
   else if i.op == 0x61 then
     { saved with
@@ -205,7 +222,7 @@ def execInstr : M Inst := fun m =>
     | .error f m'' =>
       -- after a committed task switch the fault belongs to the new task: keep its state
       if m''.keepCpu then .error f (iretUnblock i { m'' with keepCpu := false })
-      else .error f { m'' with cpu := faultCpu saved m''.cpu i }
+      else .error f { m'' with cpu := faultCpu saved m''.cpu i (match f with | .exc v _ _ => v | _ => 0) }
 
 /-- Instructions after which no single-step trap is taken: software interrupts (their handler
 is entered with TF clear) and MOV/POP SS (the trap is deferred past the next instruction). -/

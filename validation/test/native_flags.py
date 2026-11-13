@@ -1,12 +1,14 @@
 """The EFLAGS bits an IA-32 integer instruction leaves undefined (Intel SDM vol. 2 / AMD APM vol. 3
-"Flags affected"), for the extended native families: they are not compared strictly but reported as
-observations (`flags_observe`, field `eflags.undefined`), so that the hardware's values are recorded
-without failing the comparison. Where the model documents an undefined flag's value as adopted from the
-EPYC 7742 (validation/README.md, G1, G8), the flag is still undefined by the manuals and listed here."""
+"Flags affected"), for the extended native families. The extended bundle recorded them as observations
+(`flags_observe`, field `eflags.undefined`); since its EPYC 7742 run the model computes the 7742's value of
+every one of them (validation/README.md, "The EPYC 7742 runs", the undefined-flag table), so they are
+`PINNED`: the comparison checks them strictly (`native_fp.PINNED_UNDEFINED`) and the generators mark only
+`observed_flags` (none). `undefined_flags` still lists what the manuals leave undefined."""
 from native_ext import layout
 
 CF, PF, AF, ZF, SF, OF = 1, 4, 0x10, 0x40, 0x80, 0x800
 ARITH = CF | PF | AF | ZF | SF | OF
+PINNED = ARITH   # the documented-undefined flags whose EPYC 7742 value the model computes
 LOGIC = {0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32, 0x33, 0x34,
          0x35, 0x84, 0x85, 0xA8, 0xA9}
 
@@ -53,3 +55,9 @@ def undefined_flags(code, regs):
     if op in (0x1A3, 0x1AB, 0x1B3, 0x1BB, 0x1BA): return OF | SF | AF | PF
     if op in (0x1BC, 0x1BD): return OF | SF | AF | PF if rep == 0xF3 else CF | OF | SF | AF | PF
     return 0
+
+
+def observed_flags(code, regs):
+    """The undefined flags of `code` a case records as observations (`flags_observe`) rather than
+    comparing them strictly: those not `PINNED` (none since the extended EPYC 7742 run)."""
+    return undefined_flags(code, regs) & ~PINNED
