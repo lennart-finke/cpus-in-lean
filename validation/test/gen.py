@@ -91,9 +91,9 @@ def info2(b):
          0xA3: ('', True), 0xA4: ('ib', True), 0xA5: ('', True), 0xAB: ('', True), 0xAC: ('ib', True),
          0xAD: ('', True), 0xAF: ('', True), 0xB0: ('', True), 0xB1: ('', True), 0xB2: ('', True),
          0xB3: ('', True), 0xB4: ('', True), 0xB5: ('', True), 0xB6: ('', True), 0xB7: ('', True),
-         0xB9: ('', True), 0xBA: ('ib', True), 0xBB: ('', True), 0xBC: ('', True), 0xBD: ('', True),
+         0xB9: ('', False), 0xBA: ('ib', True), 0xBB: ('', True), 0xBC: ('', True), 0xBD: ('', True),
          0xBE: ('', True), 0xBF: ('', True), 0xC0: ('', True), 0xC1: ('', True), 0xC7: ('', True),
-         0xFF: ('', True)}
+         0xFF: ('', False)}   # 0F B9 (UD1), 0F FF (UD0): no ModRM on the EPYC 7742 (Decode.lean)
     return t.get(b)
 
 OPS1 = [b for b in range(256) if info1(b) is not None and b not in (0x0F, 0x26, 0x2E, 0x36, 0x3E)]
@@ -242,7 +242,8 @@ def gen_one():
     if not two and op in (0xC6, 0xC7):
         reg = 0 if random.random() < 0.95 else random.randint(1, 7)
     if not two and op == 0x8F:
-        reg = 0 if random.random() < 0.95 else random.randint(1, 7)
+        # 8F with ModRM.reg != 0 has the XOP layout on the EPYC 7742 (Decode.lean): the 'ud' family's 'xop'
+        reg = 0
     if two and op == 0xBA:
         reg = random.choice([4, 5, 6, 7, 4, 5, 6, 7, 0])
     if has_modrm:
@@ -410,11 +411,12 @@ def vex_layout(map_, op, pp):
     if map_ == 3: return (True, 1)
     if 0x80 <= op <= 0x8F or op in (0x78,) and pp in (1, 3): return None
     if op in (0x77, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x37,
-              0xA0, 0xA1, 0xA2, 0xA8, 0xA9, 0xAA) or 0xC8 <= op <= 0xCF:
+              0xA0, 0xA1, 0xA2, 0xA8, 0xA9, 0xAA, 0xB9, 0xFF) or 0xC8 <= op <= 0xCF:
         return (False, 0)
-    if 0x70 <= op <= 0x73 or op in (0xC2, 0xC4, 0xC5, 0xC6, 0xA4, 0xAC, 0xBA):
+    # VEX.0F 0F: ModRM and imm8, as 0F 0F (3DNow!) on the EPYC 7742 (Decode.lean)
+    if 0x70 <= op <= 0x73 or op in (0xC2, 0xC4, 0xC5, 0xC6, 0xA4, 0xAC, 0xBA, 0x0F):
         return (True, 1)
-    if op in (0x04, 0x0A, 0x0C, 0x0F, 0x24, 0x25, 0x26, 0x27, 0x36, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
+    if op in (0x04, 0x0A, 0x0C, 0x24, 0x25, 0x26, 0x27, 0x36, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
               0x3E, 0x3F, 0x7A, 0x7B, 0xA6, 0xA7):
         return (False, 0)
     return (True, 0)
@@ -422,7 +424,10 @@ def vex_layout(map_, op, pp):
 # 0F-map opcodes without an instruction on Zen 2 for some prefixes (isa_forms decides which)
 UD_0F = [0x04, 0x0A, 0x0C, 0x0E, 0x0F, 0x24, 0x25, 0x26, 0x27, 0x36, 0x39, 0x3B, 0x3C, 0x3D, 0x3E,
          0x3F, 0x78, 0x79, 0x7A, 0x7B, 0xA6, 0xA7, 0xB8]
-MODRM_0F = {0x78, 0x79, 0xB8}
+MODRM_0F = {0x78, 0x79, 0xB8, 0x0F}
+# the immediates of those undefined 0F forms (EPYC 7742 layout, Decode.lean): 0F 0F (3DNow!) an imm8, 0F 78
+# its two imm8 whatever the prefix
+IMM_0F = {0x0F: 1, 0x78: 2}
 
 # 'vexnb' kind of the 'ud' family: the undefined neighbours of the implemented VEX forms (isa_forms
 # `vex_neighbours`: an opcode byte with a VEX row, under a mandatory prefix and VEX.L for which no row
@@ -477,7 +482,8 @@ def ud_form(g, a16, force=None):
                 break
         body = PP_BYTE[pp] + bytes([0x0F, op])
         if op in MODRM_0F:
-            return body + modrm(), kind
+            imm = bytes([force if force is not None else random.getrandbits(8) for _ in range(IMM_0F.get(op, 0))])
+            return body + modrm() + imm, kind
         return (None if force is not None else body), kind
     if kind in ('vex', 'vexpfx', 'vexmap', 'vexnb'):
         nb, pinned = vexnb_next() if kind == 'vexnb' else (None, False)
@@ -511,7 +517,8 @@ def ud_form(g, a16, force=None):
         pre = bytes([random.choice([0x66, 0xF2, 0xF3, 0xF0])]) if kind == 'vexpfx' else b''
         body = pre + vex_bytes(m, pp, L, W, vvvv, two) + bytes([op])
         if kind == 'vexmap':
-            return body, kind
+            # an unknown map has a ModRM byte (EPYC 7742; Decode.lean)
+            return body + g.modrm(a16)[0], kind
         if lay is None or (force is not None and not lay[0]):
             return None, kind
         if lay[0]:
@@ -523,8 +530,11 @@ def ud_form(g, a16, force=None):
     if kind == 'evex':
         # 62 with ModRM.mod = 11: EVEX on AVX-512 CPUs, the #UD register form of BOUND on Zen 2
         return bytes([0x62, 0xC0 | random.getrandbits(6)]) + bytes(random.getrandbits(8) for _ in range(4)), kind
-    # 8F with ModRM.reg != 0: XOP on CPUs with XOP, #UD on Zen 2 (POP r/m needs reg = 0)
-    return bytes([0x8F]) + modrm(random.randint(1, 7)), kind
+    # 8F with ModRM.reg != 0: XOP on CPUs with XOP, #UD on Zen 2 (POP r/m needs reg = 0), laid out as XOP
+    # (EPYC 7742; Decode.lean): 8F, two XOP bytes, opcode, ModRM, an imm32 in map 0Ah
+    x1 = random.choice([random.getrandbits(8) | 0x08, 0xE8 | random.choice([8, 9, 10])])
+    body = bytes([0x8F, x1, random.getrandbits(8), random.getrandbits(8)]) + modrm()
+    return body + (bytes(random.getrandbits(8) for _ in range(4)) if x1 & 0x1F == 0x0A else b''), kind
 
 # Coverage of the 'ud' family: the distinct undefined encodings emitted in a run, per map. A distinct
 # encoding is a combination of the fields that isa_forms.defined() and the model's decoder tell

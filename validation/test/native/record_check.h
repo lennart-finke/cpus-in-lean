@@ -101,18 +101,19 @@ static unsigned rc_info(unsigned op) {
      b == 0x79 || (b >= 0x7c && b <= 0x7f) || (b >= 0xd0 && b <= 0xfe)) return 0x01;
  if ((b >= 0x70 && b <= 0x73) || b == 0xc2 || (b >= 0xc4 && b <= 0xc6)) return 0x11;
  if (b == 0x78) return 0x91;
+ if (b == 0x0f) return 0x11;   /* 3DNow! layout (EPYC 7742: Decode.lean) */
  switch (b) {
  case 0xa3: case 0xa5: case 0xab: case 0xad: case 0xae: case 0xaf: return 0x01;
  case 0xa4: case 0xac: case 0xba: return 0x11;
  case 0xb0: case 0xb1: case 0xb2: case 0xb3: case 0xb4: case 0xb5: case 0xb6: case 0xb7: return 0x01;
- case 0xb8: case 0xb9: case 0xbb: case 0xbc: case 0xbd: case 0xbe: case 0xbf: return 0x01;
- case 0xc0: case 0xc1: case 0xc3: case 0xc7: case 0xff: return 0x01;
+ case 0xb8: case 0xbb: case 0xbc: case 0xbd: case 0xbe: case 0xbf: return 0x01;   /* 0F B9, 0F FF: no ModRM */
+ case 0xc0: case 0xc1: case 0xc3: case 0xc7: return 0x01;
  default: return 0;
  }
 }
 /* b: the 32 bytes at 0x20100 (instruction, then 0xCC). Returns the length (16 and more: #GP). */
 static void rc_decode16(const unsigned char *b, struct rc_insn *d, int d16) {
- unsigned n = 0, opsz = d16 ? 2 : 4, adsz = d16 ? 2 : 4, rep = 0, seg = 0xff, pre = 0x100, vx = 0;
+ unsigned n = 0, opsz = d16 ? 2 : 4, adsz = d16 ? 2 : 4, rep = 0, seg = 0xff, pre = 0x100, vx = 0, xopimm = 0;
  while (n < 15 && (b[n] == 0x26 || b[n] == 0x2e || b[n] == 0x36 || b[n] == 0x3e || b[n] == 0x64 || b[n] == 0x65 ||
                    b[n] == 0x66 || b[n] == 0x67 || b[n] == 0xf0 || b[n] == 0xf2 || b[n] == 0xf3)) {
   if (b[n] == 0x66) opsz = d16 ? 4 : 2;
@@ -138,8 +139,13 @@ static void rc_decode16(const unsigned char *b, struct rc_insn *d, int d16) {
     op = map >= 1 && map <= 3 ? map * 0x100 + ob : ob;
    }
   } else pre = v1;
+ } else if (op == 0x8f && (b[n] >> 3 & 7)) {
+  /* XOP layout (EPYC 7742; Decode.lean): 8F, two XOP bytes, opcode, ModRM, imm32 in map 0Ah */
+  unsigned x1 = b[n];
+  vx = 0x18000 | b[n + 1]; op = b[n + 2]; n += 3;
+  if ((x1 & 0x1f) == 0x0a) xopimm = 4;
  }
- unsigned info = vx && op < 0x100 ? 0 : rc_info(op);
+ unsigned info = vx && op < 0x100 ? 0x01 : rc_info(op);
  d->op = op; d->vex = vx != 0; d->opsz = opsz; d->adsz = adsz; d->rep = rep; d->seg = seg;
  d->modrm = 0; d->has_modrm = info & 1; d->is_mem = 0; d->base = d->index = 8; d->scale = 0; d->disp = 0; d->imm = 0;
  unsigned reg = 0;
@@ -171,12 +177,14 @@ static void rc_decode16(const unsigned char *b, struct rc_insn *d, int d16) {
  unsigned kind = info >> 4, k = 0;
  if (kind) {
   unsigned pp = vx ? (vx & 3) : rep == 0xf3 ? 2 : rep == 0xf2 ? 3 : opsz == 2 ? 1 : 0;
-  k = kind == 1 ? 1 : kind == 2 ? 2 : kind == 3 ? opsz : kind == 4 ? adsz : kind == 5 ? opsz : kind == 6 ? 2 :
-      kind == 7 ? (reg < 2 ? 1 : 0) : kind == 8 ? (reg < 2 ? opsz : 0) : kind == 9 ? (pp == 1 || pp == 3 ? 1 : 0) : 0;
+  k = kind == 1 ? 1 : kind == 2 ? 2 : kind == 3 ? (vx ? 4 : opsz) : kind == 4 ? adsz : kind == 5 ? opsz : kind == 6 ? 2 :
+      kind == 7 ? (reg < 2 ? 1 : 0) : kind == 8 ? (reg < 2 ? opsz : 0) :
+      kind == 9 ? (!vx || pp == 1 || pp == 3 ? 1 : 0) : 0;
   if (k) { d->imm = rc_le(b + n, k); n += k; }
   if (kind == 5) n += 2;
   else if (kind == 6 || (kind == 9 && k)) n += 1;
  }
+ if (xopimm) { d->imm = rc_le(b + n, xopimm); n += xopimm; }
  d->len = n;
 }
 __attribute__((unused)) static void rc_decode(const unsigned char *b, struct rc_insn *d) { rc_decode16(b, d, 0); }

@@ -98,8 +98,9 @@ def op_info(op):
         return 0x01
     if 0x70 <= b <= 0x73 or b == 0xC2 or 0xC4 <= b <= 0xC6: return 0x11
     if b == 0x78: return 0x91
-    if b in (0xA3, 0xA5, 0xAB, 0xAD, 0xAE, 0xAF) or 0xB0 <= b <= 0xB9 or 0xBB <= b <= 0xBF or \
-            b in (0xC0, 0xC1, 0xC3, 0xC7, 0xFF):
+    if b == 0x0F: return 0x11   # 3DNow! layout (EPYC 7742; Decode.lean)
+    if b in (0xA3, 0xA5, 0xAB, 0xAD, 0xAE, 0xAF) or 0xB0 <= b <= 0xB8 or 0xBB <= b <= 0xBF or \
+            b in (0xC0, 0xC1, 0xC3, 0xC7):   # (0F B9, 0F FF: no ModRM)
         return 0x01
     if b in (0xA4, 0xAC, 0xBA): return 0x11
     return 0
@@ -118,7 +119,7 @@ def layout(code, d16=False):
         n += 1
     pfx = n
     if n >= 15: return 16, 0x1000, pfx, None, None, None
-    op = b[n]; n += 1; vx = 0; pre = None
+    op = b[n]; n += 1; vx = 0; pre = None; xopimm = 0
     if op == 0x0F:
         b1 = b[n]; n += 1
         if b1 in (0x38, 0x3A): op = (0x200 if b1 == 0x38 else 0x300) + b[n]; n += 1
@@ -132,7 +133,10 @@ def layout(code, d16=False):
                 op = mp * 0x100 + ob if 1 <= mp <= 3 else ob
         else:
             pre = n - 1
-    info = 0 if vx and op < 0x100 else op_info(op)
+    elif op == 0x8F and b[n] >> 3 & 7:   # XOP layout (EPYC 7742; Decode.lean)
+        x1 = b[n]; vx = 0x18000 | b[n + 1]; op = b[n + 2]; n += 3
+        if x1 & 0x1F == 0x0A: xopimm = 4
+    info = 0x01 if vx and op < 0x100 else op_info(op)
     modrm_at = disp = imm = None; reg = 0
     if info & 1:
         if pre is None: modrm_at = n; n += 1
@@ -153,11 +157,12 @@ def layout(code, d16=False):
     kind = info >> 4
     if kind:
         pp = (vx & 3) if vx else 2 if rep == 0xF3 else 3 if rep == 0xF2 else 1 if opsz == 2 else 0
-        k = {1: 1, 2: 2, 3: opsz, 4: adsz, 5: opsz, 6: 2, 7: 1 if reg < 2 else 0, 8: opsz if reg < 2 else 0,
-             9: 1 if pp in (1, 3) else 0}.get(kind, 0)
+        k = {1: 1, 2: 2, 3: 4 if vx else opsz, 4: adsz, 5: opsz, 6: 2, 7: 1 if reg < 2 else 0, 8: opsz if reg < 2 else 0,
+             9: 1 if not vx or pp in (1, 3) else 0}.get(kind, 0)
         if k: imm = (n, k); n += k
         if kind == 5: n += 2
         elif kind == 6 or (kind == 9 and k): n += 1
+    if xopimm: imm = (n, xopimm); n += xopimm
     return n, op, pfx, modrm_at, disp, imm
 
 

@@ -32,7 +32,9 @@ def openq_cases(rng, count):
         for total in (15, 16):
             code = PAD * (total - 1 - len(body) // 2) + body
             yield record(code), meta('open_questions', f'{name}_{total}', code, length=total, **OBS)
-    for code in ('62c0', '62f8', '8fc8', '8fe8', '8fe878c2c105'):
+    # (8F E8 78 C2 C1: a whole XOP encoding in the EPYC 7742's layout, map 8 without an imm8, Decode.lean;
+    # the extended run's bundle had 8FE878C2C105, whose 05 is now a trailing byte the oracle refuses)
+    for code in ('62c0', '62f8', '8fc8', '8fe8', '8fe878c2c1'):
         yield record(code), meta('open_questions', 'evex_xop', code)
     for code in ('660fa4d811', '660fa4d814', '660fa4d81f', '660facd811', '660facd81f'):
         yield record(code), meta('open_questions', 'shld_shrd_r16_count', code, **OBS)

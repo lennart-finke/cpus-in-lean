@@ -231,6 +231,10 @@ static void execute(void) {
   * them; rt_sigreturn does not restore them, so the runner sets them around the case) */
  if(mode16)__asm__ volatile("mov $0x0f,%%ax; mov %%ax,%%ds; mov %%ax,%%es":::"rax","memory");
 #endif
+ /* EFLAGS.ID and NT persist across rt_sigreturn (Linux takes only FIX_EFLAGS from the frame), so a case
+  * whose POPF set them would start the following cases with them: clear them before every case (found by
+  * the extended EPYC 7742 run, where PUSHF stored them; native_fp.oracle_start_flags) */
+ __asm__ volatile("pushfq; andq $~0x204000,(%%rsp); popfq":::"memory","cc");
  phase=0;r=call(62,pid,10,0,0,0,0);if(r<0)fail("kill self SIGUSR1",r);
 #ifdef NATIVE_FP
  if(mode16)__asm__ volatile("mov $0x2b,%%ax; mov %%ax,%%ds; mov %%ax,%%es":::"rax","memory");

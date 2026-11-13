@@ -27,7 +27,7 @@ import struct
 
 import fp_cases
 from native_ext import record3, meta3, layout, windows_safe, select, cached, STATS, ARITH
-from native_flags import undefined_flags
+from native_flags import observed_flags
 
 FAMILY = 'enc_fuzz'
 SEG = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65]
@@ -147,7 +147,7 @@ def build(rng, code, name, **extra):
                   cw=case['cw'], sw=case['sw'], tags=case['tags'], seed=case['seed'])
     m = meta3(FAMILY, name, code, **extra)
     n, op, pfx, at, disp, imm = layout(code)
-    und = undefined_flags(code, case['regs'])
+    und = observed_flags(code, case['regs'])
     m['flags_mask'] = ARITH & ~und
     if und: m['flags_observe'] = und
     return raw, m

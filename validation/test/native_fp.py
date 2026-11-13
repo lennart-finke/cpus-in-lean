@@ -181,7 +181,14 @@ NATIVE_LABELS=(['index','signal','code','rip','cs','eflags']+[f'r{k}' for k in r
                'memory.fnv32','page0.fnv64','page1.fnv64','fcw','fsw','ftw','fop','fip','fdp']+
                [f'st{k//2}.{("sig","se")[k%2]}' for k in range(16)]+[f'ymmh{k//2}.{("lo","hi")[k%2]}' for k in range(16)]+
                ['ymm_ok','fip64','fdp64']+[f'dump{q}' for q in range(8)])
-POINTERS=(33,34,35,71,72)   # FOP, FIP, FDP, FIP64, FDP64: compared only where a case asks for it
+# FIP64, FDP64 (the 64-bit frame layout's whole pointers): compared only where a case asks for it. FOP, FIP
+# and FDP (columns 33..35, the IA-32 values) are compared in every case since the extended EPYC 7742 run:
+# the signal frame's XSAVE writes them only with FSW.ES = 1, and x86fp reports them that way (FpMain.lean);
+# all 858,603 cases of that run agree (they were excluded before: open question F5).
+POINTERS=(71,72)
+# observe fields of the extended bundle's metadata that the model now determines (x87 pointers as the frame
+# stores them, the 64-byte image dumps): compared strictly
+PINNED_FIELDS={'fop','fip','fdp'}|{f'dump{q}' for q in range(8)}
 # The model computes the EPYC 7742's value of every documented-undefined arithmetic flag of the integer
 # instructions (validation/README.md, "The EPYC 7742 runs", the undefined-flag table): the `flags_observe`
 # bits of a case are compared strictly. (The generators no longer mark them, `native_flags.observed_flags`;
@@ -219,7 +226,7 @@ def differences(meta,h,m):
 
 def classify(meta,diff):
     # per-case observe fields (native_ext.os_dependent: CPUID, RDTSC, ...; '*' = every field)
-    fields=set(meta.get('observe_fields',()))|{'eflags.undefined'}
+    fields=(set(meta.get('observe_fields',()))-PINNED_FIELDS)|{'eflags.undefined'}
     if '*' in fields: return 'observations'
     diff=[d for d in diff if d['field'] not in fields]
     if not diff: return 'observations'
@@ -438,7 +445,7 @@ def _evaluate(sources,out,model,jobs,tmp):
                  not_included=0,ymm_unavailable=0,incomplete_campaigns=[],not_included_campaigns=[],
                  campaigns={},families={},
                  excluded_fields=['reserved FCW bits','undefined FSW condition codes',
-                                  'empty x87 register payloads','FIP/FDP/FOP (raw values retained)'],
+                                  'empty x87 register payloads','FIP64/FDP64 outside compare_pointers cases'],
                  model_changed_since_prepare=[],
                  determinism=dict(campaigns=0,identical=0,differing_cases=0,expected=0,unexpected=0,not_compared=[],examples=[]))
     families=collections.defaultdict(collections.Counter)

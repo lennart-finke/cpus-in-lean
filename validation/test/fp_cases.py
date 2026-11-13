@@ -227,7 +227,7 @@ def simd_cases(rng, count):
         mem=bool(rng.randrange(2));code=pfx+bytes([15,op,3 if mem else 0xc1])
         if op in (0xc2,0xc6): code+=bytes([rng.randrange(8 if op==0xc2 else 256)])
         mxcsr=(rng.choice((63,62,61,59,55,47,31,0))<<7)|(rng.randrange(4)<<13)|rng.choice((0,0x40,0x8000,0x8040))
-        kw={} if op not in (0x52,0x53) else dict(policy='observe',reason='RCP/RSQRT are approximations, not correctly rounded operations')
+        kw={}   # RCP/RSQRT (52h/53h): strict since the model computes the EPYC 7742's table (X86/Zen2Rcp.lean)
         yield record(code,xmm=xmm,mxcsr=mxcsr,mem=b.to_bytes(16,'little')),meta('sse_random',f'{op:02x}',code,**kw)
     # Alignment, invalid MXCSR bits, fences, and valid EMMS. Later ISA extensions
     # are intentionally absent: modern hardware legitimately implements them.

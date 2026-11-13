@@ -261,7 +261,7 @@ def avx_random(rng, count):
             regs_in[3] = 0x10800
         xmm, ymmh = regs256(vals)
         memb = bytes(rng.getrandbits(8) for _ in range(64))
-        kw = dict(policy='observe', reason='VRCPPS/VRSQRTPS and scalar forms: approximations') if 'Q' in fl else {}
+        kw = {}   # (VRCPPS/VRSQRTPS, 'Q': strict since the model computes the EPYC 7742's table, X86/Zen2Rcp.lean)
         yield record3(code, regs=regs_in, xmm=xmm, ymmh=ymmh, mxcsr=mxcsr_of(rng, rng.random() < 0.1), mem=memb, permissions=page2,
                       seed=rng.getrandbits(32) | 1), meta3('avx_random', '%d.%d.%02x' % (mp, pp, op), code, L=L, src=src, **kw)
 

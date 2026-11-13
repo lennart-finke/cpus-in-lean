@@ -129,6 +129,61 @@ theorem fswLoad_observed : fswLoad 0x3881 0x37E = 0xB881 ∧ fswLoad 0x3881 0x37
   { lo := 0x7FC000017FC00002, hi := 0x7FC000017FC00002 } 0x1F80).1 ==
   { lo := 0x7FC000017FC00001, hi := 0x7FC000027FC00002 }
 
+/-! ## The extended run (campaigns 069–211, `validation/README.md`, "The EPYC 7742 runs")
+
+The hardware cases are replayed by `validation/test/epyc_regression.py`
+(`fixtures/native_epyc_ext_fixes.json`); the rules that are cheap to state are checked here. -/
+
+-- 16-bit SHLD/SHRD with a count of 17..31 rotate the source by count − 16 (the 48-bit dst:src:src),
+-- CF = OF = 0 (SHLD), AF = 1; 32-bit SHRD: OF = bit 31 XOR bit 30 of the result (native `shift16_rules`)
+#guard shiftDouble true 2 0x1234 0xABCD 20 == some (0xBCDA, Flag.SF ||| Flag.AF)
+#guard shiftDouble false 2 0x1234 0xABCD 20 == some (0xDABC, Flag.SF ||| Flag.AF)
+#guard shiftDouble false 4 0x80000000 0 1 == some (0x40000000, Flag.PF ||| Flag.AF ||| Flag.OF)
+-- SHL/SHR/SAR: AF = 1; SHR by more than 1: OF = 0; RCR: OF = bit w-1 XOR bit w-2 of the result
+#guard shiftOp 5 1 0x80 3 false == some (0x10, Flag.arith, Flag.AF)
+#guard (shiftOp 3 1 0x01 2 false).map (·.2.2) == some (Flag.OF)
+-- the x87 status word loaded by FLDENV/FRSTOR/FXRSTOR/XRSTOR: ES = B = an unmasked exception flag is set,
+-- whatever the image's ES (native `x87_control_load`: image 3820h with PE unmasked loads B8A0h)
+theorem fswLoad_es : fswLoad 0x3820 0x0015 = 0xB8A0 ∧ fswLoad 0x3884 0x037F = 0x3804 := by decide
+-- FYL2XP1 outside its domain: x = +∞ gives ±∞ by the sign of y, x = −1 with y = ±0 gives ∓0
+#guard Trans.fyl2xp1 (F80.inf false) { sig := 0x8000000000000000, se := 0xC000 } 0x37F == (F80.inf true, 0)
+#guard Trans.fyl2xp1 (F80.one.withNeg true) (F80.zero false) 0x37F == (F80.zero true, 0)
+#guard (Trans.fyl2xp1 (F80.inf false) (F80.zero false) 0x37F).2 == FPF.IE
+
+/-! ### RCPPS/RSQRTPS: the EPYC 7742's tables (`X86/Zen2Rcp.lean`) -/
+
+-- RCP(1.0) = 3F7FF000h, RSQRT(1.0) = 0.99987793, RSQRT(4.0) = 0.5 · (1 + rsqrtOddTable[0]/4096)
+#guard FP.rcp 0x3F800000 == 0x3F7FF000
+#guard FP.rsqrt 0x3F800000 == 0x3F7FF800
+#guard FP.rsqrt 0x40800000 == 0x3EFFF800
+-- the special cases: denormal → ∞ (whatever DAZ), RCP of 2^126 and above → 0, RSQRT(−x) = default NaN
+#guard FP.rcp 0x00000001 == 0x7F800000 && FP.rcp 0xFE800000 == 0x80000000 && FP.rsqrt 0xBF800000 == 0xFFC00000
+-- the function is the table at every entry (the operand's fraction bits 10..0 never matter)
+#guard (List.range 4096).all fun t =>
+  FP.rcp (0x3F800000 ||| (t.toUInt64 <<< 11) ||| 0x7FF) == 0x3F000000 ||| ((Zen2Rcp.rcpTable[t]!).toUInt64 <<< 11) &&
+  FP.rsqrt (0x3F800000 ||| (t.toUInt64 <<< 11)) == 0x3F000000 ||| ((Zen2Rcp.rsqrtOddTable[t]!).toUInt64 <<< 11) &&
+  FP.rsqrt (0x40000000 ||| (t.toUInt64 <<< 11)) == 0x3F000000 ||| ((Zen2Rcp.rsqrtEvenTable[t]!).toUInt64 <<< 11)
+-- The documented bound (SDM: |relative error| ≤ 1.5·2^-12) over every operand of every entry, exactly:
+-- an entry t covers mantissas [1 + t/4096, 1 + (t+1)/4096) and the error is monotone in the operand, so the
+-- interval ends decide. RCP: |(4096 + R)(4096 + t') − 2^25| ≤ 3·2^12. RSQRT (odd exponent: x ∈ [1, 2)·4^k,
+-- even: [2, 4)·4^k): (1 − b)² ≤ y²·x ≤ (1 + b)² with b = 3·2^-13, in integers.
+#guard (List.range 4096).all fun t => [t, t + 1].all fun u =>
+  let p := (4096 + Zen2Rcp.rcpTable[t]!) * (4096 + u)
+  (if p ≥ 2^25 then p - 2^25 else 2^25 - p) ≤ 3 * 2^12
+#guard (List.range 4096).all fun t => [t, t + 1].all fun u =>
+  let a := (4096 + Zen2Rcp.rsqrtOddTable[t]!) ^ 2 * (4096 + u)
+  2^12 * (2^13 - 3) ^ 2 ≤ a && a ≤ 2^12 * (2^13 + 3) ^ 2
+#guard (List.range 4096).all fun t => [t, t + 1].all fun u =>
+  let a := (4096 + Zen2Rcp.rsqrtEvenTable[t]!) ^ 2 * (4096 + u)
+  2^11 * (2^13 - 3) ^ 2 ≤ a && a ≤ 2^11 * (2^13 + 3) ^ 2
+-- and against the former specification `FP.rcpSpec` (RNE(1/x)) at every entry's first operand: within
+-- 1.5·2^-12 of it plus the half ulp of its rounding (in units of 2^-24, the results' ulp below 1)
+#guard (List.range 4096).all fun t =>
+  let v := fun (b : UInt64) => ((b &&& 0x7FFFFF) + 0x800000).toNat * 2 ^ ((b >>> 23).toNat - 126)
+  let x : UInt64 := 0x3F800000 ||| (t.toUInt64 <<< 11)
+  let r := v (FP.rcp x); let s := v (FP.rcpSpec x)
+  (if r ≥ s then r - s else s - r) * 2^13 ≤ 3 * s + 2^13
+
 /-! ## SHA (`X86/Ext/Crypto.lean`) -/
 
 /-- The "NP" SHA instructions with a 66/F2/F3 prefix are #UD before anything else (EPYC 7742, native
