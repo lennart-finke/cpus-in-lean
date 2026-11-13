@@ -31,9 +31,19 @@ before the VEX prefix, and for unknown maps (`Dispatch.vexExec`). The VEX prefix
 0F 38 or 0F 3A escape and the rest of the instruction (ModRM, SIB, displacement, immediates) is laid
 out as in the legacy map with the same opcode (`opInfo`): e.g. VEX.0F 77 (VZEROUPPER/VZEROALL) has no
 ModRM byte like EMMS, VEX.0F 70..73, C2, C4..C6 and VEX.0F3A have an imm8, and an unassigned VEX.0F
-8x is laid out like Jcc rel32 (as QEMU decodes it). An unknown map has no ModRM byte (its opcode byte
-ends the instruction). EVEX (62 with ModRM.mod = 11b) and XOP (8F with ModRM.reg ≠ 0) are not decoded: on
-Zen 2, which has neither, they are the #UD register forms of BOUND and POP r/m.
+8x is laid out like Jcc rel32 (as QEMU decodes it; always 4 immediate bytes). An unknown map has a
+ModRM byte and no immediate. EVEX (62 with ModRM.mod = 11b) is not decoded: on Zen 2 it is the #UD
+register form of BOUND (2 bytes).
+
+## Lengths of undefined encodings (EPYC 7742)
+
+The processor determines the whole length of an encoding, and raises #GP(0) when it exceeds 15 bytes,
+before it raises #UD for an undefined opcode, so the layout of undefined opcodes is architecturally
+visible. The native encoding fuzz (`enc_fuzz`, validation/README.md "The EPYC 7742 runs") fixed these
+layouts, which differ from the defined neighbours or the SDM: XOP (8F with ModRM.reg ≠ 0, any map
+field) has 3 prefix bytes, opcode, ModRM and an imm32 in map 0Ah only; an unknown VEX map has a ModRM
+byte; 0F 0F (3DNow!) and VEX.0F 0F have ModRM and imm8; 0F 78 has its two imm8 whatever the prefix;
+0F B9 (UD1) and 0F FF (UD0) have no ModRM byte. All of these are #UD on Zen 2.
 -/
 namespace X86
 
@@ -152,12 +162,19 @@ def opInfo (op : UInt32) : UInt8 :=
             (0x74 ≤ b && b ≤ 0x76) || b == 0x79 || (0x7C ≤ b && b ≤ 0x7F) || (0xD0 ≤ b && b ≤ 0xFE) then 0x01
     else if (0x70 ≤ b && b ≤ 0x73) || b == 0xC2 || (0xC4 ≤ b && b ≤ 0xC6) then 0x11
     else if b == 0x78 then 0x91
+    -- 0F 0F (3DNow!, absent on Zen 2): the EPYC 7742 still decodes its ModRM and imm8 before the #UD
+    -- (native `enc_fuzz`: a 15-byte limit #GP(0) exactly when prefixes + 0F 0F + ModRM/SIB/disp + imm8
+    -- exceed 15 bytes, 8,381 cases)
+    else if b == 0x0F then 0x11
     else match b with
       | 0xA3 | 0xA5 | 0xAB | 0xAD | 0xAE | 0xAF => 0x01
       | 0xA4 | 0xAC | 0xBA => 0x11
       | 0xB0 | 0xB1 | 0xB2 | 0xB3 | 0xB4 | 0xB5 | 0xB6 | 0xB7 => 0x01
-      | 0xB8 | 0xB9 | 0xBB | 0xBC | 0xBD | 0xBE | 0xBF => 0x01   -- B8: F3 = POPCNT
-      | 0xC0 | 0xC1 | 0xC3 | 0xC7 | 0xFF => 0x01
+      -- B8: F3 = POPCNT. 0F B9 (UD1) and 0F FF (UD0) have no ModRM byte on the EPYC 7742: with the
+      -- prefixes and the opcode at the 15-byte limit they raise #UD, not the #GP(0) of a 16th byte
+      -- (native `enc_fuzz`, 11 + 2 cases; AMD APM vol. 3 lists UD0 as 0F FF without ModRM)
+      | 0xB8 | 0xBB | 0xBC | 0xBD | 0xBE | 0xBF => 0x01
+      | 0xC0 | 0xC1 | 0xC3 | 0xC7 => 0x01
       | _ => 0
 
 /-- `opInfo` for every opcode 0x000..0x3FF, precomputed. -/
@@ -199,6 +216,8 @@ def decodeRaw : M (Inst × UInt32) := do
   let mut vx : UInt32 := 0
   -- a ModRM byte already fetched (C4/C5 that turned out to be LES/LDS), or 0x100
   let mut pre : UInt32 := 0x100
+  -- the imm32 of an XOP map 0Ah encoding (below)
+  let mut xopImm : UInt32 := 0
   if b == 0x0F then
     let b1 ← fetch8 (eip0 + n)
     n := n + 1
@@ -225,7 +244,23 @@ def decodeRaw : M (Inst × UInt32) := do
         op := if 1 ≤ map && map ≤ 3 then map * 0x100 + ob else ob
     else
       pre := v1
-  let info := if vx != 0 && op < 0x100 then 0 else opInfoTable.get! op.toNat
+  else if b == 0x8F then
+    -- XOP (8F with ModRM.reg ≠ 0; Zen 2 implements no XOP instruction, so every one is #UD). The EPYC
+    -- 7742 decodes its length as XOP: the 8F byte, two XOP bytes, the opcode, a ModRM byte with
+    -- SIB/displacement, and an imm32 in map 0Ah (none in the other maps, map 8 included), for every
+    -- map field (also < 8) — native `enc_fuzz`: the 15-byte limit #GP(0) of 2,659 such encodings
+    -- follows exactly this layout. The XOP bytes are not interpreted; the instruction is decoded as a
+    -- VEX instruction of an unknown map (#UD in `Dispatch.vexExec`).
+    let x1 ← fetch8 (eip0 + n)
+    if (x1 >>> 3) &&& 7 != 0 then
+      let x2 ← fetch8 (eip0 + n + 1)
+      op := ← fetch8 (eip0 + n + 2)
+      n := n + 3
+      vx := 0x18000 ||| x2
+      if x1 &&& 0x1F == 0x0A then xopImm := 4
+  -- an unknown VEX map (and XOP) has a ModRM byte (with SIB/displacement) and no immediate: the
+  -- 15-byte limit #GP(0) of 4,812 such encodings in the native `enc_fuzz` (EPYC 7742)
+  let info := if vx != 0 && op < 0x100 then 0x01 else opInfoTable.get! op.toNat
   let p66 := opsz != (if d32 then 4 else 2)
   let pp : UInt8 :=
     if vx != 0 then (vx &&& 3).toUInt8
@@ -309,13 +344,17 @@ def decodeRaw : M (Inst × UInt32) := do
   if kind != 0 then
     let k : UInt32 :=
       if kind == Imm.ib then 1 else if kind == Imm.iw then 2
-      else if kind == Imm.iz then opsz.toUInt32
+      -- VEX.0F 80..8F (undefined, laid out like Jcc rel32): 4 bytes whatever a 66 prefix says (EPYC
+      -- 7742, native `enc_fuzz`: the 15-byte limit #GP(0) with 66 before the VEX prefix, 4 cases)
+      else if kind == Imm.iz then (if vx != 0 then 4 else opsz.toUInt32)
       else if kind == Imm.moffs then adsz.toUInt32
       else if kind == Imm.ptr then opsz.toUInt32
       else if kind == Imm.enter then 2
       else if kind == Imm.grp3b then (if i.reg < 2 then 1 else 0)
       else if kind == Imm.grp3v then (if i.reg < 2 then opsz.toUInt32 else 0)
-      else if kind == Imm.sse4a then (if pp == 1 || pp == 3 then 1 else 0)
+      -- legacy 0F 78: the two imm8 of EXTRQ/INSERTQ whatever the prefix (the no-prefix and F3 forms are
+      -- #UD; EPYC 7742, native `enc_fuzz`: their 15-byte limit #GP(0) counts both bytes, 3 cases)
+      else if kind == Imm.sse4a then (if vx == 0 || pp == 1 || pp == 3 then 1 else 0)
       else 0
     if k != 0 then
       let v ← rd (eip0 + n) k
@@ -329,6 +368,10 @@ def decodeRaw : M (Inst × UInt32) := do
       let v ← rd (eip0 + n) 1
       n := n + 1
       i := { i with imm2 := v }
+  if xopImm != 0 then
+    let v ← rd (eip0 + n) xopImm
+    n := n + xopImm
+    i := { i with imm := v }
   return (i, n)
 
 /-- The long-mode boundary (`X86/Ext/LongModeBase.lean`): in 64-bit mode (EFER.LMA = 1 and CS.L = 1),

@@ -101,8 +101,16 @@ def imulCore (sz : Sz) (a b : UInt32) : UInt64 × Bool :=
   let lo := p.toUInt32 &&& sz.mask
   (p, sext64 sz lo != p)
 
-def setMulFlags (sz : Sz) (ovf : Bool) (lo : UInt32) : M Unit :=
-  setFlags arith (szp sz lo ||| (if ovf then CF ||| OF else 0))
+/-- MUL/IMUL flags: CF = OF = the product does not fit its lower half. SF, ZF, AF and PF (undefined)
+are left unchanged, as the EPYC 7742 leaves them (native `int_core`, `int_directed`: all 4,526 MUL,
+IMUL, 69, 6B and 0F AF cases; was: SF/ZF/PF of the lower half, AF = 0, as QEMU). -/
+def setMulFlags (_sz : Sz) (ovf : Bool) (_lo : UInt32) : M Unit :=
+  setFlags (CF ||| OF) (if ovf then CF ||| OF else 0)
+
+/-- DIV/IDIV leave every flag undefined. A completed division sets AF and clears SF, ZF and PF, and
+keeps CF and OF, on the EPYC 7742 (native `int_core`, `int_directed`: all 1,075 completed DIV/IDIV
+cases; a #DE changes no flag); was: all flags unchanged. -/
+def divFlags : M Unit := setFlags (SF ||| ZF ||| PF ||| AF) AF
 
 def grp3 (i : Inst) : M Unit := do
   let sz := bsz i
@@ -154,6 +162,7 @@ def grp3 (i : Inst) : M Unit := do
     else
       wrReg sz 0 q
       wrReg sz 2 r
+    divFlags
   | _ => -- IDIV
     let b ← rdE i sz
     let (a, w) : Int × Nat ←
@@ -169,6 +178,7 @@ def grp3 (i : Inst) : M Unit := do
     else
       wrReg sz 0 qu
       wrReg sz 2 ru
+    divFlags
 
 def shiftGrp (i : Inst) (cnt : UInt32) : M Unit := do
   let sz := bsz i
@@ -293,8 +303,10 @@ def ioCheck (port : UInt32) (sz : Sz) : M Unit := do
     modCpu fun c => { c with esi := upd c.esi, edi := upd c.edi }
     return true
   | 1 =>
-    let a ← rdMem src si n
+    -- ES:(E)DI is read before DS:(E)SI: when both fault, the EPYC 7742 reports the ES:(E)DI operand
+    -- (native `int_core`, `int_directed`, `enc_fuzz`, `code16`: 266 cases; TCG reads in this order too)
     let b ← rdMem SegN.ES di n
+    let a ← rdMem src si n
     setFlags arith (subF sz a b 0).2
     modCpu fun c => { c with esi := upd c.esi, edi := upd c.edi }
     let zf := (← getFlags) &&& ZF != 0
@@ -347,6 +359,10 @@ def stringOp (i : Inst) (kind : UInt8) : M Unit := do
     else { c with ecx := (c.ecx &&& 0xFFFF0000) ||| ((c.ecx - 1) &&& 0xFFFF) }
   let start := (← getEip) - i.len
   let start := if (← cpu).cs.big then start else start &&& 0xFFFF
+  -- REP INS/OUTS check the I/O permission (IOPL, I/O bitmap) even when the count is 0: #GP(0) at
+  -- CPL 3 on the EPYC 7742 (native `enc_fuzz`, `code16`: 13 cases; the SDM's pseudocode tests the
+  -- count first; QEMU agrees with the processor)
+  if (kind == 5 || kind == 6) && cnt (← cpu) == 0 then ioCheck ((← cpu).edx &&& 0xFFFF) sz
   -- Single-step traps, debug breakpoints and TSO observe each REP iteration separately.
   let chunk := if (← getM).tso.isSome || (← flag TF) || (← cpu).bpOn then 1 else repChunk
   let mut k := 0
@@ -388,20 +404,31 @@ def daaDas (sub : Bool) : M Unit := do
     else (al1, if sub then cf1 else false)
   let cf2 := if sub then cf2 || cf1 else cf2
   wrReg 1 0 al2
-  setFlags arith (szp 1 al2 ||| (if af1 then AF else 0) ||| (if cf2 then CF else 0))
+  -- OF (undefined): the signed overflow of AL plus/minus the whole correction, as the EPYC 7742 sets
+  -- it (DAA: AL[7] 0 -> 1; DAS: AL[7] 1 -> 0; native `int_core`, `int_directed`: 3,925 cases)
+  let of := if sub then al &&& 0x80 != 0 && al2 &&& 0x80 == 0 else al &&& 0x80 == 0 && al2 &&& 0x80 != 0
+  setFlags arith (szp 1 al2 ||| (if af1 then AF else 0) ||| (if cf2 then CF else 0) ||| (if of then OF else 0))
 
+/-- AAA/AAS. SF, ZF, PF and OF are undefined; the EPYC 7742 takes them from the 16-bit AX ± 0106h it
+computes when adjusting (SF = bit 15, ZF of all 16 bits, PF of its low byte before AL is masked, OF its
+signed overflow) and from the unchanged AX otherwise (OF = 0) (native `int_core`, `int_directed`: all
+3,903 cases; was: unchanged). -/
 def aaaAas (sub : Bool) : M Unit := do
   let c ← cpu
   let al := c.eax &&& 0xFF
+  let ax := c.eax &&& 0xFFFF
+  let szp16 := fun (t : UInt32) => (if t &&& 0x8000 != 0 then SF else 0) ||| (if t == 0 then ZF else 0) |||
+    (szp 1 (t &&& 0xFF) &&& PF)
   if (al &&& 0xF) > 9 || c.eflags &&& AF != 0 then
     -- SDM: AAA: AX := AX + 106H;  AAS: AX := AX - 6; AH := AH - 1
-    let ax := c.eax &&& 0xFFFF
-    let ax := if sub then (ax - 6 - 0x100) &&& 0xFFFF else (ax + 0x106) &&& 0xFFFF
-    wrReg 2 0 (ax &&& 0xFF0F)
-    setFlags (AF ||| CF) (AF ||| CF)
+    let t := if sub then (ax - 0x106) &&& 0xFFFF else (ax + 0x106) &&& 0xFFFF
+    let of := if sub then (ax ^^^ 0x106) &&& (ax ^^^ t) &&& 0x8000 != 0
+              else (~~~(ax ^^^ 0x106)) &&& (ax ^^^ t) &&& 0x8000 != 0
+    wrReg 2 0 (t &&& 0xFF0F)
+    setFlags arith (AF ||| CF ||| szp16 t ||| (if of then OF else 0))
   else
     wrReg 1 0 (al &&& 0xF)
-    setFlags (AF ||| CF) 0
+    setFlags arith (szp16 ax)
 
 /-! ## Model-specific registers
 
@@ -813,13 +840,17 @@ def execOp60 (op : Nat) : Inst → M Unit :=
     let c ← cpu
     if !c.pe || c.vm86 then ud
     let src ← rdReg 2 i.reg
-    rmwE i 2 fun d => do
+    -- a read, and a write only when the RPL is adjusted: the EPYC 7742 reports a read #PF (error code
+    -- 4/5) for an unmapped operand, executes an unadjusting ARPL on a read-only page or through CS, and
+    -- raises the write #PF only when adjusting (native `int_core`, `enc_fuzz`: 123 cases; as the SDM
+    -- pseudocode, which writes DEST only when ZF = 1; was: an RMW write-back in every case)
+    rmwE i 2 (write := false) fun d => do
       if d &&& 3 < src &&& 3 then
         setFlags ZF ZF
         return some ((d &&& 0xFFFC) ||| (src &&& 3))
       else
         setFlags ZF 0
-        return some d
+        return none
   | 0x68 => fun i => push i.opsz i.imm
   | 0x6A => fun i => push i.opsz (sext 1 i.imm &&& i.opsz.mask)
   | 0x69 | 0x6B => fun i => do
@@ -941,13 +972,20 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
         if sz == 4 then setReg 5 nbp else wrReg 2 5 nbp
         push sz (← rdMem SegN.SS (if big then nbp else nbp &&& 0xFFFF) n)
       push sz frame
-    wrReg (if big then 4 else 2) 5 frame
+    -- BP/EBP by the operand size, not the stack size: a 16-bit ENTER on a 32-bit stack writes BP
+    -- and keeps EBP[31:16] (EPYC 7742, native `code16`: 29 cases; open question G10; the APM's and
+    -- the SDM's pseudocode; was: all of EBP)
+    wrReg sz 5 frame
     let sp ← getReg 4
     if big then setReg 4 (sp - i.imm) else wrReg 2 4 (sp - i.imm)
     -- ENTER checks write permission at the final stack byte even though the
     -- allocation does not store there. Earlier frame stores survive this fault.
     let finalSp ← getReg 4
     let lin ← segAddr SegN.SS (if big then finalSp else finalSp &&& 0xFFFF) 1 true
+    -- with alignment checking, that check is an operand-size access: #AC for a final stack pointer
+    -- not aligned to the operand size, before its #PF (EPYC 7742, native `int_core`, `enc_fuzz`:
+    -- 100 cases; the frame stores before it are kept)
+    acChk lin n (← isUser)
     let _ ← translate lin true (← isUser)
   | 0xC9 => fun i => do -- LEAVE
     let big := (← cpu).ss.big
@@ -981,7 +1019,9 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
     let ax ← rdReg 2 0
     let al := ((ax &&& 0xFF) + (ax >>> 8) * (i.imm &&& 0xFF)) &&& 0xFF
     wrReg 2 0 al
-    setFlags arith (szp 1 al)
+    -- CF, AF, OF (undefined): those of the 8-bit addition AL + (AH * imm8)[7:0] on the EPYC 7742
+    -- (native `int_directed`, `int_core`: all 2,767 cases; was: 0)
+    setFlags arith (addF 1 (ax &&& 0xFF) (((ax >>> 8) * (i.imm &&& 0xFF)) &&& 0xFF) 0).2
   | 0xD6 => fun _ => do wrReg 1 0 (if (← flag CF) then 0xFF else 0)
   | 0xD7 => fun i => do
     let s := if i.segOvr != 0xFF then i.segOvr else SegN.DS
@@ -997,7 +1037,12 @@ def execOpA0 (op : Nat) : Inst → M Unit :=
     let n := if a32 then n else n &&& 0xFFFF
     if a32 then setReg 1 n else wrReg 2 1 n
     let zf := c.eflags &&& ZF != 0
-    let take := n != 0 && (if i.op == 0xE0 then !zf else if i.op == 0xE1 then zf else true)
+    -- LOOPE/LOOPNE with an F2/F3 prefix: the last of them selects the condition (F3: while ZF = 1,
+    -- F2: while ZF = 0), so F3 E0 loops as LOOPE and F2 E1 as LOOPNE on the EPYC 7742 (native
+    -- `enc_fuzz`, `code16`: all 70 such cases; LOOP and JCXZ ignore the prefixes). The manuals give
+    -- the prefixes no meaning here.
+    let e := if i.op == 0xE2 then 0xE2 else if i.rep == 0xF3 then 0xE1 else if i.rep == 0xF2 then 0xE0 else i.op
+    let take := n != 0 && (if e == 0xE0 then !zf else if e == 0xE1 then zf else true)
     if take then jumpRel i (sext 1 i.imm)
   | 0xE3 => fun i => do
     let c ← cpu
@@ -1092,8 +1137,14 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x108 => fun _ => do cplIs0; Svm.icpt3 22   -- INVD (SVM: after #GP)
   | 0x109 => fun _ => do cplIs0; Svm.icpt4 9    -- WBINVD (SVM: after #GP)
   | 0x10D => fun _ => pure ()
-  | 0x120 => fun i => do setReg i.rm (← movFromCr i.reg i.rm)
-  | 0x122 => fun i => do movToCr i.reg (← getReg i.rm) i.rm
+  -- an unimplemented control register (CR1, CR5..CR7) is #UD before the CPL check: the EPYC 7742
+  -- raises #UD at CPL 3 (native `enc_fuzz`: 123 cases; the APM lists both exceptions, no order)
+  | 0x120 => fun i => do
+    if !(i.reg == 0 || i.reg == 2 || i.reg == 3 || i.reg == 4) then ud
+    setReg i.rm (← movFromCr i.reg i.rm)
+  | 0x122 => fun i => do
+    if !(i.reg == 0 || i.reg == 2 || i.reg == 3 || i.reg == 4) then ud
+    movToCr i.reg (← getReg i.rm) i.rm
   | 0x121 => fun i => do
     let n ← drIndex i.reg
     Svm.drRead i.reg i.rm   -- SVM: after every exception check (table 15-7)
@@ -1215,7 +1266,10 @@ def execOp0F (op : Nat) : Inst → M Unit :=
   | 0x1C8 | 0x1C9 | 0x1CA | 0x1CB | 0x1CC | 0x1CD | 0x1CE | 0x1CF => fun i => do
     let r := (i.op &&& 7).toUInt8
     let v ← getReg r
-    setReg r ((v <<< 24) ||| ((v &&& 0xFF00) <<< 8) ||| ((v >>> 8) &&& 0xFF00) ||| (v >>> 24))
+    -- BSWAP r16 (undefined in the manuals): the EPYC 7742 clears the low 16 bits and keeps bits 31:16
+    -- (native `enc_fuzz`, `int_directed`, `code16`: all 234 cases; was: the 32-bit swap)
+    if i.opsz == 2 then setReg r (v &&& 0xFFFF0000)
+    else setReg r ((v <<< 24) ||| ((v &&& 0xFF00) <<< 8) ||| ((v >>> 8) &&& 0xFF00) ||| (v >>> 24))
   | _ => if op ≥ 0x100 && isSimdOp (op - 0x100) then simd else execRange op
 
 /-- The core model's semantics of the one-byte and 0F maps (0x000..0x1FF), before the hooks of

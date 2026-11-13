@@ -173,13 +173,14 @@ theorem xrstor_noosxsave {m : Machine} (i : Inst) (sup : Bool) (h : m.cpu.cr4 &&
     xrstor i sup m = .error (.exc Vec.UD none 0) m := by
   simp only [xrstor, bind, EStateM.bind, pre_noosxsave sup h]
 
-/-- An XSAVE area that is not 64-byte aligned: #GP(0) once the segment check has passed. -/
-theorem area_misaligned {m : Machine} {i : Inst} {n : UInt32} {write : Bool} {lin : UInt32}
-    {m1 : Machine} (hs : (do segAddr i.seg (← fpEa i) n write : M UInt32) m = .ok lin m1)
-    (ha : lin &&& 63 ≠ 0) :
-    area i n write m = .error (.exc Vec.GP (some 0) 0) m1 := by
-  simp only [area, bind, EStateM.bind] at hs ⊢
-  split at hs <;> simp_all [gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind]
+/-- An XSAVE area whose linear address is not 64-byte aligned: #GP(0), before the segment-limit check
+(the EPYC 7742's order, native `enc_fuzz`; restated: it used to hold once the segment check had
+passed). -/
+theorem area_misaligned {m : Machine} {i : Inst} {n : UInt32} {write : Bool} {first : Option UInt32}
+    {off : UInt32} (he : fpEa i m = .ok off m) (ha : ((m.cpu.getSeg i.seg).base + off) &&& 63 ≠ 0) :
+    area i n write first m = .error (.exc Vec.GP (some 0) 0) m := by
+  simp only [area, bind, EStateM.bind, he, cpu]
+  simp [ha, gp, throw, throwThe, MonadExceptOf.throw, EStateM.throw, EStateM.bind]
 
 theorem xinuse_x87 (c : Cpu) (h : x87Init c = false) : xinuse c &&& XCR0.X87 = XCR0.X87 := by
   simp only [xinuse, h, Bool.false_eq_true, ↓reduceIte, XCR0.X87, XCR0.SSE, XCR0.YMM]

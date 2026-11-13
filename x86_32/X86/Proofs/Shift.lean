@@ -23,7 +23,7 @@ theorem shl_cf (h : c &&& 31 ≠ 0) :
     (shiftOp 4 4 a c cf).map (fun r => r.2.2 &&& Flag.CF != 0) =
       some ((a >>> (32 - (c &&& 31))) &&& 1 != 0) := by
   simp only [shiftOp, Sz.bits, Sz.mask, Sz.msb, shl64, shr64, shl32, shr32, bne]
-  simp [h, Flag.CF, Flag.OF, Flag.PF, Flag.SF, Flag.ZF, szp, Sz.msb, parity]; bv_decide
+  simp [h, Flag.CF, Flag.OF, Flag.PF, Flag.SF, Flag.ZF, Flag.AF, szp, Sz.msb, parity]; bv_decide
 
 theorem shr_res (h : c &&& 31 ≠ 0) :
     (shiftOp 5 4 a c cf).map (·.1) = some (a >>> (c &&& 31)) := by
@@ -34,7 +34,7 @@ theorem shr_cf (h : c &&& 31 ≠ 0) :
     (shiftOp 5 4 a c cf).map (fun r => r.2.2 &&& Flag.CF != 0) =
       some ((a >>> ((c &&& 31) - 1)) &&& 1 != 0) := by
   simp only [shiftOp, Sz.bits, Sz.mask, Sz.msb, shl64, shr64, shl32, shr32, bne]
-  simp [h, Flag.CF, Flag.OF, Flag.PF, Flag.SF, Flag.ZF, szp, Sz.msb, parity]; bv_decide
+  simp [h, Flag.CF, Flag.OF, Flag.PF, Flag.SF, Flag.ZF, Flag.AF, szp, Sz.msb, parity]; bv_decide
 
 theorem sar_res (h : c &&& 31 ≠ 0) :
     (shiftOp 7 4 a c cf).map (·.1) = some (UInt32.ofBitVec (a.toBitVec.sshiftRight' (c &&& 31).toBitVec)) := by

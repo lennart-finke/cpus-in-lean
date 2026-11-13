@@ -377,9 +377,15 @@ def cvtps2ph (i : Inst) : M Unit := do
   let mx ← mx64
   let rc := if i.imm &&& 4 != 0 then (mx >>> 13) &&& 3 else (i.imm &&& 3).toUInt64
   let rs := (Array.range n).map fun k => FP.singleToHalf (s.lane 32 k) rc mx
+  -- a memory destination is checked (segment, #AC, #PF) before the MXCSR flags are set and before an
+  -- unmasked exception's #XM: the EPYC 7742 raises #AC first and leaves MXCSR unchanged on a #PF
+  -- (native `enc_fuzz`, `avx_random`: 5 cases; was: MXCSR flags set, #XM)
+  let lin? ← if i.isMem then some <$> addr i (2 * n).toUInt32 true false else pure none
   sseStatus (rs.foldl (fun acc r => acc ||| r.2) 0)
   let v := V128.ofLanes 16 (rs.map (·.1))
-  if i.isMem then wrVex i (2 * n).toUInt32 (V256.ofLo v) else setX i.rm v
+  match lin? with
+  | some lin => wrLinV lin (2 * n).toUInt32 (V256.ofLo v)
+  | none => setX i.rm v
 
 /-! ## Maps -/
 

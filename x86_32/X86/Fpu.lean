@@ -66,14 +66,16 @@ and 13..15 read as 0 and bit 6 reads as 1, as the reset value 0040h has it (AMD 
 (the 287's infinity control) is kept. -/
 @[inline] def fcwLoad (v : UInt32) : UInt16 := ((v &&& 0x1F3F) ||| 0x40).toUInt16
 
-/-- The status word as loaded by FLDENV, FRSTOR, FXRSTOR and XRSTOR: ES (bit 7) and B are cleared when
-no unmasked exception flag is set (otherwise ES is loaded as stored), and B (bit 15) mirrors ES ("for
-8087 compatibility only; it reflects the contents of the ES flag", SDM vol. 1, 8.1.3.1). The EPYC
-7742 shows B set after its XRSTOR of a signal frame whose status word had ES = 1 and B = 0 (native
-`xsave_save`, `xsave_compacted`, 36 cases). -/
+/-- The status word as loaded by FLDENV, FRSTOR, FXRSTOR and XRSTOR: ES (bit 7) is set exactly when an
+unmasked exception flag is set, whatever the image's ES bit, and B (bit 15) mirrors ES ("for 8087
+compatibility only; it reflects the contents of the ES flag", SDM vol. 1, 8.1.3.1). The EPYC 7742:
+B set after its XRSTOR of a signal frame whose status word had ES = 1 and B = 0 (native `xsave_save`,
+`xsave_compacted`, 36 cases); ES and B set for an image with an unmasked flag but ES = 0 (native
+`x87_control_load`, `code16`, `enc_fuzz`: all 207 such FLDENV/FRSTOR/FXRSTOR/XRSTOR cases, 1,754
+loads without an unmasked flag clear both; was: ES loaded as stored). -/
 @[inline] def fswLoad (sw cw : UInt16) : UInt16 :=
   if sw.toUInt32 &&& ~~~cw.toUInt32 &&& 0x3F == 0 then sw &&& 0x7F7F
-  else (sw &&& 0x7FFF) ||| (if sw &&& 0x80 != 0 then 0x8000 else 0)
+  else sw ||| 0x8080
 
 /-- FERR# asserts IRQ13 (the slave PIC's input 5) while an unmasked exception is pending. -/
 def setFerr (on : Bool) : M Unit := modM fun m => { m with pic1 := m.pic1.setLine 5 on }.syncIntr
@@ -328,9 +330,17 @@ def fpStore (i : Inst) (kind : Nat) (pop : Bool) (trunc : Bool := false) : M Uni
             (some (digits + (if a.neg then 0x80 * 2^72 else 0)),
              (if inexact then FPF.PE else 0) ||| (if up then FPF.C1 else 0))
         | none => (if cw &&& FPF.IE != 0 then some indef else none, FPF.IE)
-  -- an unmasked exception stores nothing (except a wrapped-precision-only exception)
+  -- the destination is checked (segment, alignment, page) even when an unmasked exception suppresses
+  -- the store: the EPYC 7742 raises #PF, #GP or #AC for an inaccessible destination first (native
+  -- `enc_fuzz`: 39 FST/FIST/FISTTP/FBSTP cases)
+  let lin ← segAddr i.seg off size.toUInt32 true
+  acChk lin (fpAlign size) (← isUser)
+  linProbeWr lin size.toUInt32 (← isUser)
+  -- an unmasked exception stores nothing (except a wrapped-precision-only exception); an unmasked
+  -- overflow or underflow of a store reports no precision exception (EPYC 7742, native `enc_fuzz`:
+  -- FSTP m64 with UE unmasked; OE by symmetry, not observed)
   match v? with
-  | none => fpStatus fl
+  | none => fpStatus (if fpUnmasked fl c.fcw (FPF.OE ||| FPF.UE) then fl &&& ~~~FPF.PE else fl)
   | some v =>
     if fpUnmasked fl c.fcw then fpStatus fl
     else
@@ -482,7 +492,9 @@ def x87D9reg (i : Inst) : M Unit := do
   | 3 => -- FSTP1 (alias of FSTP ST(i))
     match c.stOpt 0 with
     | some a => fpResult a 0 k 1
-    | none => fpResult F80.indefinite stackUnderflow k 1
+    -- an empty ST(0): no stack underflow, ST(i) is not written, the stack is popped (EPYC 7742,
+    -- native `enc_fuzz`: 3 cases, IE masked; DD D8+i and DF D0+i/D8+i were not observed so)
+    | none => modCpu (·.fpop)
   | _ =>
     match i.modrm with
     | 0xE0 => fpUnary fun a => (a.withNeg !a.neg, 0)
@@ -550,10 +562,16 @@ def fpArithReg (r : Nat) (x y : Option F80) (dst : Nat) (pops : Nat) (extra : UI
   | 6 => fpArith .div x y dst pops extra
   | _ => fpArith .div y x dst pops extra
 
+/-- FLDCW, FLDENV and FRSTOR are control instructions (no pointer update) that nevertheless wait: a
+pending unmasked exception raises #MF before them on the EPYC 7742 (native `fenv16`, `fpu_pointers`:
+20 cases with FSW.ES = 1; the SDM lists #MF for them; was: no check). -/
+def fpWaitingControl (i : Inst) : Bool :=
+  i.isMem && ((i.op == 0xD9 && (i.reg == 4 || i.reg == 5)) || (i.op == 0xDD && i.reg == 4))
+
 /-- Execute an ESC (D8..DF) instruction. -/
 def x87 (i : Inst) : M Unit := do
   let ctl := fpControl i
-  fpCheck (!ctl)
+  fpCheck (!ctl || fpWaitingControl i)
   if !ctl then fpNote i
   let c ← cpu
   let k := i.rm.toNat
@@ -579,7 +597,9 @@ def x87 (i : Inst) : M Unit := do
       | 6 =>
         let (v, n) := fpEnvBytes i.opsz (!c.pe || c.vm86) c
         fpWrite i.seg (← fpEa i) n v
-        modCpu fun c => { c with fcw := c.fcw ||| 0x3F }
+        -- FNSTENV masks every exception, so no unmasked exception remains pending: ES and B are
+        -- cleared (EPYC 7742, native `fenv16`, `fpu_pointers`: 20 cases; was: kept)
+        modCpu fun c => { c with fcw := c.fcw ||| 0x3F, fsw := c.fsw &&& 0x7F7F }
       | 7 => fpWrite i.seg (← fpEa i) 2 c.fcw.toNat
       | _ => ud
     | 0xDB =>

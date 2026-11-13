@@ -105,21 +105,26 @@ def shiftOp (op : UInt8) (sz : Sz) (a cnt : UInt32) (cfIn : Bool) : Option (UInt
     let v' := if c == 0 then v else ((v >>> c.toUInt64) ||| (v <<< (w - c.toUInt64))) &&& wm
     let r := v'.toUInt32 &&& mask
     let cf := (v' >>> bits.toUInt64) &&& 1 != 0
-    some (r, CF ||| OF, fl cf (msb a != cfIn))
+    -- OF (defined for a count of 1, undefined otherwise): bit w-1 XOR bit w-2 of the result for every
+    -- count, as the EPYC 7742 computes it (for a count of 1 that is MSB(dst) XOR CF-in)
+    some (r, CF ||| OF, fl cf (msb r != (r &&& (sz.msb >>> 1) != 0)))
+  -- SHL/SHR/SAR: the undefined AF is 1 and the undefined OF of a count > 1 is the count-1 formula
+  -- applied to the result (SHL: MSB(r) XOR CF; SHR: bit w-1 XOR bit w-2 of r, i.e. 0; SAR: 0) on the
+  -- EPYC 7742 (native `int_core`, `int_directed`, `shift16_rules`: 31,435 cases; validation/README.md)
   | 5 => -- SHR
     let r := (a64 >>> cnt.toUInt64).toUInt32 &&& mask
     let cf := (a64 >>> (cnt.toUInt64 - 1)) &&& 1 != 0
-    some (r, arith, szp sz r ||| fl cf (msb a))
+    some (r, arith, szp sz r ||| AF ||| fl cf (msb r != (r &&& (sz.msb >>> 1) != 0)))
   | 7 => -- SAR
     let s : UInt64 := if msb a then a64 ||| (0xFFFFFFFFFFFFFFFF <<< bits.toUInt64) else a64
     let r := (s >>> cnt.toUInt64).toUInt32 &&& mask
     let cf := (s >>> (cnt.toUInt64 - 1)) &&& 1 != 0
-    some (r, arith, szp sz r ||| fl cf false)
+    some (r, arith, szp sz r ||| AF ||| fl cf false)
   | _ => -- SHL / SAL
     let v := a64 <<< cnt.toUInt64
     let r := v.toUInt32 &&& mask
     let cf := (v >>> bits.toUInt64) &&& 1 != 0
-    some (r, arith, szp sz r ||| fl cf (msb r != cf))
+    some (r, arith, szp sz r ||| AF ||| fl cf (msb r != cf))
 
 /-- SHLD (`left = true`) / SHRD. Returns `none` for a zero count. -/
 def shiftDouble (left : Bool) (sz : Sz) (dst src cnt : UInt32) : Option (UInt32 × UInt32) :=
@@ -129,32 +134,40 @@ def shiftDouble (left : Bool) (sz : Sz) (dst src cnt : UInt32) : Option (UInt32 
   let mask := sz.mask
   let d := dst.toUInt64
   let s := src.toUInt64
-  -- 16-bit operands with a count of 17..31 (architecturally undefined): the EPYC 7742 shifts the
-  -- 32-bit concatenation dst:src (SHLD) / src:dst (SHRD) with zeros coming in and sets AF (native
-  -- campaign family open_questions, `shld_shrd_r16_count`: 5 cases, counts 17, 20, 31, all with
-  -- src = 0, so only partly determined); QEMU and Intel's documentation use dst:src:dst
-  if sz == 2 && cnt > 16 then
-    let v : UInt64 := if left then (d <<< 16) ||| s else (s <<< 16) ||| d
-    let r := (if left then (v <<< cnt) >>> 16 else v >>> cnt).toUInt32 &&& mask
-    let cf := if left then (v >>> (32 - cnt)) &&& 1 != 0 else (v >>> (cnt - 1)) &&& 1 != 0
-    let of := (r ^^^ dst) &&& sz.msb != 0
-    some (r, szp sz r ||| AF ||| (if cf then CF else 0) ||| (if of then OF else 0))
-  else
-  -- concatenate into 64 bits (a 16-bit operand with count 16: dst:src:dst)
-  let (r, cf) :=
-    if left then
-      let v : UInt64 := if sz == 4 then (d <<< 32) ||| s else (d <<< 48) ||| (s <<< 32) ||| (d <<< 16)
-      let r := if sz == 4 then (v <<< cnt) >>> 32 else (v <<< cnt) >>> 48
-      let cf := if sz == 4 then (v >>> (64 - cnt)) &&& 1 != 0 else (v >>> (64 - cnt)) &&& 1 != 0
-      (r.toUInt32 &&& mask, cf)
-    else
-      let v : UInt64 := if sz == 4 then (s <<< 32) ||| d else (d <<< 32) ||| (s <<< 16) ||| d
-      let r := v >>> cnt
-      let cf := (v >>> (cnt - 1)) &&& 1 != 0
-      (r.toUInt32 &&& mask, cf)
+  -- The EPYC 7742 (native `shift16_rules`, every count 0..31 with nonzero operands, register and memory
+  -- forms, and `int_core`: 6,766 cases, all six flags): AF = 1; 32-bit: SHLD OF = MSB(r) XOR CF, SHRD
+  -- OF = bit 31 XOR bit 30 of r (for a count of 1 the documented sign change; undefined otherwise).
+  -- 16-bit operands shift the 48-bit dst:src:src (SHLD) / src:src:dst (SHRD), so a count of 17..31
+  -- (architecturally undefined) rotates the source by count - 16 and the destination does not
+  -- contribute; CF is the last bit shifted out for counts up to 16 and 0 above; SHLD OF = MSB(r) XOR CF
+  -- below 16, CF at 16 and 0 above; SHRD OF = bit 15 XOR bit 14 of r. (Was: the 32-bit dst:src, inferred
+  -- from 5 cases with src = 0; QEMU and Intel's documentation use dst:src:dst.)
   let _ := bits
-  let of := (r ^^^ dst) &&& sz.msb != 0
-  some (r, szp sz r ||| (if cf then CF else 0) ||| (if of then OF else 0))
+  let msb := fun (x : UInt32) => x &&& sz.msb != 0
+  let nxt := fun (x : UInt32) => x &&& (sz.msb >>> 1) != 0
+  let (r, cf, of) : UInt32 × Bool × Bool :=
+    if sz == 4 then
+      if left then
+        let v : UInt64 := (d <<< 32) ||| s
+        let r := ((v <<< cnt) >>> 32).toUInt32
+        let cf := (v >>> (64 - cnt)) &&& 1 != 0
+        (r, cf, msb r != cf)
+      else
+        let v : UInt64 := (s <<< 32) ||| d
+        let r := (v >>> cnt).toUInt32
+        (r, (v >>> (cnt - 1)) &&& 1 != 0, msb r != nxt r)
+    else
+      if left then
+        let v : UInt64 := (d <<< 32) ||| (s <<< 16) ||| s
+        let r := ((v >>> (32 - cnt)).toUInt32) &&& mask
+        let cf := cnt ≤ 16 && (v >>> (48 - cnt)) &&& 1 != 0
+        (r, cf, if cnt < 16 then msb r != cf else if cnt == 16 then cf else false)
+      else
+        let v : UInt64 := (s <<< 32) ||| (s <<< 16) ||| d
+        let r := (v >>> cnt).toUInt32 &&& mask
+        let cf := cnt ≤ 16 && (v >>> (cnt - 1)) &&& 1 != 0
+        (r, cf, msb r != nxt r)
+  some (r, szp sz r ||| AF ||| (if cf then CF else 0) ||| (if of then OF else 0))
 
 /-- Unsigned division of the double-width dividend `a` by `d` at size `sz`
 (quotient, remainder); `none` signals #DE (division by zero or quotient overflow). -/

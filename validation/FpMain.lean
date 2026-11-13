@@ -198,8 +198,12 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) (compat : Bool := fa
   let mut fields := [r.vec, r.err, c.eip.toUInt64, c.eflags.toUInt64]
   fields := fields ++ (List.range 8).map (fun k => (c.getReg k.toUInt8).toUInt64)
   for k in [0:8] do fields := fields ++ [c.xmm[k]!.lo, c.xmm[k]!.hi]
+  -- The oracle reads FOP/FIP/FDP from the signal frame, which Linux fills with XSAVE: the EPYC 7742's
+  -- XSAVE writes them only when FSW.ES = 1 (zeros otherwise; native `fpu_pointers`, `X86/Simd.lean`
+  -- `fxsaveEnv`), so they are reported as that XSAVE stores them.
+  let ptr := fun (v : UInt64) => if c.fsw &&& 0x80 != 0 then v else 0
   fields := fields ++ [c.mxcsr.toUInt64, c.fcw.toUInt64, c.fsw.toUInt64,
-    (~~~c.fempty).toUInt64, c.fop.toUInt64, c.fip.toUInt64, c.fdp.toUInt64]
+    (~~~c.fempty).toUInt64, ptr c.fop.toUInt64, ptr c.fip.toUInt64, ptr c.fdp.toUInt64]
   for k in [0:8] do fields := fields ++ [(c.st k).sig, (c.st k).se.toUInt64]
   let mut hash : UInt32 := 2166136261
   let mut pages : List UInt64 := []
@@ -218,7 +222,7 @@ def fpVector (v : ByteArray) (o : Nat) (v2 : Bool := false) (compat : Bool := fa
     let dump := (List.range 8).map fun q =>
       if flags &&& 2 == 0 then (0 : UInt64)
       else (List.range 8).foldl (fun acc b => acc ||| ((m.mem.get! (0x10000 + off + 8*q + b)).toUInt64 <<< (8*b).toUInt64)) 0
-    pure ([c.fip.toUInt64, c.fdp.toUInt64, r.cr2] ++ dump)
+    pure ([ptr c.fip.toUInt64, ptr c.fdp.toUInt64, r.cr2] ++ dump)
   return fields ++ [hash.toUInt64] ++ pages ++ ymm ++ ext
 
 /-- `--probe`: what the case selection of the generators needs (test/native_filter.py). -/
