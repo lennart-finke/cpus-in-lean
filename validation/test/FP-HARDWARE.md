@@ -182,7 +182,14 @@ observations in 43 campaigns, YMM state in every row, 0 errors; the oracle's map
 runs; `oracle layout` equals the ELF; the canary record is stopped by the write protection (guarded) and by
 the integrity digest (unguarded); the 21 probe records are reported by the guest as by the host build; the
 second passes of the 16 format-3 campaigns are identical except 1 case in its observe fields; the
-16-bit code segment ran (CS 07h rows). FUZZ_TCG 1,826 TCG/model differences, all in classes where TCG is known to
+16-bit code segment ran (CS 07h rows). Per family (cases / TCG differences): enc_fuzz 4,363/375, int_core
+1,416/77, int_directed 737/94, shift16_rules 412/147, code16 298/28, fma_random 203/52, f16c_exhaustive 8/3,
+avx_unmasked 666/273, sse_unmasked_ext 559/242, avx_random 288/10, x87_control_load 22/22, fxsave_align 10/3,
+xsave_padding 10/10, x87_trans_special 16/5, fenv16 12/12, fpu_pointers 46/46. In addition the **complete**
+`enc_fuzz` and `code16` campaigns ran under TCG (`prepare --only 069-111,178-179`, 217,313 cases, 81 left out
+where QEMU itself aborts, every campaign twice): the oracle survived every case (0 errors, mapping audit in all
+48 runs), and the second passes differed only in observe fields (138 cases). The smoke bundle has 1,826
+TCG/model differences, all in classes where TCG is known to
 differ (no #XM for unmasked SIMD exceptions, no #AC, the 16-byte limit #UD, RMW error codes, AAM bases,
 3DNow!/VEX.NP forms TCG executes, x87 stack faults, the SHLD/SHRD 16-bit rule), except one model issue:
 ENTER with a 16-bit operand size and a 32-bit stack writes all of EBP (README, open question G10).
