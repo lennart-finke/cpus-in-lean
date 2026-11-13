@@ -158,6 +158,11 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option
     Outcome := Id.run do
   if i.op == 0x107 && !i.vex && qo.vec == 13 && qo.err == 0 && lo.vec == 6 then
     return { qo with vec := 6, err := lo.err }
+  -- (EPYC 7742 hardware, native campaign enc_fuzz, 123 cases) MOV to/from CR1, CR5..CR7 is #UD before
+  -- the CPL check; TCG raises #GP(0) at CPL 3 first (the APM lists both, no order)
+  if !i.vex && (i.op == 0x120 || i.op == 0x122) && !(i.reg == 0 || i.reg == 2 || i.reg == 3 || i.reg == 4) &&
+     qo.vec == 13 && qo.err == 0 && lo.vec == 6 then
+    return { qo with vec := 6, err := lo.err }
   -- (Crypto) SHA1NEXTE..SHA256MSG2 (0F 38 C8..CD) and SHA1RNDS4 (0F 3A CC) are "NP" instructions:
   -- with a 66, F2 or F3 prefix they are #UD (SDM vol. 2, 3.1.1.1 and the instruction pages; Bochs
   -- decodes them only without prefix). TCG decodes them with any prefix and runs them.
@@ -200,11 +205,18 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option
   -- are replaced.
   -- The model's memory must be the initial memory (nothing stored), or the rule would hide a model
   -- that stores some elements before faulting.
-  if i.vex && qo.vec == 14 && lo.vec == 14 && qo.cr2 == lo.cr2 && qo.err == lo.err && lo.hash == initHash &&
+  -- (EPYC 7742 hardware, native campaign enc_fuzz) MASKMOVQ/MASKMOVDQU/VMASKMOVDQU report the first byte
+  -- of the region on the faulting page (DS:(E)DI when the region starts there), TCG the selected byte:
+  -- with the same #PF on both sides only CR2 is replaced, and only by a lower address on the same page.
+  let maskF7 := i.map == 1 && i.byte == 0xF7 && (i.pp == 1 || (!i.vex && i.pp == 0))
+  let qcr2 := if maskF7 && qo.vec == 14 && lo.vec == 14 && qo.err == lo.err && lo.cr2 ≤ qo.cr2 &&
+      lo.cr2 &&& 0xFFFFF000 == qo.cr2 &&& 0xFFFFF000 then lo.cr2 else qo.cr2
+  if qcr2 != qo.cr2 && !i.vex then return { qo with cr2 := qcr2 }
+  if i.vex && qo.vec == 14 && lo.vec == 14 && qcr2 == lo.cr2 && qo.err == lo.err && lo.hash == initHash &&
      ((i.map == 2 && i.pp == 1 && (i.byte == 0x2E || i.byte == 0x2F || i.byte == 0x8E)) ||
       (i.map == 1 && i.pp == 1 && i.byte == 0xF7)) then
     let ad (q l : UInt32) : UInt32 := if (q ^^^ l) &&& ~~~0x60 == 0 then l else q
-    return { qo with hash := lo.hash, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
+    return { qo with cr2 := qcr2, hash := lo.hash, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
   -- (Avx) VCVTDQ2PD ymm1, xmm2/m128 and VCVTPS2PD ymm1, xmm2/m128 read 16 bytes (SDM vol. 2 and AMD
   -- APM vol. 4 instruction pages: "mem128"); TCG loads 32, so an operand ending right before a
   -- not-present page faults at that page's first byte. Only that #PF is replaced, and only when the
@@ -240,6 +252,24 @@ def qemuAsHardware (i : Inst) (qo lo : Outcome) (initHash : UInt32) (ea : Option
   if tcgWide && qo.vec == lo.vec then
     let a (q l : UInt32) : UInt32 := if q ^^^ l == 0x20 then l else q
     if qo.vec != 14 then return { qo with pte8 := a qo.pte8 lo.pte8, pte9 := a qo.pte9 lo.pte9 }
+  -- (EPYC 7742 hardware, native campaigns fxsave_align, enc_fuzz) FXSAVE/FXRSTOR and the XSAVE family
+  -- check the last byte of their area first (XRSTOR/XRSTORS: the header at offset 512), so a #PF reports
+  -- that byte (also for an area wholly inside a not-present page); TCG checks the area in address order.
+  -- When both raise #PF, QEMU's CR2, error code (the page checked first may be another) and the accessed
+  -- and dirty bits of the two PTEs (which pages were translated before the fault) are replaced by the
+  -- model's; everything else is compared.
+  let saveArea := !i.vex && i.isMem && i.pp == 0 &&
+    ((i.op == 0x1AE && (i.reg == 0 || i.reg == 1 || i.reg == 4 || i.reg == 5 || i.reg == 6)) ||
+     (i.op == 0x1C7 && (i.reg == 3 || i.reg == 4 || i.reg == 5)))
+  if saveArea && qo.vec == 14 && lo.vec == 14 then
+    let ad (q l : UInt32) : UInt32 := if (q ^^^ l) &&& ~~~0x60 == 0 then l else q
+    return { qo with cr2 := lo.cr2, err := lo.err, pte8 := ad qo.pte8 lo.pte8, pte9 := ad qo.pte9 lo.pte9 }
+  -- (EPYC 7742 hardware, native campaigns enc_fuzz, avx_random) VCVTPS2PH to memory checks the
+  -- destination before it sets the MXCSR flags: a #PF there leaves MXCSR unchanged; TCG sets the flags
+  -- first. Only MXCSR (the first word of `vecs`) is replaced, when both raise the same #PF.
+  if i.vex && i.map == 3 && i.byte == 0x1D && i.isMem && qo.vec == 14 && lo.vec == 14 &&
+     qo.vecs.length > 0 && lo.vecs.length > 0 then
+    return { qo with vecs := lo.vecs[0]! :: qo.vecs.drop 1 }
   if qo.vec != 14 || lo.vec != 14 then return qo
   let mut q := qo
   if rmwDest i then
@@ -449,14 +479,9 @@ def main (args : List String) : IO UInt32 := do
     | .ok (lo, inst, initHash, ea) =>
       -- the instruction completed (INT3 terminator or single-step trap): undefined flags masked
       let mask := if qo.vec == 3 || qo.vec == 1 then fm else 0xFFFEFFFF
-      -- CMPS reads two memory operands in an unspecified order: CR2 is not compared
-      let cmps := desc.endsWith "a6" || desc.endsWith "a7"
-      let flt := qo.vec != 3 && qo.vec != 1
-      let norm := fun (x : Outcome) => { x with eflags := x.eflags &&& mask,
-                                                cr2 := if cmps then 0 else x.cr2,
-                                                err := if cmps && x.vec == 14 then 0 else x.err,
-                                                pte8 := if cmps && flt then x.pte8 &&& ~~~0x20 else x.pte8,
-                                                pte9 := if cmps && flt then x.pte9 &&& ~~~0x20 else x.pte9 }
+      -- (CMPS: compared in full since the EPYC 7742 run established its order, ES:(E)DI first, which TCG
+      -- shares; its CR2 used to be masked)
+      let norm := fun (x : Outcome) => { x with eflags := x.eflags &&& mask }
       checked := checked + 1
       let qh := match inst with | some i => qemuAsHardware i qo lo initHash ea | none => qo
       if norm lo != norm qo && norm lo == norm qh then

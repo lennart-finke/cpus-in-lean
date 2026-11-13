@@ -319,7 +319,8 @@ void test_simd_model(void) {
 	__asm__ volatile("stmxcsr XMX" ::: "memory");
 	px("rsqrtps", XW); kprintf(" mxcsr=%x\n", XMX);
 
-	/* FXSAVE records FIP/FCS/FOP and FDP/FDS of the last x87 instruction */
+	/* FXSAVE stores FIP/FCS/FOP and FDP/FDS only with FSW.ES = 1, zeros otherwise (EPYC 7742, native
+	   fpu_pointers): no exception is pending here (t_xsave.c `xsavem.ptrs` has the ES = 1 case) */
 	__asm__ volatile("fninit\n .globl simdm_fld_at\n simdm_fld_at: flds XM" ::: "memory");
 	extern char simdm_fld_at[];
 	R(XF, 0x0F, 0xAE, 0x06);

@@ -40,7 +40,10 @@ if [ -n "$CMDLINE" ]; then
     exit 1
   fi
 fi
-tr -d '\r' < "$OUT/qemu.txt" | sed '/^MODEL-ONLY$/,$d' | python3 "$DIR/deviate.py" "$DIR/qemu-deviations.txt" "$X87T" > "$OUT/qemu.clean.txt"
+# RCPPS/RSQRTPS (legacy and VEX): per-line rules from the EPYC 7742's table function (test/zen2_rcp.py), every run
+tr -d '\r' < "$OUT/qemu.txt" > "$OUT/qemu.rcp.txt"
+python3 "$ROOT/test/zen2_rcp.py" qemu "$OUT/qemu.rcp.txt" > "$OUT/rcp-deviations.txt"
+tr -d '\r' < "$OUT/qemu.txt" | sed '/^MODEL-ONLY$/,$d' | python3 "$DIR/deviate.py" "$DIR/qemu-deviations.txt" "$X87T" "$OUT/rcp-deviations.txt" > "$OUT/qemu.clean.txt"
 sed '/^MODEL-ONLY$/,$d' "$OUT/model.txt" > "$OUT/model.qemu-part.txt"
 sed -n '/^MODEL-ONLY$/,$p' "$OUT/model.txt" > "$OUT/model.only.txt"
 fail=0

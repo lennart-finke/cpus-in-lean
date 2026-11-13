@@ -645,6 +645,9 @@ static void sse_case(u32 n, const struct sop *o) {
 	kprintf(" mx=%x a=", MXIN); phex(XIN, 4); kputs(" b="); phex(mem ? MEMOP : XIN + 4, 4);
 	if (fl & MMXD) { kputs(" m="); phex(MMIN, 4); }
 	if (o->vex) { kputs(" v="); phex(XIN + 8, 4); }
+	/* (VRCPPS/VRSQRTPS ymm) the upper half of the source, for the per-line rules of zen2_rcp.py: the
+	   EPYC 7742's table results replace TCG's correctly rounded ones (test/sys/run.sh) */
+	if (o->vex && o->map == 1 && (o->op == 0x52 || o->op == 0x53)) { kputs(" ys="); phex(mem ? MEMOP + 4 : YIN + 4, 4); }
 	kprintf(" g=%x -> ", GIN); phex(XOUT, 4); kputc(' '); phex(XOUT + 4, 4);
 	if (fl & ALLX) for (int k = 2; k < 8; k++) { kputc(' '); phex(XOUT + 4 * k, 4); }
 	if (fl & YMMD) { kputs(" y="); for (int k = 0; k < 8; k++) { kputc(' '); phex(YOUT + 4 * k, 4); } }

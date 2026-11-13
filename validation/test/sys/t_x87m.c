@@ -99,9 +99,11 @@ void test_x87_model(void) {
 	__asm__ volatile("fninit\n .byte 0xd8,0xc1\n fnstsw XSW\n fstpt XR\n fninit" ::: "memory");
 	kprintf("x87m.underflow: sw=%x", XSW); p80("st0", &XR); kputc('\n');
 
-	/* unmasked stack fault: nothing is written; ES pending; the next waiting instruction faults */
+	/* unmasked stack fault: nothing is written; ES pending; the next waiting instruction faults. FNSTENV
+	   masks every exception, which clears ES (EPYC 7742, native fenv16), so FLDENV of its image makes the
+	   exception pending again */
 	XCW = 0x37E;
-	__asm__ volatile("fninit\n fldcw XCW\n .byte 0xd8,0xc1\n fnstsw XSW\n fnstenv XENV" ::: "memory");
+	__asm__ volatile("fninit\n fldcw XCW\n .byte 0xd8,0xc1\n fnstsw XSW\n fnstenv XENV\n fldenv XENV" ::: "memory");
 	kprintf("x87m.unmasked.stack: sw=%x tw=%x\n", XSW, XENV[2] & 0xFFFF);
 	int a = TRY(__asm__ volatile("fwait" ::: "memory"));
 	int b = TRY(__asm__ volatile("fld1" ::: "memory"));

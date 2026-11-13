@@ -226,7 +226,9 @@ def gen_one():
         reg = random.choice([0, 1, 2, 3, 4, 6, 7])
         if reg in (0, 1, 2, 3, 7): force_mem = True
     if two and op in (0x20, 0x22):
-        reg = random.choice([0, 2, 3, 4]); force_reg = True
+        # CR1, CR5..CR7: #UD before the CPL check's #GP on the EPYC 7742 (native enc_fuzz; TCG raises #GP,
+        # TestMain.qemuAsHardware)
+        reg = random.choice([0, 2, 3, 4, 0, 2, 3, 4, 1, 5, 6, 7]); force_reg = True
     if two and op in (0x21, 0x23):
         reg = random.choice([0, 1, 2, 3, 6, 7]); force_reg = True
     if two and op == 0xC7:

@@ -143,9 +143,11 @@ def probe (lin n : UInt32) (write : Bool) : M Unit := do
 /-- Linear address of the XSAVE area of the memory operand, `n` bytes of which are accessed:
 64-byte alignment (#GP(0), before the segment-limit check, as the EPYC 7742 orders them: native
 `enc_fuzz`, an XSAVEOPT through SS wrapping past 4 GiB), segment checks, page translation (see the module
-documentation). `first`: an offset in the area whose page is translated before the others: the EPYC 7742
-reports the last byte of the area for a save (native `fxsave_align`: XSAVE, XSAVEOPT) and the first
-header byte (offset 512) for XRSTOR (8 cases) when the area crosses into an unmapped page. -/
+documentation). `first`: an offset in the area that is translated before the others, as the EPYC 7742
+checks its areas: the last byte for a save (FXSAVE, XSAVE, XSAVEOPT; native `fxsave_align`: an area
+crossing into an unmapped page faults at its last byte, and `enc_fuzz`: an FXSAVE area wholly inside an
+unmapped page too) and the first header byte (offset 512) for XRSTOR (native `fxsave_align`, 8 cases).
+Areas whose both pages fault were not observed: the model reports that byte's fault. -/
 def area (i : Inst) (n : UInt32) (write : Bool) (first : Option UInt32 := none) : M UInt32 := do
   let off ← fpEa i
   if (((← cpu).getSeg i.seg).base + off) &&& 63 != 0 then gp 0

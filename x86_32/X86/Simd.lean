@@ -614,14 +614,17 @@ def maskMov (data mask : V128) (n : Nat) (i : Inst) : M Unit := do
   -- 7742, native `alignment_check`: MASKMOVDQU at offset 8 stores without #AC, offsets 1..6 and 12
   -- raise it; the APM's table 8-7 does not single out the masked stores)
   acChk (((← cpu).getSeg s).base + di) 8 (← isUser)
-  -- with a byte selected, the whole n-byte region is checked first: a page fault reports DS:(E)DI
-  -- whichever bytes are selected (EPYC 7742, native `enc_fuzz`: MASKMOVQ and MASKMOVDQU on an unmapped
-  -- page, 19 cases; was: the first selected byte)
-  if !sel.isEmpty then linProbeWr (((← cpu).getSeg s).base + di) n.toUInt32 (← isUser)
+  -- a #PF of a selected byte reports the first byte of the region on that byte's page, not the selected
+  -- byte (EPYC 7742, native `enc_fuzz`: MASKMOVQ and MASKMOVDQU with the region on an unmapped page, 19
+  -- cases: CR2 = DS:(E)DI whichever bytes are selected; was: the selected byte); a page holding only
+  -- unselected bytes is not checked (not observed: as before)
+  let lin0 := ((← cpu).getSeg s).base + di
   let mut lins : Array UInt32 := #[]
   for k in sel do
     let lin ← segAddr s (di + k.toUInt32) 1 true
-    linProbeWr lin 1 (← isUser)
+    tryCatch (linProbeWr lin 1 (← isUser)) fun f => match f with
+      | .exc v e a => throw (.exc v e (if v == Vec.PF then max lin0 (a &&& 0xFFFFF000) else a))
+      | f => throw f
     lins := lins.push lin
   let u ← isUser
   for (k, lin) in sel.zip lins.toList do linWr lin 1 (data.lane 8 k).toUInt32 u
@@ -716,8 +719,9 @@ def fxsave (i : Inst) : M Unit := do
   -- table 8-7 does not list FXSAVE). FXRSTOR likewise (native `fxsave_align`, 12 cases).
   let lin ← vecAddr i 512 false true (acFirst := 4)
   let u ← isUser
-  -- the last byte of the area is checked first: a page fault in an area crossing into an unmapped page
-  -- reports its last byte (EPYC 7742, native `fxsave_align`: FXSAVE and FXRSTOR, 16 cases)
+  -- the last byte of the area is checked first: a #PF reports it when the area crosses into an unmapped
+  -- page and when the whole area lies in one (EPYC 7742, native `fxsave_align`: FXSAVE and FXRSTOR, 16
+  -- cases; `enc_fuzz`: 1 FXSAVE); then the area in address order
   linProbeWr (lin + 511) 1 u
   linProbeWr lin 512 u
   fxsaveEnv c lin

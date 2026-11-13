@@ -85,7 +85,9 @@ static void gen_state(u32 seed, int init, int qemu) {
 	if (qemu) {
 		memset(setup + 6, 0, 2);
 		memset(setup + 8, 0, 16);
-		*(u16 *)(setup + 2) &= 0x7F7F;
+		/* no pending exception: ES = B = 0 and no unmasked flag (the EPYC 7742 recomputes ES and B from
+		   the flags and masks on every load, native x87_control_load; TCG loads them as stored) */
+		*(u16 *)(setup + 2) &= 0x7F7F & ~(~fcw & 0x3F);
 	}
 	put64(setup + 512, ~init & 7);
 	xsetbv(0, 7);
@@ -224,11 +226,13 @@ void test_xsave(void) {
 			if ((k >> 20) % 3 == 0) memset(area + 552, 0x5A, 24);  /* bytes 40..63: ignored by the standard form */
 			*(u32 *)(area + 24) = rnd() & 0xFFFF;      /* MXCSR (reserved bits: model-only) */
 			memset(area + 6, 0, 18);                   /* FOP, FIP, FCS, FDP, FDS = 0 */
-			*(u16 *)(area + 2) &= 0x7F7F;              /* FSW.ES = B = 0 */
 			/* FCW: the EPYC 7742 reads the reserved bits 7, 13..15 as 0 and bit 6 as 1 whatever is
 			   loaded (native campaign family alignment_check); TCG keeps them. The model-only xsavem
 			   table loads reserved FCW bits. */
 			*(u16 *)area = (*(u16 *)area & 0x1F3F) | 0x40;
+			/* FSW.ES = B = 0 and no unmasked flag: the 7742 recomputes ES and B on the load (native
+			   x87_control_load), TCG loads them as stored */
+			*(u16 *)(area + 2) &= 0x7F7F & ~(~*(u16 *)area & 0x3F);
 		}
 		else memset(area + 6, 0, 2);   /* FOP: TCG does not write it (the model writes the state's FOP, 0 here) */
 		xsetbv(0, xcr0);
@@ -442,10 +446,9 @@ void test_xsave_model(void) {
 	kprintf("xsavem.modopt: next=%x after_nop=%x other_area=%x/%x xsaves_next=%x xsavec_next=%x xsaves_after_xrstor=%x\n",
 		fa, fb, fc, fd, fe, ff, fg);
 
-	/* error pointers (CPUID Fn8000_0008_EBX[2] XSaveErPtr, AMD APM vol. 3, appendix E: "FXSAVE, XSAVE,
-	   FXSAVEOPT, XSAVEC, XSAVES always save error pointers and FXRSTOR, XRSTOR, XRSTORS always restore
-	   error pointers"): XRSTOR loads FOP/FIP/FCS/FDP/FDS, XSAVE and FXSAVE write them, with FSW.ES = 0
-	   and 1 alike */
+	/* error pointers: XRSTOR loads FOP/FIP/FCS/FDP/FDS; XSAVE and FXSAVE write them only with FSW.ES = 1
+	   (zeros with ES = 0), as the EPYC 7742 does (native fpu_pointers) although it reports CPUID
+	   Fn8000_0008_EBX[2] XSaveErPtr (AMD APM vol. 3, appendix E: "... always save error pointers") */
 	for (int es = 0; es < 2; es++) {
 		memset(setup, 0, 1024);
 		*(u16 *)(setup + 0) = es ? 0x37E : 0x37F;       /* IM unmasked */
