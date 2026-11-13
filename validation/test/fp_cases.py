@@ -348,3 +348,11 @@ FAMILIES += native_openq.FAMILIES
 # EPYC 7742 hardware triage: the RCPPS/RSQRTPS table sweep (test/native_rcp.py, open question S5).
 import native_rcp  # noqa: E402
 FAMILIES += [(native_rcp.rcp_sweep, ())]
+
+# The extended bundle (bundle format v3, FP-HARDWARE.md "The extended bundle"): new campaigns after all of
+# the above, each family in campaigns of its own (`campaign_group`), so the earlier campaigns keep their
+# numbering and inputs. The families select their cases with the model (native_ext.select: the oracle's
+# validation, observability, accesses inside the low 256 KiB), so their inputs depend on the model binary
+# (cached per model hash); they draw from their own random generators, not from `rng`.
+import native_fuzz, native_int, native_depth, native_x87rules  # noqa: E402
+FAMILIES += native_fuzz.FAMILIES + native_int.FAMILIES + native_depth.FAMILIES + native_x87rules.FAMILIES

@@ -15,6 +15,13 @@ every campaign (a campaign with refused records is reported and not executed), a
 the oracle must refuse (unsupported PTE, length, EFLAGS, MXCSR, memory kind, FTW, system calls, a far
 jump, a DS load), whose report must equal the host build's (check_records.c with the guest's vendor and
 MisalignSse bit), and whose execution must stop at the first record with that reason, before running it.
+
+The extended bundle's safety measures are exercised too: /proc is mounted, so the oracle's audit of the
+low address space runs (its PASS line is required); `oracle layout` must report the image extent of the
+ELF; a record that stores into the middle of the oracle's image must stop the oracle with the integrity
+canary's error when the image is not write-protected (`oracle i386-unguarded`, a test mode) and with
+the write-protection error otherwise; and every format-3 campaign (the extended families) runs twice,
+the two outputs compared row by row (differences outside a case's observe fields are errors).
 """
 import argparse
 import collections
@@ -27,7 +34,7 @@ import time
 from pathlib import Path
 
 from native_fp import (rows, normalize, differences, write_json, KINDS, parse_cpuid, has_feature, FEATURES,
-                       parse_check, build_checker)
+                       parse_check, build_checker, cols_of, repeat_differences)
 spec=importlib.util.spec_from_file_location('native_smoke',Path(__file__).parent/'native/smoke.py')
 smoke=importlib.util.module_from_spec(spec);spec.loader.exec_module(smoke)
 member=smoke.member
@@ -65,6 +72,9 @@ def refused_records(record):
     r=bytearray(record);struct.pack_into('<Q',r,144,0x3202);out.append(r)          # IOPL 3
     r=bytearray(record);struct.pack_into('<I',r,432,0x41f80);out.append(r)         # MXCSR bit 18
     out+=[code('cd80'),code('0f05'),code('0f34'),code('8ed8'),code('2eea00000000 2300'.replace(' ',''))]
+    # the extended rules: software interrupts, near transfers out of the INT3 filling (relative, into the
+    # instruction itself, RET through the arena), bytes after the instruction without TF
+    out+=[code('cd03'),code('cc'),code('f1'),code('ce'),code('ebfe'),code('e900100000'),code('c3'),code('9090')]
     r=bytearray(record);struct.pack_into('<I',r,436,5);out.append(r)               # memory kind 5
     r=bytearray(record);struct.pack_into('<H',r,444,0x100);out.append(r)           # FTW > 0xff
     r=bytearray(record);struct.pack_into('<I',r,432,0x21f80);out.append(r)         # MXCSR.MM
@@ -76,12 +86,14 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('bundle',type=Path);p.add_argument('output',type=Path)
     p.add_argument('--timeout',type=int,default=600)
+    p.add_argument('--kernel',type=Path,help='guest kernel (default ../x86_64/guest/bzImage; the code16 family needs '
+                   'one with CONFIG_MODIFY_LDT_SYSCALL and CONFIG_X86_16BIT)')
     args=p.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     repo=Path(__file__).resolve().parents[2]
     manifest=json.loads((args.bundle/'manifest.json').read_text())
-    campaigns=manifest['campaigns']
+    campaigns=[c for c in manifest['campaigns'] if c.get('included',True)]   # (--only bundles: the included ones)
     archive=member('fp-oracle',(args.bundle/'oracle').read_bytes(),0o100755)
-    script='#!/bin/sh\nexport PATH=/bin:/sbin\n/fp-oracle cpuid\n'
+    script='#!/bin/sh\nexport PATH=/bin:/sbin\nmkdir -p /proc\nmount -t proc proc /proc\n/fp-oracle cpuid\n'
     size=KINDS[manifest['kind']]['size'];kept={};left_out=[]
     for c in campaigns:
         metadata=json.loads((args.bundle/(c['name']+'.json')).read_text())
@@ -90,16 +102,32 @@ def main():
         left_out+=[dict(m,campaign=c['name']) for i,m in enumerate(metadata) if tcg_aborts(m)]
         kept[c['name']]=keep
         c['count']=len(keep)
+        size=cols_of(manifest['kind'],c)['size']
         body=b''.join(data[8+i*size:8+(i+1)*size] for i in keep)
-        archive+=member(c['name']+'.bin',(len(keep)|1<<63).to_bytes(8,'little')+body)
+        archive+=member(c['name']+'.bin',(len(keep)|1<<63|(1<<62 if c.get('format')==3 else 0)).to_bytes(8,'little')+body)
         # run only if TCG reports the campaign's features: decided on the host after the CPUID dump would
         # need a second boot, so every campaign runs and the host discards (and reports) the gated ones.
         # The oracle's dry run first: a campaign with refused records is not executed (reported).
         script+=(f'echo FP_CHECK {c["name"]}\n/fp-oracle check < /{c["name"]}.bin\nst=$?\n'
                  f'echo FP_CHECK_STATUS {c["name"]} $st\n'
                  f'echo FP_BEGIN {c["name"]}\n[ $st = 0 ] && /fp-oracle i386 < /{c["name"]}.bin\necho FP_STATUS {c["name"]} $?\n')
+        if c.get('format')==3:   # the determinism check: a second pass
+            script+=(f'echo FP_BEGIN2 {c["name"]}\n[ $st = 0 ] && /fp-oracle i386 < /{c["name"]}.bin 2>/dev/null\n'
+                     f'echo FP_STATUS2 {c["name"]} $?\n')
     # probe records: variants of the first case of the bundle (the calibration NOP)
-    probe,bad_count=refused_records((args.bundle/(campaigns[0]['name']+'.bin')).read_bytes()[8:8+size])
+    size=KINDS[manifest['kind']]['size']
+    first=bytearray((args.bundle/(campaigns[0]['name']+'.bin')).read_bytes()[8:8+size])
+    struct.pack_into('<Q',first,144,0x202)   # (a fuzz record has TF set; the probes assume TF clear)
+    first=bytes(first)
+    probe,bad_count=refused_records(first)
+    # the canary: MOV [middle of the oracle image], EAX (A3 moffs32); the image extent from the ELF header
+    memsz=struct.unpack_from('<Q',(args.bundle/'oracle').read_bytes(),64+40)[0]
+    target=(0x100000+memsz//2)&~3
+    canary=bytearray(first);canary[0]=5;canary[1:16]=(b'\xa3'+struct.pack('<I',target)).ljust(15,b'\xcc')
+    archive+=member('canary.bin',(1|1<<63).to_bytes(8,'little')+bytes(canary))
+    script+=('echo FP_LAYOUT\n/fp-oracle layout\n'
+             'echo FP_CANARY_UNGUARDED\n/fp-oracle i386-unguarded < /canary.bin 2>&1\necho FP_CANARY_UNGUARDED_STATUS $?\n'
+             'echo FP_CANARY_GUARDED\n/fp-oracle i386 < /canary.bin 2>&1\necho FP_CANARY_GUARDED_STATUS $?\n')
     archive+=member('bad.bin',(bad_count|1<<63).to_bytes(8,"little")+probe)
     script+=('echo FP_BAD_CHECK\n/fp-oracle check < /bad.bin\necho FP_BAD_CHECK_STATUS $?\n'
              'echo FP_BAD_RUN\n/fp-oracle i386 < /bad.bin 2>&1\necho FP_BAD_RUN_STATUS $?\n')
@@ -108,7 +136,7 @@ def main():
     archive+=member('TRAILER!!!',b'',0)
     base=(repo/'x86_64/guest/initramfs.cpio').read_bytes()
     initrd=args.output/'initramfs.cpio';initrd.write_bytes(base+b'\0'*(-len(base)%512)+archive)
-    cmd=['qemu-system-x86_64','-accel','tcg','-cpu','max','-m','512','-kernel',str(repo/'x86_64/guest/bzImage'),
+    cmd=['qemu-system-x86_64','-accel','tcg','-cpu','max','-m','512','-kernel',str(args.kernel or repo/'x86_64/guest/bzImage'),
          '-initrd',str(initrd),'-append','console=ttyS0 nokaslr noapic nolapic loglevel=1','-display','none',
          '-serial','stdio','-monitor','none','-no-reboot']
     log_path=args.output/'guest.log';started=time.monotonic()
@@ -148,6 +176,22 @@ def main():
     at=lines.index('FP_BAD_RUN');end=next(i for i in range(at,len(lines)) if lines[i].startswith('FP_BAD_RUN_STATUS'))
     if lines[end]!='FP_BAD_RUN_STATUS 1' or 'ERROR: unsupported data permission (value/negative errno: 0000000000000045 )' not in lines[at:end]:
         errors.append('oracle i386 did not stop at the refused first record: '+' | '.join(lines[at:end+1]))
+    # the sandbox: mapping audit, image extent, integrity canary, write protection
+    safety={}
+    safety['audit']=sum(1 for l in lines if l.startswith('PASS: below 4 GiB only the arena'))
+    if not safety['audit'] or any('WARNING: /proc/self/maps' in l for l in lines):
+        errors.append('the oracle did not audit its mappings (/proc/self/maps)')
+    at=lines.index('FP_LAYOUT')
+    safety['layout']=lines[at+1]
+    if lines[at+1].split()!=['IMAGE',f'{0x100000:016x}',f'{0x100000+memsz:016x}']:
+        errors.append(f'oracle layout {lines[at+1]!r}, ELF image ends at {0x100000+memsz:#x}')
+    for mode,want in (('UNGUARDED','ERROR: the oracle image changed while the instruction ran (integrity canary)'),
+                      ('GUARDED','ERROR: the instruction accessed the oracle image (write-protected while it runs)')):
+        at=lines.index(f'FP_CANARY_{mode}');end=next(i for i in range(at,len(lines)) if lines[i].startswith(f'FP_CANARY_{mode}_STATUS'))
+        safety['canary_'+mode.lower()]=[l for l in lines[at+1:end+1] if l.startswith(('ERROR','FP_CANARY'))]
+        if lines[end]!=f'FP_CANARY_{mode}_STATUS 1' or not any(l.startswith(want) for l in lines[at:end]):
+            errors.append(f'canary test ({mode.lower()}): '+' | '.join(lines[at:end+1]))
+    repeat=dict(campaigns=0,identical=0,expected=0,unexpected=0,examples=[])
     rejected={}
     for c in campaigns:
         name=c['name'];missing=[f for f in c.get('requires',[]) if f not in features]
@@ -172,6 +216,12 @@ def main():
             continue
         if check_status!='0':errors.append(f'{name}: oracle check status {check_status}')
         if status!=[f'FP_STATUS {name} 0']:
+            begin=lines.index(f'FP_BEGIN {name}')
+            if any(l.startswith('ERROR: modify_ldt') for l in lines[begin:begin+40]):
+                # a kernel without modify_ldt (CONFIG_MODIFY_LDT_SYSCALL/X86_16BIT, e.g. the tinyconfig guest):
+                # the 16-bit code segment family cannot run; --kernel with such a kernel runs it
+                skipped[name]=dict(count=c['count'],missing=['modify_ldt in the guest kernel'],executed_anyway='modify_ldt refused')
+                continue
             errors.append(f'{name}: oracle status {status}');continue
         begin=lines.index(f'FP_BEGIN {name}');status_at=lines.index(f'FP_STATUS {name} 0')
         header=f'BEGIN {c["count"]:016x}'
@@ -180,24 +230,40 @@ def main():
         start=lines.index(header,begin)
         end=lines.index('END',start)
         path=args.output/(name+'.out');path.write_text('\n'.join(lines[start:end+1])+'\n')
+        cols=cols_of(manifest['kind'],c)
         try:
             native=list(rows(path,c['count'],cols['native']))
         except ValueError as e:
             errors.append(f'{name}: {e}');continue
         full=json.loads((args.bundle/(name+'.json')).read_text())
         allmodel=list(rows(args.bundle/(name+'.model'),len(full),cols['model']))
-        metadata=[full[i] for i in kept[name]];model=[allmodel[i] for i in kept[name]]
+        # the rows of the cases run, renumbered as the guest's subset (tcg_aborts left some out)
+        metadata=[full[i] for i in kept[name]];model=[[k]+allmodel[i][1:] for k,i in enumerate(kept[name])]
+        if c.get('format')==3:
+            # the second pass: identical rows, except a case's observe fields
+            b2=lines.index(f'FP_BEGIN2 {name}');s2=lines.index(header,b2);e2=lines.index('END',s2)
+            path2=args.output/(name+'.rep2.out');path2.write_text('\n'.join(lines[s2:e2+1])+'\n')
+            if f'FP_STATUS2 {name} 0' not in lines: errors.append(f'{name}: second pass failed')
+            repeat['campaigns']+=1
+            d=repeat_differences(path,path2,c['count'],cols['native'],(),())
+            repeat['identical']+=not d
+            for i,fields in d:
+                of=set(metadata[i].get('observe_fields',()))
+                ok='*' in of or set(fields)<=of
+                repeat['expected' if ok else 'unexpected']+=1
+                if not ok and len(repeat['examples'])<10: repeat['examples'].append(dict(campaign=name,index=i,fields=fields[:5]))
         for meta,h,m in zip(metadata,native,model):
             cases[meta['family']]+=1;total+=1
-            if len(h)==100 and h[99]==1:ymm+=1
+            if len(h)>=100 and h[99]==1:ymm+=1
             try:
-                diff=differences(meta,normalize(h),m)
+                diff=differences(meta,normalize(h,0x07 if meta.get('code16') else 0x23),m)
             except ValueError as e:
                 errors.append(f'{name}: {meta["family"]} {meta["instruction"]} {meta["code"]}: {e} (signal {h[1]}, trap {h[55]})');continue
             if diff:
                 bad.append(dict(meta,campaign=name,differences=diff));per_family[meta['family']]+=1
     write_json(args.output/'tcg-differences.json',bad)
-    summary=dict(cases=total,ymm_captured=ymm,features=features,skipped=skipped,errors=errors,
+    if repeat['unexpected']: errors.append(f"second passes differ outside the observe fields: {repeat['examples']}")
+    summary=dict(cases=total,ymm_captured=ymm,features=features,skipped=skipped,errors=errors,safety=safety,repeat=repeat,
                  rejected_by_oracle_check=rejected,refused_records_checked=bad_count,
                  left_out_tcg_aborts=left_out,
                  families={f:dict(cases=cases[f],differences=per_family[f]) for f in sorted(cases)},
@@ -218,6 +284,10 @@ def main():
     print(f'oracle check: {len(campaigns)} campaigns checked on the guest; the {bad_count} probe records '
           f'reported as by the host build ({len(expected)} refused, vendor {"AMD" if amd else "not AMD"}); '
           f'execution stops at a refused record')
+    print(f'sandbox: mapping audit passed in {safety["audit"]} oracle runs; {safety["layout"]}; canary: '
+          f'{safety["canary_unguarded"][0]}; write protection: {safety["canary_guarded"][0]}')
+    print(f'second passes of {repeat["campaigns"]} format-3 campaigns: {repeat["identical"]} identical; '
+          f'{repeat["expected"]} cases differ only in observe fields, {repeat["unexpected"]} otherwise')
     print(f'{total} complete TCG observations in {len(campaigns)-len(skipped)-len(rejected)} campaigns ({ymm} with YMM state); '
           f'{len(bad)} differences retained; {len(errors)} errors. NOT hardware validation.')
     if errors:raise RuntimeError('; '.join(errors))
