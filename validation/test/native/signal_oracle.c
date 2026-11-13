@@ -428,7 +428,7 @@ static void setup_ldt(void) {
  if(observed_signal!=5 || observed.trapno!=1 || observed.rip!=0x101 || observed.cs!=0x07)
   fail("16-bit code segment calibration",observed.rip);
  input=saved;ldt_ready=1;
- text(2,"PASS: 16-bit code segment (LDT) calibration\n");
+ /* (no PASS line: this runs between the rows of the output, which a merged log would interleave) */
 }
 static u64 hexdigit(char ch) {return ch>='0'&&ch<='9'?(u64)(ch-'0'):ch>='a'&&ch<='f'?(u64)(ch-'a'+10):99;}
 /* The process's mappings below 4 GiB must be exactly the arena, the code page and the image: a stray
