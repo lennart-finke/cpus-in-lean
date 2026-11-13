@@ -10,6 +10,183 @@ mode, and the open hardware questions (`validation/README.md`, "Open questions f
 older native IA-32 runner captures integer state; the older focused SSE campaign targets the
 **x86-64 model**.
 
+## The extended bundle (`ia32-epyc-ext`): one complete run against the final model
+
+`ia32-epyc-ext` is the **whole** current bundle (seed 20261112, `--count 10000`): the 69 campaigns of the
+earlier bundles (000–068: the 189,216 cases of both EPYC runs and `sse_rcp_sweep`, inputs bit-identical
+to the earlier bundles, so `recompare --merge` with the earlier results stays possible) followed by
+143 new campaigns (069–211) of the extended families, 863,642 cases in all. One run gives a
+complete, self-consistent record against the final model.
+
+| family | cases | what it adds | CPUID |
+|---|---|---|---|
+| (earlier) | 201,616 | campaigns 000–068 unchanged: the 189,216 cases of both EPYC runs and `sse_rcp_sweep` | as before |
+| `enc_fuzz` | 210,930 | 069–111: encoding fuzz (`native_fuzz.py`): systematic every (map, mandatory prefix, opcode, ModRM.mod memory/register, ModRM.reg) of the one-byte, 0F, 0F 38, 0F 3A maps (65,536 slots) and every (VEX map 1..3, pp, L, W, opcode, mod, vvvv 1111b/other) (49,152 slots), 110,308 of the 114,688 slots selected; plus random prefix sequences (up to 14, repeated, any order), 2-/3-byte VEX with all fields, EVEX, XOP, 3DNow!, 16-bit addressing, encodings padded to 14..17 bytes. Every case single-steps (TF = 1) | none |
+| `int_core` | 272,041 | 112–166: gen.py's random integer generator moved to the arena, defined flags per vector, undefined ones as observations, a quarter with read-only/unmapped pages | none |
+| `int_directed` | 36,001 | 167–174: BCD (all AL), shifts/rotates (counts 0..33, 63, 255 at 8/16/32 bits), MUL/DIV with #DE, LOCK on every one-byte and 0F opcode, CMPXCHG/8B/XADD/XCHG, strings (REP 0..5, DF, page crossings), stack at page boundaries, every Jcc/SETcc/CMOVcc × 16 flag patterns, LOOP/JCXZ, LEA with all 32-bit ModRM/SIB and 16-bit forms, BT*/BSF/BSR, BOUND, RMW on read-only/unmapped/crossing pages, ARPL/VERR/VERW/LAR/LSL/SGDT/SIDT/SLDT/STR/SMSW (observe) | none |
+| `shift16_rules` | 13,312 | 175–177: 16-bit SHLD/SHRD with every count 0..31 and nonzero operands, r16/m16, imm8/CL (G8); 8/16-bit shifts and rotates with every count 0..31 | none |
+| `code16` | 6,383 | 178–179: a 16-bit code segment (LDT, `modify_ldt`): 147 directed forms × 16 and random encodings with TF | none (`modify_ldt`) |
+| `fma_random` | 20,000 | 180–183: all FMA3 forms, operand classes (denormals, cancellation, near overflow/underflow, NaNs with distinct payloads in every position), every rounding mode, DAZ/FTZ, 1/6 unmasked | fma avx |
+| `f16c_exhaustive` | 12,288 | 184–186: VCVTPH2PS of all 65,536 halves (8 per instruction), memory forms with random MXCSR, VCVTPS2PH in every imm8/MXCSR rounding mode to registers and memory, unmasked | f16c avx |
+| `avx_unmasked` | 33,200 | 187–193: 32 AVX/AVX2/FMA FP forms × the six exceptions, one lane raising it (and a second kind in another lane), unmasked; VCVTPS2PH to memory | avx avx2 fma f16c |
+| `sse_unmasked_ext` | 18,000 | 194–197: ADDSUBPS/PD, HADD/HSUB, ROUNDPS/PD/SS/SD, DPPS/DPPD likewise (CR4.OSXMMEXCPT = 0 cannot be observed natively: Linux sets it) | sse3 sse41 |
+| `avx_random` | 30,375 | 198–204: every AVX/AVX2 form of gen_avx/gen_avx2 with random operands, memory at page boundaries with read-only/unmapped second pages, gathers faulting midway | avx avx2 fma f16c |
+| `x87_control_load` | 2,304 | 205: FLDCW, FLDENV/FRSTOR (32/16-bit), FXRSTOR, XRSTOR with all reserved-bit classes of FCW (compared in full), FNSTCW/FNSTENV/FXSAVE stores of such a FCW (dumps) | xsave |
+| `fxsave_align` | 280 | 206: FXSAVE/FXRSTOR/XSAVE/XSAVEOPT/XRSTOR, AC = 0/1, offsets mod 4/16/64, also crossing into an unmapped page | xsave xsaveopt |
+| `xsave_padding` | 200 | 207: exact 64-byte dumps of FXSAVE/XSAVE/XSAVEOPT images (slot padding, reserved bytes, MXCSR_MASK, header, AVX area) over two arena fills | xsave xsaveopt |
+| `x87_trans_special` | 6,400 | 208–209: FYL2XP1/FYL2X/FPATAN/F2XM1/FSCALE/FXTRACT/FPREM/FPREM1 × 20 special operands in both positions, masked/unmasked | none |
+| `fenv16` | 128 | 210: 16-bit FNSTENV/FNSAVE/FLDENV/FRSTOR (and 32-bit) with dumps, TOP, ES = 0/1, nonzero input pointers | none |
+| `fpu_pointers` | 184 | 211: nonzero input FIP/FDP/FOP, ES = 0/1, under non-x87, x87 non-control (with and without memory operands, unmasked exceptions), control and image-store instructions (dumps): F5, X6 | xsave |
+
+### How to run it, what to return, how to compare
+
+The paste script (`ia32-epyc-ext-paste.sh`, 77 MB) is copied to the machine and run as a file (it is too large to
+paste into a terminal); the `.tar.gz` (57 MB) is the same bundle:
+
+```sh
+# on the EPYC (Python 3, x86-64 Linux; no root, KVM or compiler); about 4 GB of free disk
+tar -xzf ia32-epyc-ext.tar.gz
+python3 ia32-epyc-ext/native_fp.py run ia32-epyc-ext     # or: bash ia32-epyc-ext-paste.sh
+# send back the results archive it names at the end: ia32-epyc-ext/results.tar.gz
+```
+
+The bundle's defaults are `--repeat 2 --pin auto` (below); `--repeat 1` halves the time. Expected time on
+the 7742: about 10–20 minutes (1.73 million case executions at the first run's ~5,000 per second, plus the dry runs and the comparison of the passes). The bundle carries **no model results** (they would double its size): the target does
+not compare; at home, after unpacking the returned archive to `test/out/epyc-ext-returned/`:
+
+```sh
+python3 test/native_fp.py recompare test/out/ia32-epyc-ext --result test/out/epyc-ext-returned/results
+python3 test/native_fp.py summary test/out/epyc-ext-returned/results-recompare-<model hash>
+```
+
+`recompare` runs the current model on the stored inputs; the manifest keeps the sha256 of every
+campaign's model output at prepare time (`model_output_sha256`), and the comparison lists the campaigns
+whose model results changed since (`model_changed_since_prepare`), so a comparison with the prepare-time
+model is `recompare --model <that x86fp>` with an empty list. (`compare`, which needs stored model
+results, refuses such a bundle with that advice.)
+
+### Format 3
+
+The new campaigns use format 3 inside an `ia32-fp-v2` bundle (manifest entry `format: 3`, count header
+bits 63 and 62): each 776-byte v2 record is followed by a 128-byte extension (`native_ext.record3`;
+`FpMain.lean` and `signal_oracle.c` document it): flags (bit 0: install the x87 FOP/FIP/FDP given here in
+the signal frame; bit 1: report 64 arena bytes at a given offset), the FIP/FDP/FOP inputs in the 64-bit
+layout of the frame, the dump offset, up to eight dword patches of the arena (value, offset, repeat count),
+and the mode (0: the 32-bit code segment; 1: the 16-bit code segment of `code16`). Native rows add the
+64-bit FIP and FDP and the eight dump quadwords (110 columns), model rows FIP, FDP, CR2 of a #PF and the
+dump (82); the comparison then also checks CR2 of every #PF and the dump. Per-case metadata decides what
+is not strict: `flags_observe` (documented-undefined flags: compared, reported as the field
+`eflags.undefined`, an observation), `observe_fields` (fields whose value depends on the OS, the machine
+or time; `*` all), `compare_pointers` (FOP/FIP/FDP, otherwise excluded as before), `fcw_full` (the control
+word's reserved bits). The earlier campaigns stay format 2, bit for bit.
+
+### Safety: what can go wrong in a real user's process, and what prevents it
+
+The extended families execute encodings nobody chose (the fuzz) and integer instructions with arbitrary
+operands natively. The threats and the measures:
+
+1. **Leaving the sandbox through the kernel.** The oracle's own validation (`native/record_check.h`,
+   run before every case, by `oracle check` before every campaign and by `prepare` on every record) refuses
+   INT 80h, SYSCALL, SYSENTER outside AMD, far JMP/CALL/RET, IRET, loads of DS/ES/FS/GS, and now every
+   software interrupt (INT n, INT3, INTO, ICEBP: they enter the kernel's IDT, and the model has none), and
+   MOV/POP SS with EFLAGS.TF (the held single-step trap would be taken on the kernel's INT3 entry, the
+   CVE-2018-8897 pattern: Linux survives it but logs a warning). Privileged instructions (HLT, CLI, MOV
+   CRn, IN/OUT, LGDT, WBINVD, ...) are ordinary #GP/#UD faults; SGDT/SIDT/SMSW/SLDT/STR are emulated by
+   Linux under UMIP (dummy values, a rate-limited log line), observe-only.
+2. **Running more than the case's instruction.** A record longer than its instruction would run the rest
+   as further, unvalidated instructions. The validator decodes the instruction with the model's layout
+   (`rc_decode`, checked against the model's decoded length and the Python `native_ext.layout` on 3,000
+   random encodings by the unit tests) and refuses trailing bytes unless EFLAGS.TF = 1. **Every
+   `enc_fuzz` case runs with TF = 1**: whatever length the processor decodes, it stops after one
+   instruction (#DB, SIGTRAP), and a REP instruction after one iteration. `x86fp` reports the single-step
+   trap as vector 1 (`stepInstr`'s rule) and continues REP instructions without TF to completion, as the
+   processor does (both changes leave the 201,616 earlier cases' model results unchanged).
+3. **Control transfers out of the code page.** A near JMP/CALL/Jcc/LOOP/JCXZ/RET or an indirect JMP/CALL
+   whose target is not the INT3 filling of the code page is refused: the target is computed from the
+   instruction, the GPRs or the arena (whose content follows from the record's seed and patches); a target
+   in the oracle's image would execute its 64-bit code as 32-bit code (its `syscall` bytes included), a
+   target inside the instruction would loop. An operand certain to fault (an unmapped arena page, below
+   the arena) is accepted.
+4. **Stray memory accesses.** Below 4 GiB the oracle process has only the 8 KiB arena (0x10000), the code
+   page (0x20000, read/execute) and its own image (0x100000, one RWX ELF segment); its stacks, the alternate
+   signal stack, the vDSO and vvar are above 4 GiB, out of reach of 32-bit addresses (checked at startup:
+   the oracle audits `/proc/self/maps` and stops if anything else is mapped below 4 GiB or a stack is below
+   4 GiB). The model now has exactly that address space (`FpMain.lean`): only the arena pages (with the
+   record's permissions) and the read-only code page (0xCC outside the instruction, as natively) are mapped,
+   so a model access anywhere else is a #PF with its CR2 (the same result as the processor's, unless the
+   address is the oracle image). A case is included only if, in the model, every access is inside the low
+   256 KiB (#PF CR2 < 0x40000; `native_ext.select` for the selected families, `model_problems` for every
+   format-3 campaign). Since the processor may decode a fuzzed encoding differently from the model (that
+   is what is being tested), the **inputs** are bounded too: in `enc_fuzz` every GPR is an arena address
+   or below 0x100 (ECX ≤ 63), so base + 8 × index < 0xA2000; no four bytes of the instruction and its 0xCC
+   filling form a dword in [0x50000, 0x1200000) (any displacement or immediate a decoding could use stays
+   below the image); every XMM/YMM dword lies in [−0x4000, 0x4000) (gather indices). FS and GS now hold
+   the flat data selector 0x2B in the oracle (as DS and ES; the freestanding oracle has no TLS), so a
+   segment override addresses what the model's flat FS/GS address (checked by a calibration case).
+5. **Silent corruption of the oracle.** While the instruction runs, the oracle's image is read/execute
+   only (the signal handler re-enables writes as its first action and protects the image just before it
+   returns into the instruction): a stray store faults, and the oracle stops with *the instruction accessed
+   the oracle image*. In addition an **integrity canary**: a digest of the whole image (text, data,
+   bss) is taken just before the instruction and checked just after it; a change stops the oracle with
+   *the oracle image changed while the instruction ran*. A stray read of the image cannot change anything
+   and shows as a difference (the model faults there). Both stops are failed cases: the runner records
+   them and restarts the oracle after them. The smoke run proves both: a record storing into the middle of
+   the image is stopped by the write protection, and, with the protection off (`oracle i386-unguarded`, a
+   test mode), by the canary.
+6. **State leaking between cases.** Each case is entered and left through rt_sigreturn with the complete
+   register, x87, SSE and AVX state from the frame; MXCSR, FCW and the x87 stack are restored for the
+   runner from the saved recovery frame; FXRSTOR/XRSTOR/FLDENV/LDMXCSR of random memory change only the
+   case's state. Segment loads are refused (DS/ES/FS/GS) or restored by sigreturn (SS, UC_STRICT_RESTORE_SS);
+   in `code16` the runner sets DS/ES around the case itself.
+7. **Hangs.** With TF one instruction runs; REP counts are small (ECX ≤ 63 in the fuzz, ≤ 5 directed,
+   gen.py's 0..8), and every string instruction leaves the 8 KiB arena (and faults) after at most 8,192
+   iterations; MWAITX waits at most until the next interrupt or for EBX TSC ticks (EBX < 0x12000 in the
+   fuzz); jumps into the instruction itself are refused. A hang would still be only a 120 s timeout of one
+   case.
+
+### Determinism: `run --repeat 2 --pin auto`
+
+Every campaign runs twice, each pass pinned (`os.sched_setaffinity`) to its own logical CPU, chosen from
+two different physical cores (`/proc/cpuinfo` physical id and core id; without them two different CPUs; on
+one CPU that one twice); `hardware.json` records the CPUs (`repeat`) and per campaign and pass the CPU,
+the output hash, whether the outputs are identical and every differing case with its fields. The first
+pass is compared with the model, the second only with the first (byte-identical second outputs are not
+kept). A difference is expected only in a case's observe fields (RDTSC, RDTSCP, RDPID, RDRAND, CPUID's
+APIC IDs, ...; EFLAGS.RF and a stale CR2 are ignored); any other counts as a failure of the comparison.
+
+### What the selection left out (the blind spots)
+
+The model-in-the-loop selection (`native_ext.select`; counts in the manifest, `selection`) refused, of
+224,687 `enc_fuzz` candidates, 13,757 (6.1%): 5,310 segment loads (LES/LDS memory forms of C4/C5, MOV/POP to
+DS/ES/FS/GS, LFS/LGS), 1,568 near transfers whose target is not the INT3 filling (indirect via random memory,
+relative targets inside the instruction), 1,319 software interrupts and 1 INT 80h, 745 far transfers/IRET,
+147 SYSCALL, 155 MOV/POP SS with trailing bytes or TF, and 4,512 whose model access lies outside the low
+256 KiB (random disp32 between 0x40000 and the forbidden window). Of `int_core`'s 279,319 candidates 7,278
+(segment loads 7,176, POP/MOV SS with TF 97, trailing bytes 5); of `int_directed` 195; of `code16` 385.
+So the native fuzz does **not** cover: segment-register loads of DS/ES/FS/GS (and SS only as 'observe'),
+far transfers and IRET, software interrupts, SYSCALL/INT 80h, near transfers to anywhere but the code page's
+INT3 filling, MOV/POP SS under TF, and memory operands outside the arena (they appear only as #PF cases
+below 256 KiB). Of the remaining fuzz cases 73.4% are #UD, 17.4% execute (#DB), 5.1% #GP (the length limit
+among them), 3.3% #PF, 0.6% #AC, 0.2% #XM; of `int_core` 77.5% execute, 7.0% #GP, 6.9% #PF, 6.0% #UD,
+2.4% #AC. Instructions whose result depends on the OS, the machine or time get observe fields
+(`native_ext.os_dependent`): CPUID (EAX..EDX), RDTSC/RDTSCP/RDPRU, RDRAND/RDSEED/RDPID, RDPMC, the SVM
+instructions (EFER.SVME follows KVM), SGDT/SIDT/SMSW/SLDT/STR/VERR/VERW/LAR/LSL and SS loads (every field).
+
+### Smoke run (QEMU/TCG, not hardware evidence)
+
+`fp_smoke.py` on the `--smoke` bundle of the same commit (11,724 cases: 2 per family and instruction, a
+hash-chosen share of the large families) with a guest kernel that has `modify_ldt` (`--kernel`: the
+tinyconfig guest of `../x86_64/guest/` plus `CONFIG_MODIFY_LDT_SYSCALL=y`, `CONFIG_X86_16BIT=y`; with the
+plain guest the `code16` campaign stops at `modify_ldt` and is reported as skipped): 11,674 complete
+observations in 43 campaigns, YMM state in every row, 0 errors; the oracle's mapping audit passed in all 52
+runs; `oracle layout` equals the ELF; the canary record is stopped by the write protection (guarded) and by
+the integrity digest (unguarded); the 21 probe records are reported by the guest as by the host build; the
+second passes of the 16 format-3 campaigns are identical except 1 case in its observe fields; the
+16-bit code segment ran (CS 07h rows). FUZZ_TCG 1,826 TCG/model differences, all in classes where TCG is known to
+differ (no #XM for unmasked SIMD exceptions, no #AC, the 16-byte limit #UD, RMW error codes, AAM bases,
+3DNow!/VEX.NP forms TCG executes, x87 stack faults, the SHLD/SHRD 16-bit rule), except one model issue:
+ENTER with a 16-bit operand size and a 32-bit stack writes all of EBP (README, open question G10).
+
 ## The first EPYC 7742 run, and the resume bundle
 
 The first run of the full bundle (`ia32-epyc-linux`, seed 20261112, `--count 10000`: 189,240 cases in

@@ -91,7 +91,7 @@ def main():
     args=p.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     repo=Path(__file__).resolve().parents[2]
     manifest=json.loads((args.bundle/'manifest.json').read_text())
-    campaigns=manifest['campaigns']
+    campaigns=[c for c in manifest['campaigns'] if c.get('included',True)]   # (--only bundles: the included ones)
     archive=member('fp-oracle',(args.bundle/'oracle').read_bytes(),0o100755)
     script='#!/bin/sh\nexport PATH=/bin:/sbin\nmkdir -p /proc\nmount -t proc proc /proc\n/fp-oracle cpuid\n'
     size=KINDS[manifest['kind']]['size'];kept={};left_out=[]
@@ -116,7 +116,9 @@ def main():
                      f'echo FP_STATUS2 {c["name"]} $?\n')
     # probe records: variants of the first case of the bundle (the calibration NOP)
     size=KINDS[manifest['kind']]['size']
-    first=(args.bundle/(campaigns[0]['name']+'.bin')).read_bytes()[8:8+size]
+    first=bytearray((args.bundle/(campaigns[0]['name']+'.bin')).read_bytes()[8:8+size])
+    struct.pack_into('<Q',first,144,0x202)   # (a fuzz record has TF set; the probes assume TF clear)
+    first=bytes(first)
     probe,bad_count=refused_records(first)
     # the canary: MOV [middle of the oracle image], EAX (A3 moffs32); the image extent from the ELF header
     memsz=struct.unpack_from('<Q',(args.bundle/'oracle').read_bytes(),64+40)[0]
