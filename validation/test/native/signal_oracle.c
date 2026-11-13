@@ -65,6 +65,10 @@ extern char oracle_image_end[];
 #define IMAGE_START 0x100000ull
 static u64 image_len,image_hash;
 static int guard=1;
+/* v3 mode 1: a 16-bit code segment (LDT entry 0, selector 07h, base 20000h, limit FFFh) and a 16-bit data
+ * segment at the arena (LDT entry 1, selector 0Fh, base 10000h, limit 1FFFh) for DS and ES; installed with
+ * modify_ldt (no privilege needed) when the first such record arrives */
+static int ldt_ready,mode16;
 #include "record_check.h"
 static unsigned check_target; /* RC_AMD, RC_MISALIGN_SSE of this processor (CPUID) */
 #endif
@@ -120,6 +124,9 @@ static void set_regs(struct context *c,const struct vector *v) {
  /* EFLAGS.AC (0x40000) is an input too: with Linux's CR0.AM = 1 a misaligned access then raises #AC
   * (SIGBUS, trap 17), the user-visible alignment check (fp_cases.alignment_cases). */
  c->rip=0x20100;c->cs=compat?0x23:0x33;c->ss=0x2b;c->flags=(c->flags&~0x50dd5ull)|(v->flags&0x40dd5);
+#ifdef NATIVE_FP
+ if(mode16){c->rip=0x100;c->cs=0x07;}
+#endif
 }
 static void get_regs(const struct context *c,u64 *r) {
  r[0]=c->rax;r[1]=c->rcx;r[2]=c->rdx;r[3]=c->rbx;r[4]=c->rsp;r[5]=c->rbp;r[6]=c->rsi;r[7]=c->rdi;
@@ -193,7 +200,8 @@ static void handler(int sig,int *info,struct ucontext *u) {
  if(c->trapno==14 && c->cr2>=IMAGE_START && c->cr2<IMAGE_START+image_len)
   fail("the instruction accessed the oracle image (write-protected while it runs)",c->cr2);
 #endif
- if(c->rip<0x20000 || c->rip>=0x21000)fail("signal outside instruction buffer",c->rip);
+ if((c->cs==0x07 ? c->rip+0x20000 : c->rip)<0x20000 || (c->cs==0x07 ? c->rip+0x20000 : c->rip)>=0x21000)
+  fail("signal outside instruction buffer",c->rip);
  observed=*c;observed_fp=*fp;observed_signal=sig;observed_code=info[2];
 #ifdef NATIVE_FP
  /* YMM_Hi128 in its initial configuration (XSTATE_BV[2] = 0) is zero. */
@@ -218,7 +226,15 @@ static void execute(void) {
  if(input.code[0]<1 || input.code[0]>15)fail("bad instruction length",input.code[0]);
  for(int i=0;i<input.code[0];i++)code[256+i]=input.code[1+i];
  r=call(10,(long)code,4096,5,0,0,0);if(r<0)fail("mprotect RX",r);
+#ifdef NATIVE_FP
+ /* 16-bit code: DS and ES are the arena's 16-bit data segment while the case runs (64-bit code ignores
+  * them; rt_sigreturn does not restore them, so the runner sets them around the case) */
+ if(mode16)__asm__ volatile("mov $0x0f,%%ax; mov %%ax,%%ds; mov %%ax,%%es":::"rax","memory");
+#endif
  phase=0;r=call(62,pid,10,0,0,0,0);if(r<0)fail("kill self SIGUSR1",r);
+#ifdef NATIVE_FP
+ if(mode16)__asm__ volatile("mov $0x2b,%%ax; mov %%ax,%%ds; mov %%ax,%%es":::"rax","memory");
+#endif
  if(phase!=2)fail("instruction did not produce a signal",phase);
 }
 static void self_check(int tf) {
@@ -398,6 +414,22 @@ static void check_input(void) {
 }
 #endif
 #ifdef NATIVE_FP
+/* The LDT of mode 1 (struct user_desc of asm/ldt.h; modify_ldt function 0x11), and a NOP calibration in it:
+ * with TF the trap follows the NOP at IP 0101h, in CS 07h. */
+static void setup_ldt(void) {
+ struct {u32 entry,base,limit,flags;} d[2]={{0,0x20000,0xfff,2<<1|1<<6},{1,0x10000,0x1fff,0<<1|1<<6}};
+ for(int k=0;k<2;k++){long r=call(154,0x11,(long)&d[k],16,0,0,0);if(r<0)fail("modify_ldt (16-bit code segment)",r);}
+ struct vector saved=input;
+ mode16=1;
+ for(int k=0;k<16;k++)input.r[k]=0xa1234500ull+k;
+ input.code[0]=1;input.code[1]=0x90;input.flags=0x302;input.mxcsr=0x1f80;input.r[4]=0x11800;
+ input.pte[0]=input.pte[1]=0x67;
+ memory_prepare();execute();memory_restore();
+ if(observed_signal!=5 || observed.trapno!=1 || observed.rip!=0x101 || observed.cs!=0x07)
+  fail("16-bit code segment calibration",observed.rip);
+ input=saved;ldt_ready=1;
+ text(2,"PASS: 16-bit code segment (LDT) calibration\n");
+}
 static u64 hexdigit(char ch) {return ch>='0'&&ch<='9'?(u64)(ch-'0'):ch>='a'&&ch<='f'?(u64)(ch-'a'+10):99;}
 /* The process's mappings below 4 GiB must be exactly the arena, the code page and the image: a stray
  * access of a mistranslated instruction can then reach nothing else (FP-HARDWARE.md, "Safety"). */
@@ -508,6 +540,10 @@ void start(u64 *stack) {
   }
 #else
   read_all(&input,sizeof(input));
+#endif
+#ifdef NATIVE_FP
+  if(v3 && ext_input[28]==1 && !ldt_ready)setup_ldt();
+  mode16=v3 && ext_input[28]==1;
 #endif
 #ifdef NATIVE_MEMORY
   memory_prepare();

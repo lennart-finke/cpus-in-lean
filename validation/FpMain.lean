@@ -32,7 +32,9 @@ v3 extension (record offset 776, 128 bytes): +0 flags (bit 0: the x87 FIP/FDP/FO
 input's; bit 1: dump the 64 arena bytes at the offset below), +4 FOP (u16), +6 dump offset (u16,
 within the 8 KiB arena), +8 FIP (u64, the 64-bit layout of the signal frame), +16 FDP (u64), +24 the
 number (0..8) of dword patches of the arena at +32 (8 bytes each: offset u16, dword count u16 (0 = 1),
-value u32: the value stored count times from the offset; applied in order after the 64-byte patch); the rest is reserved (0). Extra output fields: FIP and FDP as 64-bit values, CR2 of a #PF (else 0), and the
+value u32: the value stored count times from the offset; applied in order after the 64-byte patch), +28 the mode (0: the 32-bit code segment; 1: a 16-bit code
+segment, CS 07h based at 20000h with IP 0100h, DS = ES = 0Fh based at the arena, as the oracle's LDT); the
+rest is reserved (0). Extra output fields: FIP and FDP as 64-bit values, CR2 of a #PF (else 0), and the
 dumped bytes as eight little-endian quadwords (zeros without bit 1).
 
 `x86fp [--compat] --probe FILE` prints, for every case, `index status vector error eip cr2 length
@@ -147,6 +149,13 @@ def fpCase (v : ByteArray) (o : Nat) (v2 v3 compat : Bool) : Except String (Mach
   if v3 && u32At v (o + 776) &&& 1 != 0 then
     c := { c with fop := ((u16At v (o + 780)) &&& 0x7FF).toUInt16, fip := (rdQ v (o + 784)).toUInt32,
                   fdp := (rdQ v (o + 792)).toUInt32 }
+  -- v3 mode 1: a 16-bit code segment (the oracle's LDT entries, modify_ldt): CS 07h with base 20000h and
+  -- limit FFFh (byte granular, D = 0), DS = ES = 0Fh (16-bit data, base 10000h = the arena, limit 1FFFh);
+  -- SS, FS and GS stay flat 32-bit; IP 0100h
+  if v3 && u8At v (o + 804) == 1 then
+    c := { c with cs := { sel := 0x07, base := 0x20000, limit := 0xFFF, attr := 0x00FB },
+                  ds := { sel := 0x0F, base := 0x10000, limit := 0x1FFF, attr := 0x00F3 },
+                  es := { sel := 0x0F, base := 0x10000, limit := 0x1FFF, attr := 0x00F3 }, eip := 0x100 }
   if compat then
     -- CR4 as 64-bit Linux 6.x sets it on an EPYC 7742 (CPUID 7:EBX FSGSBASE/SMEP/SMAP, 7:ECX UMIP; no
     -- PCID, PKU, LA57): PSE, PAE, MCE, PGE (head_64.S, mm/init.c), OSFXSR, OSXMMEXCPT (fpu/init.c),

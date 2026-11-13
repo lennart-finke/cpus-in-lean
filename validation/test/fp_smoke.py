@@ -86,6 +86,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('bundle',type=Path);p.add_argument('output',type=Path)
     p.add_argument('--timeout',type=int,default=600)
+    p.add_argument('--kernel',type=Path,help='guest kernel (default ../x86_64/guest/bzImage; the code16 family needs '
+                   'one with CONFIG_MODIFY_LDT_SYSCALL and CONFIG_X86_16BIT)')
     args=p.parse_args();args.output.mkdir(parents=True,exist_ok=False)
     repo=Path(__file__).resolve().parents[2]
     manifest=json.loads((args.bundle/'manifest.json').read_text())
@@ -132,7 +134,7 @@ def main():
     archive+=member('TRAILER!!!',b'',0)
     base=(repo/'x86_64/guest/initramfs.cpio').read_bytes()
     initrd=args.output/'initramfs.cpio';initrd.write_bytes(base+b'\0'*(-len(base)%512)+archive)
-    cmd=['qemu-system-x86_64','-accel','tcg','-cpu','max','-m','512','-kernel',str(repo/'x86_64/guest/bzImage'),
+    cmd=['qemu-system-x86_64','-accel','tcg','-cpu','max','-m','512','-kernel',str(args.kernel or repo/'x86_64/guest/bzImage'),
          '-initrd',str(initrd),'-append','console=ttyS0 nokaslr noapic nolapic loglevel=1','-display','none',
          '-serial','stdio','-monitor','none','-no-reboot']
     log_path=args.output/'guest.log';started=time.monotonic()
@@ -212,6 +214,12 @@ def main():
             continue
         if check_status!='0':errors.append(f'{name}: oracle check status {check_status}')
         if status!=[f'FP_STATUS {name} 0']:
+            begin=lines.index(f'FP_BEGIN {name}')
+            if any(l.startswith('ERROR: modify_ldt') for l in lines[begin:begin+40]):
+                # a kernel without modify_ldt (CONFIG_MODIFY_LDT_SYSCALL/X86_16BIT, e.g. the tinyconfig guest):
+                # the 16-bit code segment family cannot run; --kernel with such a kernel runs it
+                skipped[name]=dict(count=c['count'],missing=['modify_ldt in the guest kernel'],executed_anyway='modify_ldt refused')
+                continue
             errors.append(f'{name}: oracle status {status}');continue
         begin=lines.index(f'FP_BEGIN {name}');status_at=lines.index(f'FP_STATUS {name} 0')
         header=f'BEGIN {c["count"]:016x}'
@@ -246,7 +254,7 @@ def main():
             cases[meta['family']]+=1;total+=1
             if len(h)>=100 and h[99]==1:ymm+=1
             try:
-                diff=differences(meta,normalize(h),m)
+                diff=differences(meta,normalize(h,0x07 if meta.get('code16') else 0x23),m)
             except ValueError as e:
                 errors.append(f'{name}: {meta["family"]} {meta["instruction"]} {meta["code"]}: {e} (signal {h[1]}, trap {h[55]})');continue
             if diff:

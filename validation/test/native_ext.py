@@ -25,7 +25,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import fp_cases
 
 HERE = Path(__file__).resolve().parent
 X86FP = HERE.parent / '.lake' / 'build' / 'bin' / 'x86fp'
@@ -37,10 +36,12 @@ CODE = 0x20000
 ARITH = 0x8D5
 
 
-def record3(code, *, regs=None, ext_flags=0, fop=0, fip=0, fdp=0, dump=None, patches=(), **kw):
+def record3(code, *, regs=None, ext_flags=0, fop=0, fip=0, fdp=0, dump=None, patches=(), mode=0, **kw):
     """A v3 record: `regs` maps register numbers 0..7 (ESP = 4 included) to values; `dump` an arena
     offset whose 64 bytes the row reports; `patches` [(arena offset, dword[, count])] (at most 8; the
-    dword is stored count times from the offset, in order)."""
+    dword is stored count times from the offset, in order); `mode` 1: a 16-bit code segment (CS 07h
+    based at the code page, IP 0100h; DS = ES based at the arena: the oracle's LDT)."""
+    import fp_cases   # (fp_cases imports the families, which import this module)
     r = bytearray(fp_cases.record(code, **kw))
     for k, v in (regs or {}).items():
         struct.pack_into('<Q', r, 16 + 8 * k, v & 0xFFFFFFFF)
@@ -48,7 +49,7 @@ def record3(code, *, regs=None, ext_flags=0, fop=0, fip=0, fdp=0, dump=None, pat
     patches = [p if len(p) == 3 else (p[0], p[1], 1) for p in patches]   # (offset, dword, count)
     assert len(patches) <= 8 and all(0 <= o and o + 4 * n <= 8192 for o, _, n in patches)
     assert dump is None or 0 <= dump <= 8192 - 64
-    ext = struct.pack('<IHHQQB7x', flags, fop, dump or 0, fip, fdp, len(patches))
+    ext = struct.pack('<IHHQQB3xB3x', flags, fop, dump or 0, fip, fdp, len(patches), mode)
     ext += b''.join(struct.pack('<HHI', o, n, v & 0xFFFFFFFF) for o, v, n in patches)
     return bytes(r) + ext.ljust(128, b'\0')
 
@@ -56,6 +57,7 @@ def record3(code, *, regs=None, ext_flags=0, fop=0, fip=0, fdp=0, dump=None, pat
 def meta3(family, name, code, **kw):
     """Metadata of a v3 case: its family is its own campaign group (new campaigns, never mixed with
     the cases of earlier families)."""
+    import fp_cases
     m = fp_cases.meta(family, name, code, **kw)
     m['campaign_group'] = family
     return m
@@ -103,14 +105,15 @@ def op_info(op):
     return 0
 
 
-def layout(code):
+def layout(code, d16=False):
     """(length, op, prefix count, modrm offset or None, displacement (offset, size) or None, immediate
-    (offset, size) or None) of `code` followed by 0xCC bytes, as the model decodes it (length 16: #GP)."""
+    (offset, size) or None) of `code` followed by 0xCC bytes, as the model decodes it (length 16: #GP);
+    d16: in a 16-bit code segment."""
     b = bytes(code) + b'\xcc' * 40
-    n = 0; opsz = adsz = 4; rep = 0
+    n = 0; opsz = adsz = 2 if d16 else 4; rep = 0
     while n < 15 and b[n] in PREFIXES:
-        if b[n] == 0x66: opsz = 2
-        elif b[n] == 0x67: adsz = 2
+        if b[n] == 0x66: opsz = 4 if d16 else 2
+        elif b[n] == 0x67: adsz = 4 if d16 else 2
         elif b[n] in (0xF2, 0xF3): rep = b[n]
         n += 1
     pfx = n
@@ -205,7 +208,7 @@ def os_dependent(op, modrm, vexbits, mem):
 
 def _bin(records):
     v3 = all(len(r) == V3_SIZE for r in records)
-    assert v3 or all(len(r) == fp_cases.SIZE for r in records)
+    assert v3 or all(len(r) == 776 for r in records)
     return (len(records) | 1 << 63 | (1 << 62 if v3 else 0)).to_bytes(8, 'little') + b''.join(records)
 
 
@@ -276,12 +279,13 @@ def select(candidates, stats, model=X86FP):
     pl = _parallel(sub, lambda r: _run_model(r, False, True, model))
     good = []
     for i, c, l in zip(keep, pc, pl):
+        m0 = candidates[i][1]
         status, vec, err, eip, cr2, length, op, modrm, bits = c[1:10]
         if status or l[1]:
             stats['the model cannot run it (unsupported outcome)'] += 1; continue
         if vec not in VECTOR_SIGNAL:
             stats[f'model vector {vec} has no Linux signal'] += 1; continue
-        if not CODE <= eip < CODE + 0x1000:
+        if not (0 if m0.get('code16') else CODE) <= eip < (0 if m0.get('code16') else CODE) + 0x1000:
             stats['model EIP outside the code page'] += 1; continue
         if vec == 14 and cr2 >= 0x40000:
             stats['model #PF outside the low 256 KiB'] += 1; continue

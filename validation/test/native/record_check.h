@@ -37,6 +37,8 @@
  *    trap after the first instruction ends the case), and even then not after MOV SS / POP SS, which
  *    hold the trap past the next instruction (exceptions: MOVBE with a register operand, VEX gathers with
  *    16-bit addressing and XOP-space 8F encodings, which are #UD, or decoded whole, on every processor);
+ *  - mode 1 (v3, a 16-bit code segment based at the code page, DS/ES based at the arena): the same rules
+ *    with 16-bit default operand and address size, IP 0100h and the segment bases;
  *  - MOV SS / POP SS with EFLAGS.TF = 1 at all: the held single-step trap would be taken on the kernel's
  *    entry of the INT3 that ends the case (the CVE-2018-8897 pattern: Linux copes, but logs a warning).
  * The decoder (`rc_decode`) is the model's layout (Decode.lean); the tests check it against the model's
@@ -109,12 +111,12 @@ static unsigned rc_info(unsigned op) {
  }
 }
 /* b: the 32 bytes at 0x20100 (instruction, then 0xCC). Returns the length (16 and more: #GP). */
-static void rc_decode(const unsigned char *b, struct rc_insn *d) {
- unsigned n = 0, opsz = 4, adsz = 4, rep = 0, seg = 0xff, pre = 0x100, vx = 0;
+static void rc_decode16(const unsigned char *b, struct rc_insn *d, int d16) {
+ unsigned n = 0, opsz = d16 ? 2 : 4, adsz = d16 ? 2 : 4, rep = 0, seg = 0xff, pre = 0x100, vx = 0;
  while (n < 15 && (b[n] == 0x26 || b[n] == 0x2e || b[n] == 0x36 || b[n] == 0x3e || b[n] == 0x64 || b[n] == 0x65 ||
                    b[n] == 0x66 || b[n] == 0x67 || b[n] == 0xf0 || b[n] == 0xf2 || b[n] == 0xf3)) {
-  if (b[n] == 0x66) opsz = 2;
-  else if (b[n] == 0x67) adsz = 2;
+  if (b[n] == 0x66) opsz = d16 ? 4 : 2;
+  else if (b[n] == 0x67) adsz = d16 ? 4 : 2;
   else if (b[n] == 0xf2 || b[n] == 0xf3) rep = b[n];
   else if (b[n] != 0xf0) seg = b[n];
   n++;
@@ -177,6 +179,7 @@ static void rc_decode(const unsigned char *b, struct rc_insn *d) {
  }
  d->len = n;
 }
+__attribute__((unused)) static void rc_decode(const unsigned char *b, struct rc_insn *d) { rc_decode16(b, d, 0); }
 /* The initial content of the 8 KiB arena (signal_oracle.c memory_prepare): xorshift from the record's
  * seed, then the 64-byte patch of the FP extension. */
 static unsigned long long rc_arena(const unsigned char *base, const unsigned char *fp, const unsigned char *ext,
@@ -215,6 +218,14 @@ static int rc_load(const unsigned char *base, const unsigned char *fp, const uns
  return 2;
 }
 static unsigned long long rc_reg(const unsigned char *base, unsigned r) { return r < 8 ? rc_le(base + 16 + 8 * r, 4) : 0; }
+/* The segment base of a memory operand: 0 for the flat 32-bit segments; in mode 1 (16-bit code) CS is
+ * based at the code page and DS/ES at the arena (the oracle's LDT); SS, FS, GS stay flat. */
+static unsigned long long rc_segbase(const struct rc_insn *d, int mode) {
+ if (mode != 1) return 0;
+ unsigned seg = d->seg;
+ if (seg == 0xff) seg = (d->base == 4 || d->base == 5) && d->is_mem ? 0x36 : 0x3e;
+ return seg == 0x2e ? RC_CODE : seg == 0x26 || seg == 0x3e ? RC_ARENA : 0;
+}
 static const char *record_check(const unsigned char *base, const unsigned char *fp, const unsigned char *ext,
                                 unsigned target, unsigned long long *value) {
  unsigned len = base[0];
@@ -250,7 +261,9 @@ static const char *record_check(const unsigned char *base, const unsigned char *
    if (k < ext[24] && *value > 8192) return "arena patch outside the arena";
    if (k >= ext[24] && rc_le(ext + 32 + 8 * k, 8)) return "unused arena patch not zero";
   }
-  for (unsigned i = 25; i < 32; i++) if (ext[i]) { *value = i; return "reserved v3 extension byte not zero"; }
+  *value = ext[28];
+  if (ext[28] > 1) return "unknown v3 mode";
+  for (unsigned i = 25; i < 32; i++) if (ext[i] && i != 28) { *value = i; return "reserved v3 extension byte not zero"; }
   for (unsigned i = 96; i < 128; i++) if (ext[i]) { *value = i; return "reserved v3 extension byte not zero"; }
  }
  /* the bytes the processor decodes: the instruction, then the 0xCC filling of the code page */
@@ -273,7 +286,8 @@ static const char *record_check(const unsigned char *base, const unsigned char *
  if (op == 0xcd || op == 0xcc || op == 0xce || op == 0xf1)
   return "software interrupt (through the kernel's IDT; the model has none)";
  struct rc_insn d;
- rc_decode(b, &d);
+ int mode = ext ? ext[28] : 0;   /* 1: a 16-bit code segment, IP 0100h (code page offset) */
+ rc_decode16(b, &d, mode == 1);
  int tf = (flags & 0x100) != 0;
  *value = d.len;
  /* MOVBE with a register operand (0F 38 F0/F1, mod = 11, no F2: not CRC32) is #UD on every processor
@@ -306,7 +320,8 @@ static const char *record_check(const unsigned char *base, const unsigned char *
  if (d.len > 15) return 0; /* #GP(0) at decode: nothing executes */
  /* near transfers: the target must be the INT3 filling of the code page */
  unsigned long long mask = d.opsz == 2 ? 0xffff : 0xffffffffull, t = 0;
- unsigned long long next_ip = RC_IP + d.len;
+ unsigned long long ip = mode == 1 ? RC_IP - RC_CODE : RC_IP, page = mode == 1 ? 0 : RC_CODE;
+ unsigned long long next_ip = ip + d.len;
  int have = -1; /* -1: not a transfer */
  if (!d.vex && ((d.op >= 0x70 && d.op <= 0x7f) || (d.op >= 0xe0 && d.op <= 0xe3) || d.op == 0xeb)) {
   t = (next_ip + (unsigned long long)(long long)(signed char)d.imm) & mask; have = 0;
@@ -322,13 +337,14 @@ static const char *record_check(const unsigned char *base, const unsigned char *
    if (d.base < 8) a += rc_reg(base, d.base);
    if (d.index < 8) a += rc_reg(base, d.index) << d.scale;
    a &= d.adsz == 2 ? 0xffff : 0xffffffffull;
+   a = (a + rc_segbase(&d, mode)) & 0xffffffffull;
    have = rc_load(base, fp, ext, a, d.opsz, &t);
   }
  }
  if (have == 2) { *value = op << 8 | next; return "near transfer through an operand outside the arena"; }
  if (have == 0) {
   *value = t;
-  if (t < RC_CODE || t >= RC_CODE + 4096 || (t >= RC_IP && t < next_ip))
+  if (t < page || t >= page + 4096 || (t >= ip && t < next_ip))
    return "near transfer target outside the INT3 filling of the code page";
  }
  return 0;

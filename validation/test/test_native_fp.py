@@ -15,9 +15,10 @@ class Coverage(unittest.TestCase):
     def test_record_integrity_and_directed_coverage(self):
         counts=collections.Counter();ops=set();control=collections.defaultdict(set)
         for raw,m in cases(123,100):
-            self.assertEqual(len(raw),SIZE)
+            self.assertIn(len(raw),(SIZE,native_fp.FORMAT3['size']))
             self.assertEqual(raw[1:1+raw[0]].hex(),m['code'])
-            self.assertEqual(struct.unpack_from('<Q',raw,144)[0]&0x100,0)
+            # TF only in the extended families (the encoding fuzz single-steps every case)
+            if len(raw)==SIZE: self.assertEqual(struct.unpack_from('<Q',raw,144)[0]&0x100,0)
             self.assertLess(struct.unpack_from('<H',raw,444)[0],256)
             self.assertLess(struct.unpack_from('<I',raw,436)[0],5)   # memory kinds 0..3, 4 = XSAVE image
             counts[m['family']]+=1
@@ -173,9 +174,10 @@ class OracleInputValidation(unittest.TestCase):
         # all families (small count): no record the oracle would refuse on the EPYC
         with tempfile.TemporaryDirectory() as d:
             checker=compiled_checker(d);groups=collections.defaultdict(list)
-            for raw,m in cases(123,100):groups[tuple(m.get('requires',()))].append(raw)
-            for requires,records in groups.items():
-                p=Path(d)/'c.bin';p.write_bytes((len(records)|1<<63).to_bytes(8,'little')+b''.join(records))
+            for raw,m in cases(123,100):groups[tuple(m.get('requires',())),len(raw)].append(raw)
+            for (requires,size),records in groups.items():
+                v3=size==native_fp.FORMAT3['size']
+                p=Path(d)/'c.bin';p.write_bytes((len(records)|1<<63|(1<<62 if v3 else 0)).to_bytes(8,'little')+b''.join(records))
                 self.assertEqual(native_fp.check_records(checker,p,len(records),requires),[],requires)
 
     @unittest.skipUnless(CC,'no host C compiler')
@@ -190,10 +192,10 @@ class OracleInputValidation(unittest.TestCase):
                 (put('B',0,16),'bad instruction length'),(put('<Q',144,0x3202),'EFLAGS'),(put('<Q',144,0x200),'EFLAGS'),
                 (put('<Q',144,0x40ed7),None),(put('<I',432,0x41f80),'reserved MXCSR'),(put('<I',432,0x21f80),'reserved MXCSR'),
                 (put('<I',436,5),'memory kind'),(put('<I',436,4),None),(put('<H',444,0x100),'FTW'),
-                (code('cd80'),'INT 80h'),(code('cd03'),None),(code('cd21'),None),(code('0f05'),'SYSCALL'),
+                (code('cd80'),'INT 80h'),(code('cd03'),'software interrupt'),(code('cd21'),'software interrupt'),(code('0f05'),'SYSCALL'),
                 (code('660f05'),'SYSCALL'),(code('0f34'),None),(code('0f07'),None),(code('ea00000000 2300'.replace(' ','')),'far'),
                 (code('9a000000002300'),'far'),(code('cb'),'far'),(code('cf'),'far'),(code('ff2b'),'far'),(code('ff6b00'),'far'),
-                (code('ff23'),None),(code('8ed8'),'DS/ES/FS/GS'),(code('8ed0'),None),(code('1f'),'DS/ES/FS/GS'),(code('17'),None),
+                (code('ff23'),'near transfer target'),(code('8ed8'),'DS/ES/FS/GS'),(code('8ed0'),None),(code('1f'),'DS/ES/FS/GS'),(code('17'),None),
                 (code('0fa1'),'DS/ES/FS/GS'),(code('c503'),'DS/ES/FS/GS'),(code('c5f877'),None),(code('c4e27850'),None),
                 (code('0fb203'),None),(code('0fb403'),'DS/ES/FS/GS')]
         with tempfile.TemporaryDirectory() as d:
@@ -203,6 +205,7 @@ class OracleInputValidation(unittest.TestCase):
             for i,(_,why) in enumerate(probes):
                 if why is None:self.assertNotIn(i,got,probes[i][0][:8].hex())
                 else:self.assertIn(why,got.get(i,''),i)
+            # (the indices below are those of the probes above)
             # the target's processor: SYSENTER refused unless AMD, MXCSR.MM only with MisalignSse
             out=subprocess.run([str(checker)],input=p.read_text('latin-1'),capture_output=True,text=True,encoding='latin-1')
             self.assertIn('SYSENTER',{r['index']:r['reason'] for r in native_fp.parse_check(out.stdout,len(probes))}[20])
@@ -433,6 +436,192 @@ class Runner(unittest.TestCase):
             with (base/'campaign-000.bin').open('ab') as f:f.write(b'x')
             with contextlib.redirect_stdout(io.StringIO()),self.assertRaises(ValueError):
                 native_fp.recompare(args)
+
+
+
+def v3(code,flags=0x202,ext=None,**kw):
+    """A format-3 record (native_ext.record3) with an optionally replaced extension."""
+    import native_ext
+    r=bytearray(native_ext.record3(code,flags=flags,**kw))
+    if ext is not None: r[776:904]=ext.ljust(128,b'\0')
+    return bytes(r)
+
+
+def check_v3(checker,d,records):
+    p=Path(d)/'v3.bin';p.write_bytes((len(records)|3<<62).to_bytes(8,'little')+b''.join(records))
+    return {r['index']:r['reason'] for r in native_fp.check_records(checker,p,len(records),())}
+
+
+class ExtendedRules(unittest.TestCase):
+    """The rules of the extended bundle: software interrupts, near transfers, trailing bytes and TF, MOV SS
+    with TF, the v3 extension; the decoder against the model; the comparison of format-3 rows."""
+
+    @unittest.skipUnless(CC,'no host C compiler')
+    def test_transfer_trailing_and_extension_rules(self):
+        import native_ext
+        probes=[(v3('cc'),'software interrupt'),(v3('ce'),'software interrupt'),(v3('f1'),'software interrupt'),
+                (v3('eb10'),None),(v3('ebfe'),'near transfer target'),(v3('eb80'),None),(v3('e900100000'),'near transfer target'),
+                (v3('66e90010'),'near transfer target'),(v3('0f8410000000'),None),(v3('e2f0'),None),(v3('e3fd'),None),(v3('e3fe'),'near transfer target'),
+                # RET through the arena: a code-page pointer at ESP (a patch) / random data
+                (v3('c3',regs={4:0x10100},patches=[(0x100,0x20180)]),None),(v3('c3',regs={4:0x10100}),'near transfer target'),
+                (v3('c3',regs={4:0x10100},permissions=(0,0x67)),None),(v3('c3',regs={4:0x200000}),'outside the arena'),
+                (v3('ffd0',regs={0:0x20200}),None),(v3('ffd0',regs={0:0x100000}),'near transfer target'),
+                (v3('ff13',regs={3:0x10040},patches=[(0x40,0x20300)]),None),(v3('ff23',regs={3:0x8000}),None),
+                (v3('ff23',regs={3:0x30000}),'outside the arena'),
+                # bytes after the instruction: only with TF; not after MOV/POP SS; MOV/POP SS not with TF
+                (v3('9090'),'bytes after the instruction'),(v3('9090',flags=0x302),None),(v3('0f38f0c11c'),None),
+                (v3('8fe878c2c105'),None),(v3('8fe878c2c10590'),'bytes after'),(v3('17'),None),(v3('17',flags=0x302),'MOV/POP SS'),
+                (v3('8ed090',flags=0x302),'MOV/POP SS'),(v3('3e3e3e3e3e3e3e3e3e3e3e3e3e3e90'),None),
+                # the extension
+                (v3('90',ext=struct.pack('<I',4)),'extension flags'),(v3('90',ext=struct.pack('<IHH',2,0,8129)),'dump window'),
+                (v3('90',ext=struct.pack('<IHHQQB',0,0,0,0,0,9)),'eight arena patches'),
+                (v3('90',ext=struct.pack('<IHHQQB7xHHI',0,0,0,0,0,1,8190,0,1)),'outside the arena'),
+                (v3('90',ext=struct.pack('<IHHQQB7xHHI',0,0,0,0,0,1,8000,48,1)),None),
+                (v3('90',ext=struct.pack('<IHHQQB7xHHI',0,0,0,0,0,1,8000,49,1)),'outside the arena'),
+                (v3('90',ext=struct.pack('<IHHQQB',0,0,0,0,0,0)+b'\1'),'reserved'),
+                (v3('90',ext=struct.pack('<IHHQQB7xHHI',0,0,0,0,0,0,4,0,1)),'unused arena patch'),
+                # mode 1 (a 16-bit code segment, IP 0100h, DS based at the arena): 16-bit targets and operands
+                (v3('eb10',mode=1),None),(v3('e90010',mode=1),'near transfer target'),(v3('e9fdff',mode=1),'near transfer target'),
+                (v3('66e910000000',mode=1),None),(v3('c3',mode=1,regs={4:0x10100},patches=[(0x100,0x0180)]),None),
+                (v3('c3',mode=1,regs={4:0x10100},patches=[(0x100,0x2180)]),'near transfer target'),
+                (v3('ff27',mode=1,regs={3:0x40},patches=[(0x40,0x0200)]),None),(v3('ffd0',mode=1,regs={0:0x20200}),None),(v3('ffd0',mode=1,regs={0:0x1200}),'near transfer target'),
+                (v3('90',ext=struct.pack('<IHHQQB3xB',0,0,0,0,0,0,2)),'mode')]
+        with tempfile.TemporaryDirectory() as d:
+            got=check_v3(compiled_checker(d),d,[r for r,_ in probes])
+        for i,(r,why) in enumerate(probes):
+            if why is None: self.assertNotIn(i,got,(i,r[1:1+r[0]].hex()))
+            else: self.assertIn(why,got.get(i,''),(i,r[1:1+r[0]].hex()))
+
+    @unittest.skipUnless(CC,'no host C compiler')
+    def test_decoder_matches_python_layout_and_the_model(self):
+        """rc_decode (C), native_ext.layout (Python) and the model's decoded length agree on random encodings."""
+        import random as _r, native_ext, native_fuzz
+        rng=_r.Random(5);codes=[native_fuzz.random_encoding(rng)[0][:15] for _ in range(3000)]
+        codes+=[bytes.fromhex(c) for c in ('90','0f38f0c1','c4e27850','62c0','8fe878c2c105','67c4e26d900400','f6c001','f7c001000000',
+                                          '66f7c00100','a1001000','67a10010','c8100003','0f7803','660f780102','f20f78c10102','0f0f0001')]
+        with tempfile.TemporaryDirectory() as d:
+            src=Path(d)/'dec.c'
+            src.write_text('#include <stdio.h>\n#include "record_check.h"\nint main(void){char line[64];'
+                           'while(fgets(line,64,stdin)){unsigned char b[40];unsigned n=0,x;'
+                           'for(int i=0;i<40;i++)b[i]=0xcc;'
+                           'while(sscanf(line+2*n,"%2x",&x)==1&&n<15){b[n++]=x;}'
+                           'struct rc_insn r;rc_decode(b,&r);printf("%u %x\\n",r.len,r.op);}return 0;}\n')
+            subprocess.run([CC,'-O1','-I',str(HERE/'native'),'-o',str(Path(d)/'dec'),str(src)],check=True)
+            out=subprocess.run([str(Path(d)/'dec')],input=''.join(c.hex()+'\n' for c in codes),capture_output=True,text=True,check=True)
+        c_lens=[tuple(int(x,16) if k else int(x) for k,x in enumerate(l.split())) for l in out.stdout.splitlines()]
+        py=[native_ext.layout(c)[:2] for c in codes]
+        self.assertEqual(c_lens,py)
+        # the model's decode (x86fp --probe; 0 = not decoded, e.g. #PF or #GP at the length limit)
+        if native_ext.X86FP.exists():
+            raws=[native_ext.record3(c,flags=0x302) for c in codes]
+            probe=native_ext._run_model(raws,True,True,native_ext.X86FP)
+            for c,p,(n,_) in zip(codes,probe,py):
+                if p[6]: self.assertEqual(p[6],n,c.hex())
+
+    def test_format3_rows_and_observe_fields(self):
+        h=[0]*110;h[1]=11;h[4]=0x23;h[55]=14;h[57]=0x11000;h[3]=0x20100;h[99]=1
+        h[100]=0x20123;h[101]=0x10345;h[102:110]=list(range(1,9))
+        r=normalize(h);self.assertEqual(len(r),82)
+        self.assertEqual(r[71:74],[0x20123,0x10345,0x11000]);self.assertEqual(r[74:],list(range(1,9)))
+        h[55]=13;self.assertEqual(normalize(h)[73],0)   # CR2 only for #PF
+        meta=dict(instruction='x',flags_mask=0x8d5,sw_mask=0xb8ff)
+        m=list(r);m[71]^=1;m[33]^=1
+        self.assertEqual(differences(meta,r,m),[])                       # pointers: only on request
+        self.assertEqual({d['field'] for d in differences(dict(meta,compare_pointers=True),r,m)},{'fop','fip64'})
+        m=list(r);m[75]^=1
+        self.assertEqual(differences(meta,r,m)[0]['field'],'dump1')
+        # undefined flags: compared, an observation; observe fields; '*'
+        m=list(r);m[4]^=0x800
+        dm=dict(meta,flags_mask=0xd5,flags_observe=0x800)
+        diff=differences(dm,r,m);self.assertEqual(diff[0]['field'],'eflags.undefined')
+        self.assertEqual(classify(dm,diff),'observations')
+        m[4]^=0x801;diff=differences(dm,r,m);self.assertEqual(classify(dm,diff),'strict_mismatches')
+        self.assertEqual(classify(dict(meta,observe_fields=['r0']),[dict(field='r0')]),'observations')
+        self.assertEqual(classify(dict(meta,observe_fields=['r0']),[dict(field='r0'),dict(field='r1')]),'strict_mismatches')
+        self.assertEqual(classify(dict(meta,observe_fields=['*']),[dict(field='vector')]),'observations')
+        # the full control word where the case asks for it
+        m=list(r);m[30]^=0x80
+        self.assertEqual(differences(meta,r,m),[])
+        self.assertEqual(differences(dict(meta,fcw_full=True),r,m)[0]['field'],'fcw')
+
+    def test_model_problems_format3(self):
+        meta=[dict(index=0),dict(index=1)]
+        m=[[0,14,6,0x20100]+[0]*69+[0x3F000]+[0]*8,[1,14,6,0x20100]+[0]*69+[0x40000]+[0]*8]
+        self.assertEqual([p['index'] for p in native_fp.model_problems(meta,m)],[1])
+
+    def test_oracle_sandbox_in_source(self):
+        oracle=(HERE/'native/signal_oracle.c').read_text()
+        handler=oracle[oracle.index('static void handler('):oracle.index('static void execute(')]
+        # the image is made writable first thing in the handler, read-only before the instruction, and
+        # its digest is checked before the handler writes anything
+        self.assertLess(handler.index('protect(7)'),handler.index('struct context *c'))
+        self.assertLess(handler.index('image_hash=image_digest()'),handler.index('protect(5)'))
+        self.assertLess(handler.index('image_digest()!=image_hash'),handler.index('observed=*c'))
+        self.assertIn('audit_maps();',oracle);self.assertIn('mov %%ax,%%fs; mov %%ax,%%gs',oracle)
+        self.assertIn('oracle_image_end',(HERE/'native/signal_enter.S').read_text())
+
+
+class Determinism(unittest.TestCase):
+    def test_topology_and_cpu_choice(self):
+        info='processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\nprocessor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n' \
+             'processor\t: 2\nphysical id\t: 0\ncore id\t\t: 1\n'
+        topo=native_fp.cpu_topology(info)
+        self.assertEqual(topo,{0:('0','0'),1:('0','0'),2:('0','1')})
+        self.assertEqual(native_fp.choose_cpus('auto',{0,1,2},topo)[0],[0,2])
+        self.assertEqual(native_fp.choose_cpus(None,{1,2},{})[0],[1,2])
+        self.assertEqual(native_fp.choose_cpus(None,{3},{})[0],[3,3])
+        self.assertEqual(native_fp.choose_cpus('2,0',{0,1,2},topo)[0],[2,0])
+        with self.assertRaises(ValueError): native_fp.choose_cpus('0,7',{0,1,2},topo)
+
+    def test_repeated_run_pinned_and_compared(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            bundle=make_bundle(root/'b',[((),[(1,0x67),(2,0x67)]),((),[(3,0x67),(0xD1FF,0x67),(5,0x67)]),
+                                         ((),[(0xD1FE,0x67)])])
+            # the fake oracle observes seeds 0xD1FF/0xD1FE differently in its second pass (FP_PASS=2);
+            # case 0 of campaign-002 marks EAX ('r0') as an observe field
+            (bundle/'oracle').write_text(FAKE_ORACLE.replace("h[6]=seed(r)",
+                "h[6]=seed(r)+(1 if seed(r) in (0xD1FF,0xD1FE) and __import__('os').environ.get('FP_PASS')=='2' else 0)"))
+            meta=json.loads((bundle/'campaign-002.json').read_text());meta[0]['observe_fields']=['r0']
+            write_json(bundle/'campaign-002.json',meta)
+            man=json.loads((bundle/'manifest.json').read_text())
+            for p in ('oracle','campaign-002.json'): man['sha256'][p]=digest(bundle/p)
+            man['run_defaults']=dict(repeat=2,pin='auto');write_json(bundle/'manifest.json',man)
+            pinned=[]
+            with mock.patch.object(native_fp.os,'sched_setaffinity',lambda pid,cpus:pinned.append(sorted(cpus)),create=True), \
+                 mock.patch.object(native_fp.os,'sched_getaffinity',lambda pid:{0,1,2,3},create=True), \
+                 mock.patch.object(native_fp,'cpu_topology',lambda text:{0:('0','0'),1:('0','0'),2:('0','1'),3:('0','1')}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code=run_fake(bundle,root/'r')
+            self.assertEqual(code,1)
+            host=json.loads((root/'r/hardware.json').read_text())
+            self.assertEqual(host['repeat']['cpus'],[0,2])
+            self.assertIn([0],pinned);self.assertIn([2],pinned);self.assertEqual(pinned[-1],[0,1,2,3])
+            r=host['results']
+            self.assertTrue(r['campaign-000']['repeat'][0]['identical'])
+            self.assertEqual(r['campaign-001']['repeat'][0]['differing'],[dict(index=1,fields=['r0'])])
+            self.assertEqual(r['campaign-001']['repeat'][0]['cpu'],2);self.assertEqual(r['campaign-001']['cpu'],0)
+            self.assertTrue((root/'r/campaign-001.rep2.out').exists())
+            c=json.loads((root/'r/comparison.json').read_text())['determinism']
+            self.assertEqual((c['campaigns'],c['identical'],c['differing_cases'],c['expected'],c['unexpected']),(3,1,2,1,1))
+            self.assertEqual(c['examples'][0]['campaign'],'campaign-001')
+            # the model comparison used the first pass only: no strict mismatch
+            self.assertEqual(json.loads((root/'r/comparison.json').read_text())['strict_mismatches'],0)
+
+    def test_bundle_without_model_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);bundle=make_bundle(root/'b',[((),[(1,0x67),(2,0x67)])])
+            (bundle/'campaign-000.model').unlink()
+            man=json.loads((bundle/'manifest.json').read_text());del man['sha256']['campaign-000.model']
+            man['model_files']=False;write_json(bundle/'manifest.json',man)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_fake(bundle,root/'r'),0)   # not compared on the target
+                with self.assertRaises(ValueError): compare(bundle,root/'r')
+            model=root/'x86fp';model.write_text(FAKE_MODEL.replace('DELTA','0'));model.chmod(0o755)
+            args=argparse.Namespace(directory=bundle,result=root/'r',merge=[],model=model,out=root/'c',jobs=1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(native_fp.recompare(args),0)
+            self.assertEqual(json.loads((root/'c/comparison.json').read_text())['cases'],2)
 
 
 if __name__=='__main__':unittest.main()

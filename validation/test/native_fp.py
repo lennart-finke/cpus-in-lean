@@ -72,7 +72,7 @@ FEATURES.update({'lm':(0x80000001,0,3,29)})  # long-mode family (native_longmode
 
 HEX16=re.compile('[0-9a-f]{16}')
 # the generator modules of the extended families (format 3), copied into the bundle's sources
-EXT_MODULES=['native_ext','native_fuzz','native_int','native_depth','native_x87rules']
+EXT_MODULES=['native_ext','native_flags','native_fuzz','native_int','native_depth','native_x87rules']
 # The Linux signal of every exception vector a user-mode instruction can raise (arch/x86/kernel/traps.c,
 # mm/fault.c): #DE, #MF, #XM SIGFPE; #DB, #BP SIGTRAP; #OF, #BR, #GP, #PF SIGSEGV; #UD SIGILL;
 # #NP, #SS, #AC SIGBUS. The oracle handles exactly these signals (signal_oracle.c, `signals[]`, plus
@@ -156,10 +156,12 @@ def complete_prefix(path,count,columns):
         return True,got,f.readline().strip()=='END' and not f.read().strip()
 
 
-def normalize(h):
+def normalize(h,cs=0x23):
     """A native row in the model's column order (v2 rows: plus the YMM upper halves, or None
-    for them when the signal frame had no AVX state)."""
-    if h[4]!=0x23: raise ValueError('oracle did not execute in IA-32 compatibility mode')
+    for them when the signal frame had no AVX state). `cs` the code segment the case ran in (07h: the
+    16-bit code segment of the code16 family)."""
+    if h[4]!=cs: raise ValueError('oracle did not execute in IA-32 compatibility mode' if cs==0x23 else
+                                  f'oracle did not execute in the code segment {cs:#x}')
     if VECTOR_SIGNAL.get(h[55])!=h[1]: raise ValueError('unexpected signal/vector pair')
     ip=h[3]-(h[55]==3)
     row=[h[0],h[55],h[56],ip,h[5]]+[r&0xffffffff for r in h[6:14]]+h[22:38]+[h[54]]+h[61:83]+h[58:61]
@@ -273,10 +275,10 @@ def model_problems(metadata,model_rows):
     for meta,m in zip(metadata,model_rows):
         if m[1] not in VECTOR_SIGNAL:
             out.append(dict(meta,problem=f'model raises vector {m[1]}, which has no handled Linux signal'))
-        elif m[3] not in CODE_PAGE:
+        elif m[3] not in (range(0,0x1000) if meta.get('code16') else CODE_PAGE):
             out.append(dict(meta,problem=f'model EIP {m[3]:#x} leaves the oracle code page'))
-        elif len(m)==FORMAT3['model']+1 and m[1]==14 and m[74]>=0x40000:
-            out.append(dict(meta,problem=f'model #PF at {m[74]:#x}, outside the low 256 KiB'))
+        elif len(m)==FORMAT3['model'] and m[1]==14 and m[73]>=0x40000:
+            out.append(dict(meta,problem=f'model #PF at {m[73]:#x}, outside the low 256 KiB'))
     return out
 
 
@@ -436,7 +438,7 @@ def _evaluate(sources,out,model,jobs,tmp):
                 index=h[0];meta=metadata[index];m=model_rows[index]
                 families[meta['family']]['compared']+=1
                 try:
-                    h=normalize(h)
+                    h=normalize(h,0x07 if meta.get('code16') else 0x23)
                 except ValueError as e:
                     # an observation the comparison cannot interpret is a strict mismatch, never dropped
                     diff=[dict(field='signal/mode',hardware=f'signal {h[1]} trap {h[55]} cs {h[4]:#x}',model=f'vector {m[1]}',
@@ -863,12 +865,18 @@ def choose_cpus(pin,allowed,topology):
 
 def repeat_differences(path1,path2,count,cols,missing1,missing2):
     """[(index, [native labels])] of the cases two passes observed differently (rows present in both).
-    CR2 is ignored unless the case raised #PF (the frame's CR2 is stale otherwise), and so is EFLAGS.RF."""
-    a={r[0]:r for r in rows(path1,count,cols,frozenset(missing1))}
+    CR2 is ignored unless the case raised #PF (the frame's CR2 is stale otherwise), and so is EFLAGS.RF.
+    Both outputs are checked as complete and well formed (rows()); equal lines are not parsed further."""
+    def lines(path,missing):
+        for r in rows(path,count,cols,frozenset(missing)): pass   # well formed and complete
+        with path.open() as f:
+            f.readline()
+            return {int(l[:16],16):l.split() for l in f if l.strip() and l.strip()!='END'}
+    a=lines(path1,missing1);b=lines(path2,missing2)
     out=[]
-    for r in rows(path2,count,cols,frozenset(missing2)):
-        h=a.get(r[0])
-        if h is None: continue
+    for i in sorted(b):
+        if i not in a or a[i]==b[i]: continue
+        h=[int(x,16) for x in a[i]];r=[int(x,16) for x in b[i]]
         # EFLAGS.RF of the frame depends on where an interrupt hit (timing): not compared
         fields=[NATIVE_LABELS[k] for k,(x,y) in enumerate(zip(h,r)) if x!=y and not (NATIVE_LABELS[k]=='cr2' and h[55]!=14)
                 and not (NATIVE_LABELS[k]=='eflags' and (x^y)&~0x10000==0)]
@@ -902,8 +910,9 @@ def run(args):
     if repeat>1 or pin:
         if hasattr(os,'sched_setaffinity'):
             original=os.sched_getaffinity(0)
-            try: topo=cpu_topology(Path('/proc/cpuinfo').read_text())
-            except OSError: topo={}
+            try: text=Path('/proc/cpuinfo').read_text()
+            except OSError: text=''
+            topo=cpu_topology(text)
             cpus,how=choose_cpus(pin,original,topo)
             host['repeat']=dict(passes=repeat,cpus=cpus,cores=[topo.get(c) for c in cpus],choice=how)
         else:
@@ -953,6 +962,9 @@ def run(args):
                         entry.update(identical=not d,differing_count=len(d),
                                      differing=[dict(index=i,fields=f) for i,f in d[:500]])
                         if d: print(f'  {name}: {len(d)} cases differ between the passes',flush=True)
+                        elif r.get('output_sha256')==rec.get('output_sha256'):
+                            # byte-identical: the second output is not kept (its hash is)
+                            (result/(stem+'.out')).unlink();entry['output_kept']=False
                     except (ValueError,OSError) as exc:
                         entry.update(identical=None,error=f'not compared: {exc}')
                     rec['repeat'].append(entry)

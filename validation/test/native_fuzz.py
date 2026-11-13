@@ -42,8 +42,31 @@ def small_dword(rng):
     return rng.randrange(-0x4000, 0x4000) & 0xFFFFFFFF
 
 
+POOL = 16   # the vector/x87/memory input states a generator draws from (kept small: the bundle compresses)
+
+
+def state(rng):
+    """One vector/x87/MXCSR/memory input state within the safety bounds above (XMM8..15, absent in IA-32,
+    stay constant)."""
+    xmm = [small_dword(rng) | small_dword(rng) << 32 for _ in range(16)] + \
+        [0x0123456789abcdef ^ (k * 0x101010101010101) for k in range(16, 32)]
+    ymmh = [small_dword(rng) | small_dword(rng) << 32 for _ in range(16)]
+    mem = bytearray(rng.getrandbits(8) for _ in range(64))
+    for k in range(4, 12):   # code-page pointers into the INT3 filling, after the instruction
+        struct.pack_into('<I', mem, 4 * k, 0x20180 + 4 * rng.randrange(0x200))
+    mxcsr = (rng.getrandbits(6) << 7) | (rng.randrange(4) << 13) | rng.choice((0, 0x40, 0x8000, 0x8040)) | rng.getrandbits(6) * (rng.random() < 0.2)
+    stack = [(rng.getrandbits(64), rng.randrange(65536)) if rng.random() < 0.5 else rng.choice(fp_cases.VALUES)
+             for _ in range(8)]
+    return dict(xmm=xmm, ymmh=ymmh, mem=bytes(mem), mxcsr=mxcsr, stack=stack,
+                cw=0x40 | rng.getrandbits(6) | rng.randrange(4) << 8 | rng.randrange(4) << 10,
+                sw=rng.randrange(8) << 11, tags=rng.choice((255, 0, rng.randrange(256))), seed=rng.getrandbits(32) | 1)
+
+
 def inputs(rng):
-    """Register, vector, x87, MXCSR and memory inputs within the safety bounds above."""
+    """Register and flag inputs within the safety bounds above, per case, and one of the generator's POOL
+    vector/x87/memory states."""
+    pool = rng.__dict__.setdefault('_fuzz_pool', [])
+    if len(pool) < POOL: pool.append(state(rng))
     regs = {}
     for k in range(8):
         if k == 4:   # ESP: in the 64-byte patch (its dwords 4..11 are code-page pointers for RET) or the arena
@@ -54,19 +77,9 @@ def inputs(rng):
             regs[k] = (0x10000 + rng.randrange(0x2000)) & ~rng.choice([0, 1, 3, 7, 15, 63])
         else:
             regs[k] = rng.randrange(0x100)
-    xmm = [small_dword(rng) | small_dword(rng) << 32 for _ in range(32)]
-    ymmh = [small_dword(rng) | small_dword(rng) << 32 for _ in range(16)]
-    mem = bytearray(rng.getrandbits(8) for _ in range(64))
-    for k in range(4, 12):   # code-page pointers into the INT3 filling, after the instruction
-        struct.pack_into('<I', mem, 4 * k, 0x20180 + 4 * rng.randrange(0x200))
     flags = 0x302 | (rng.getrandbits(12) & 0x4D5) | (0x40000 if rng.random() < 0.15 else 0)
-    mxcsr = (rng.getrandbits(6) << 7) | (rng.randrange(4) << 13) | rng.choice((0, 0x40, 0x8000, 0x8040)) | rng.getrandbits(6) * (rng.random() < 0.2)
     perms = rng.choice([(0x67, 0x67)] * 6 + [(0x67, 0x65), (0x67, 0), (0x65, 0x67), (0, 0x67)])
-    stack = [(rng.getrandbits(64), rng.randrange(65536)) if rng.random() < 0.5 else rng.choice(fp_cases.VALUES)
-             for _ in range(8)]
-    return dict(regs=regs, xmm=xmm, ymmh=ymmh, mem=bytes(mem), flags=flags, mxcsr=mxcsr, permissions=perms,
-                stack=stack, cw=0x40 | rng.getrandbits(6) | rng.randrange(4) << 8 | rng.randrange(4) << 10,
-                sw=rng.randrange(8) << 11, tags=rng.choice((255, 0, rng.randrange(256))), seed=rng.getrandbits(32) | 1)
+    return dict(pool[rng.randrange(len(pool))], regs=regs, flags=flags, permissions=perms)
 
 
 def modrm_bytes(rng, mod, reg, a16=False):
@@ -213,10 +226,12 @@ def candidates(rng, count):
         if c: yield c
 
 
-def enc_fuzz(rng_unused, count):
-    """The selected cases (native_ext.select), deterministic for (count, model)."""
+def enc_fuzz(rng, count):
+    """The selected cases (native_ext.select), deterministic for (seed, count, model): the family draws one
+    64-bit tag from the bundle's generator and runs its own from it."""
+    tag = rng.getrandbits(64)
     def produce():
-        rng = random.Random(f'enc_fuzz:{count}')
+        rng = random.Random(f'enc_fuzz:{count}:{tag}')
         stats = collections.Counter(); out = []; batch = []
         for c in candidates(rng, count):
             batch.append(c)
@@ -225,7 +240,7 @@ def enc_fuzz(rng_unused, count):
         out += select(batch, stats)
         stats['candidates'] = sum(v for k, v in stats.items() if k != 'candidates')
         return out, stats
-    cases, stats = cached(FAMILY, count, produce)
+    cases, stats = cached(FAMILY, [count, tag], produce)
     STATS[FAMILY] = stats
     yield from cases
 

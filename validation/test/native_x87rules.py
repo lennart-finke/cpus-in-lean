@@ -163,7 +163,7 @@ def fpu_pointers(rng, count):
 
 
 def fam(name, gen):
-    return lambda rng_unused, count: iter(selected(name, count, gen))
+    return lambda rng, count: iter(selected(name, count, gen, rng))
 
 
 FAMILIES = [(fam('x87_control_load', x87_control_load), ('xsave', 'osxsave', 'avx')),

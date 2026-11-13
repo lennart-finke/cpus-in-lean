@@ -62,7 +62,7 @@ def int_core_candidates(rng, count):
         except struct.error:   # a 16-bit absolute address of the arena (above 64 KiB): not encodable
             continue
         patches = [(o, v & 0xFFFFFFFF) for o, v in g.patches]
-        mem = bytearray(rng.getrandbits(8) for _ in range(64))
+        mem = bytearray(64)   # the arena is random (its seed); the patch only carries gen.py's patches
         ext = []
         for o, v in patches:
             if 0 <= o <= 60: struct.pack_into('<I', mem, o, v)
@@ -297,9 +297,12 @@ def shift16(rng):
                                flags=0x203, patches=[(0x100, 0xEEEE0000 | v)])
 
 
-def selected(family, count, make):
+def selected(family, count, make, rng):
+    """The cases of `make(rng, count)` that native_ext.select keeps, cached; the family's own generator is
+    seeded with a tag drawn from the bundle's (deterministic for seed, count and model)."""
+    tag = rng.getrandbits(64)
     def produce():
-        rng = random.Random(f'{family}:{count}')
+        rng = random.Random(f'{family}:{count}:{tag}')
         stats = collections.Counter(); out = []; batch = []
         for c in make(rng, count):
             batch.append(c)
@@ -307,23 +310,90 @@ def selected(family, count, make):
                 out += select(batch, stats); batch = []
         out += select(batch, stats)
         return out, stats
-    cases, stats = cached(family, count, produce)
+    cases, stats = cached(family, [count, tag], produce)
     STATS[family] = stats
     return cases
 
 
-def int_core(rng_unused, count):
-    yield from selected('int_core', count, lambda rng, n: int_core_candidates(rng, max(300, n * 28)))
+def int_core(rng, count):
+    yield from selected('int_core', count, lambda rng, n: int_core_candidates(rng, max(300, n * 28)), rng)
 
 
-def int_directed(rng_unused, count):
+def int_directed(rng, count):
     yield from selected('int_directed', count, lambda rng, n: directed(rng) if n >= 10000 else
-                        (c for k, c in enumerate(directed(rng)) if k % 50 == 0))
+                        (c for k, c in enumerate(directed(rng)) if k % 50 == 0), rng)
 
 
-def shift16_rules(rng_unused, count):
+def shift16_rules(rng, count):
     yield from selected('shift16_rules', count, lambda rng, n: shift16(rng) if n >= 10000 else
-                        (c for k, c in enumerate(shift16(rng)) if k % 50 == 0))
+                        (c for k, c in enumerate(shift16(rng)) if k % 50 == 0), rng)
 
 
 FAMILIES = [(int_core, ()), (int_directed, ()), (shift16_rules, ())]
+
+
+# ---------------------------------------------------------------------------------------------------
+# code16: a 16-bit code segment (the oracle's LDT: CS 07h based at the code page, IP 0100h; DS = ES 0Fh
+# based at the arena, limit 1FFFh; SS, FS, GS flat 32-bit). Linux allows it to user processes through
+# modify_ldt (CONFIG_MODIFY_LDT_SYSCALL, CONFIG_X86_16BIT; the oracle stops with an error, recorded as
+# a failed campaign, where it is not available).
+
+CODE16 = ['0107', '0300', '83471005', '810634127856', '660107', '670103', '2907', '3107', '8507', 'f617',
+          'd1e0', 'c1e005', 'd3e0', 'd127', 'c02f03', 'd3c8', '660fa4d805', '0fa5d8', '0fa307', '0fbb07', '0fbc07',
+          'f7e3', 'f7f3', 'f6f3', '66f7f3', 'f7fb', '0faf07', '6b070f', '69c33412',
+          'a4', 'a5', 'f3a4', 'f3a5', '66a5', 'f366a5', 'aa', 'ab', 'f3ab', 'ac', 'ad', 'a6', 'a7', 'f3a6', 'ae', 'af',
+          'f2ae', '67a4', '26a5', '36a4', '64ac', 'd7', '26d7',
+          '50', '58', '60', '61', '6660', '6661', '9c', '9d', 'c8080000', 'c8040001', 'c9', '6a05', '683412', 'ff37',
+          '8f07', '06', '0e', '16', '1e', '0fa0', '0fa8',
+          '7405', '7505', '0f840500', 'e305', '67e305', 'e205', 'eb05', 'e90500', 'e80500', 'c3', 'c20400', 'ffd0',
+          'ffe0', 'ff17', 'ff27', '66e805000000', '66c3',
+          '0fb607', '0fbe07', '660fb707', '0fbf07', '98', '99', '6698', '6699', '0fc8', '660fc8', '86c4', '87d8', '9e', '9f',
+          'f5', 'fd', 'fc', '6207', '666207', '63d8', '0fb507',
+          'd907', 'dd1f', 'df07', 'db2f', 'd937', '66d937', 'dd37', '66dd37', 'd927', 'dd27', 'd93f', 'dd3f', '0fae07',
+          '0fae17', '0fae1f', '0f1007', '0f1107', '660f6f07', '660f7f07', 'f30f7e07', '0f2807', '660f5807', 'c5f85807',
+          'c5fc1007', 'c4e27d1807', '0f0d0f', '0f1807', '0fae3f']
+
+
+def code16_cases(rng, count):
+    reps = 16 if count >= 10000 else 2
+    for code in CODE16:
+        for k in range(reps):
+            regs = {r: (rng.getrandbits(16) << 16) | rng.randrange(0x1F00) for r in (0, 2, 3, 5, 6, 7)}
+            regs[1] = rng.choice((0, 1, 2, 5)) | (rng.getrandbits(16) << 16 if k % 2 else 0)
+            regs[4] = 0x11800 - 4 * rng.randrange(16)
+            if k % 4 == 0: regs[0] = 0x180 + 4 * rng.randrange(0x100)       # CALL/JMP AX: an IP in the INT3 filling
+            sp_off = regs[4] - 0x10000
+            flags = 0x202 | (rng.getrandbits(12) & 0x8D5) | (DF if k % 5 == 4 else 0)
+            perms = rng.choice([(0x67, 0x67)] * 5 + [(0x67, 0x65), (0x65, 0x67), (0, 0x67)])
+            patches = [(sp_off, 0x0180 | (0x0190 << 16)), ((regs[3] & 0xFFFF) & ~3, 0x01A0 | (0x01B0 << 16))]
+            yield case('code16', f'c16_{code}', code, regs=regs, flags=flags, perms=perms, patches=patches)
+    # random encodings in the 16-bit segment, single-stepped as in enc_fuzz (no fix-ups: refusals are counted)
+    import native_fuzz
+    from native_ext import windows_safe
+    for _ in range(max(100, count // 2)):
+        code, kind = native_fuzz.random_encoding(rng)
+        code = code[:15]
+        if not windows_safe(code): continue
+        c = native_fuzz.inputs(rng)
+        raw = record3(code, regs=c['regs'], xmm=c['xmm'], ymmh=c['ymmh'], mem=c['mem'], flags=c['flags'], mxcsr=c['mxcsr'],
+                      permissions=c['permissions'], stack=c['stack'], cw=c['cw'], sw=c['sw'], tags=c['tags'], seed=c['seed'])
+        m = meta3('code16', 'random_' + kind, code)
+        und = undefined_flags(code, c['regs'])   # (decoded as 32-bit code: an approximation of the undefined flags)
+        m['flags_mask'] = ARITH & ~und
+        if und: m['flags_observe'] = und
+        yield raw, m
+
+
+def code16_mode(rng, count):
+    """code16_cases with every record in mode 1 and marked (`code16`)."""
+    for raw, m in code16_cases(rng, count):
+        r = bytearray(raw)
+        r[776 + 28] = 1
+        yield bytes(r), dict(m, code16=True)
+
+
+def code16(rng, count):
+    yield from selected('code16', count, code16_mode, rng)
+
+
+FAMILIES += [(code16, ())]

@@ -267,7 +267,7 @@ def avx_random(rng, count):
 
 
 def fam(name, gen):
-    return lambda rng_unused, count: iter(selected(name, count, gen))
+    return lambda rng, count: iter(selected(name, count, gen, rng))
 
 
 FAMILIES = [(fam('fma_random', fma_random), ('fma', 'avx', 'osxsave')),
