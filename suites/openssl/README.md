@@ -1,10 +1,8 @@
 # OpenSSL verification tasks
 
-Four targets from **OpenSSL 3.5.9**, ported from `verify/suites/ssl/` at commit `4e16d42d`.
-The suite has **13 open correctness obligations** about pinned i386 machine code running on
-the [`x86_32` model](../../x86_32/README.md). The specifications are independent mathematical
-definitions of the algorithms. This is a task suite, not a claim that the implementations have
-been proved correct.
+Four targets from **OpenSSL 3.5.9**, ported from `verify/suites/ssl/` at `4e16d42d`: **13 open
+obligations** about pinned i386 code on the [`x86_32` model](../../x86_32/README.md), against
+independent mathematical specifications. Nothing is proved.
 
 | Target | Obligations |
 |---|---|
@@ -13,18 +11,13 @@ been proved correct.
 | [Poly1305](Ssl/OpensslPoly1305/Statement.lean) | Streaming authentication and context wiping, one-shot authentication, context size (3) |
 | [X25519](Ssl/OpensslX25519/Statement.lean) | Field add/subtract/multiply/square, scalar multiplication, public-key derivation (6) |
 
-Each obligation retains the original inputs, preconditions and postconditions. Calls must return,
-restore callee-saved registers and preserve memory outside the stated writable regions and the
-callee's stack area. The caller's memory has any size and contents, and messages have any length the
-algorithm's specification allows (below 2^61 bytes for SHA-256; a single buffer is at most a C object,
-2^31 - 1 bytes). `Ssl/Harness.lean` lists every choice the statements fix. The statements specify the portable
-C implementations compiled with the recorded flags; they do not cover OpenSSL's assembly dispatch,
-TLS, providers, execution environments other than the one the harness fixes (ring 0, no paging,
-interrupts off), or side-channel properties.
+Calls must return, restore callee-saved registers and change only the writable regions and their
+stack, for any caller memory and any message length the algorithm allows (SHA-256: below 2^61 bytes;
+one buffer at most 2^31 - 1). `Ssl/Harness.lean` lists every fixed choice. Covered: the portable C
+code with the recorded flags. Not covered: assembly dispatch, TLS, providers, environments other than
+ring 0 without paging or interrupts, side channels.
 
 ## Run
-
-From this directory:
 
 ```sh
 lake build
@@ -33,48 +26,30 @@ lake build
 ./verify.sh --high     # also the slow checks: buffers above address 2^31, SHA-256 past 2^32 bits
 ```
 
-The default check needs Lean (the repository toolchain) and Python 3, with no network access.
-It verifies the Lean-embedded image bytes against pinned hashes and symbol maps, checks any
-cached sources, builds the suite and runs finite
-examples on the CPU model against the specifications. The specifications also contain Lean-checked
-standard test vectors. These checks do not prove the open obligations.
+The default (Lean, Python 3, offline) checks image bytes against pinned hashes and symbol maps,
+builds, and runs finite examples and test vectors against the specifications; it proves nothing.
 
-`--rebuild` additionally needs Clang and an i386-capable `objdump` (`CC` and `OBJDUMP` can override
-them). It fetches missing upstream files from the pinned OpenSSL tag and checks every download
-against `targets/*/SOURCES.sha256` before using it. Sources are cached in ignored
-`targets/*/vendor/` directories; subsequent rebuilds can use that cache offline. They can also be
-prefetched with `python3 tools/fetch_sources.py`.
-
-The pins were produced by Apple Clang 21.0.0; exact compiler details are recorded in each
-`targets/*/image/compiler.txt`. Another compiler may produce different bytes. Rebuilds write only
-to ignored source caches and `out/` directories and fail on a mismatch; they never update the pinned task images.
-To inspect one rebuilt target, run `python3 tools/build.py openssl_chacha20` and read
-`out/openssl_chacha20/openssl_chacha20.dis`.
+`--rebuild` also needs Clang and an i386 `objdump` (`CC`, `OBJDUMP`). It fetches missing files from
+the pinned tag, checks `targets/*/SOURCES.sha256`, caches in ignored `targets/*/vendor/` (prefetch:
+`python3 tools/fetch_sources.py`), writes only to caches and `out/`, and fails on any mismatch. Pins
+come from Apple Clang 21.0.0 (`targets/*/image/compiler.txt`). One target: `python3 tools/build.py
+openssl_chacha20`, then `out/openssl_chacha20/openssl_chacha20.dis`.
 
 ## Work on a task
 
-Import the target's `Statement.lean` and prove its named proposition in a separate solution file.
-For example, a solution to the context-size task has the type
-`Ssl.OpensslPoly1305.Poly1305_ctx_size_correct`; a complete ChaCha20 solution has the type
-`Ssl.OpensslChacha20.ChaCha20_ctr32_correct`. Both include all input quantifiers and preconditions.
-Keep the specification, image and task definitions fixed while developing the proof.
-
-The original suite expressed tasks as admitted theorems. Here they are `def … : Prop` declarations:
-importing a task supplies its statement, not evidence of its truth. This port includes no solution
-proofs or general symbolic-execution framework. The original `Ssl` namespace is retained.
+Prove the proposition of a target's `Statement.lean` in a separate file, e.g.
+`Ssl.OpensslPoly1305.Poly1305_ctx_size_correct` or `Ssl.OpensslChacha20.ChaCha20_ctr32_correct`,
+leaving specification, image and tasks unchanged. Tasks are `def … : Prop`, not admitted theorems as
+in the original, so importing one gives no evidence. No solutions or symbolic-execution framework included.
 
 ## Separation and provenance
 
-- `Ssl/Spec/` and `Ssl/Bytes.lean`: algorithm specifications and byte encodings; no CPU imports.
-- `Ssl/Harness.lean`: the suite's small call/reachability harness, adapted from `verify/contract`.
-  Execution uses the unchanged `X86.step`; there is no alternate emulator.
-- `Ssl/Openssl*/`: the sole stored copy of the machine-code bytes, plus task definitions.
-- `targets/`: minimal build headers, documented stubs, source/image hashes and symbol maps.
-  Each target's `PROVENANCE.md` and `NOTES.md` records its configuration. Upstream sources are
-  downloaded on demand; raw binaries and disassembly are produced under `out/` when rebuilding.
-- `tools/`: local image checking/rebuilding support, including the linker and runtime from `verify`.
-- `CheckMain.lean`: executable smoke checks, including all entry points named by the tasks.
+- `Ssl/Spec/`, `Ssl/Bytes.lean`: specifications and encodings; no CPU imports.
+- `Ssl/Harness.lean`: call harness from `verify/contract`, running the unchanged `X86.step`.
+- `Ssl/Openssl*/`: the only copy of the machine code, plus tasks.
+- `targets/`: build headers, stubs, hashes, symbol maps, per-target `PROVENANCE.md` and `NOTES.md`.
+- `tools/`: image checking/rebuilding, with the linker and runtime from `verify`.
+- `CheckMain.lean`: smoke checks of every entry point the tasks name.
 
-This package depends only on `../../x86_32`. The CPU packages do not import or depend on it;
-the suite has its own verification command and CI step. Upstream OpenSSL files retain their
-Apache-2.0 license, included once as [`LICENSE.openssl`](LICENSE.openssl).
+Depends only on `../../x86_32` (not vice versa), with its own verify command and CI step. OpenSSL
+files keep their Apache-2.0 license ([`LICENSE.openssl`](LICENSE.openssl)).
