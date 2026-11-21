@@ -28,7 +28,7 @@ def main():
     # collects the axioms each claim really depends on).
     for path in [*(ROOT / "Ssl").rglob("*.lean"), *(ROOT / "Solutions").rglob("*.lean"),
                  ROOT / "Solutions.lean", ROOT / "Claims.lean"]:
-        if re.search(r"\b(sorry|admit|axiom|native_decide|implemented_by|extern|unsafe|skipKernelTC)\b",
+        if re.search(r"\b(sorry|admit|axiom|native_decide|bv_decide|implemented_by|extern|unsafe|skipKernelTC)\b",
                      path.read_text()):
             raise SystemExit(f"Proof hole, declared axiom or kernel bypass in {path}")
     # The mathematical specifications must stay independent of the CPU and call harness.

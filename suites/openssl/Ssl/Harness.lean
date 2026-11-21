@@ -50,13 +50,17 @@ structure Img where
   bytes : ByteArray
   halt : UInt32
 
-/-- RAM must end at or below this address: the page at `0xFEE00000` is the local APIC's
-(`X86.Apic.base` as the model resets it), where the model's memory accesses do not reach `mem`.
-Bytes of `mem` at or above it would not be memory. Everything below is RAM in the model. -/
-def ramLimit : Nat := 0xFEE00000
+/-- RAM must end at or below this address: the page at `0xFEC00000` is the I/O APIC's
+(`X86.ioApicBase`) and the page at `0xFEE00000` the local APIC's (`X86.Apic.base` as the model
+resets it); the model's memory accesses to these two pages do not reach `mem`. Bytes of `mem` at or
+above the lower of them would not all be memory. Everything below is RAM in the model. -/
+def ramLimit : Nat := 0xFEC00000
 
-/-- `ramLimit` is where the machine `entry` builds has its local APIC. -/
-theorem ramLimit_eq_apicBase : ramLimit = ({} : X86.Apic).base.toNat := by decide
+/-- `ramLimit` is the model's I/O APIC page. -/
+theorem ramLimit_eq_ioApicBase : ramLimit = X86.ioApicBase.toNat := by decide
+
+/-- The local APIC of the machine `entry` builds is above `ramLimit`. -/
+theorem ramLimit_le_apicBase : ramLimit ≤ ({} : X86.Apic).base.toNat := by decide
 
 /-- The largest object a C implementation for i386 supports (`PTRDIFF_MAX`). A buffer handed to a C
 function is an object, and compiled code may rely on this limit. -/

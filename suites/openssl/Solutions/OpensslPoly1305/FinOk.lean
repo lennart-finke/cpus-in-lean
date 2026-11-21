@@ -1,0 +1,200 @@
+import Solutions.OpensslPoly1305.FinTail
+import Solutions.OpensslPoly1305.FinPadAll
+import Solutions.OpensslPoly1305.Correct
+/-!
+# `Poly1305_Final` from its entry
+
+`fin_p0` (`num = 0`: no last block) and `fin_p1` (`num ≠ 0`: the padded last block through
+`poly1305_blocks` with pad bit 0), then `fin_tail`; `final_ok : FinSpec`.
+-/
+namespace Solutions.OpensslPoly1305
+open X86 Ssl Solutions.Logic Solutions.Exec Ssl.OpensslPoly1305 Ssl.Spec.Poly1305
+
+set_option autoImplicit false
+
+theorem goodB_s {key msg : List UInt8} {G : PMem} {C : UInt32} (hg : GoodB key msg (memBytes G.get C 236))
+    (hfit : C.toNat + 236 ≤ G.get.size) (htop : G.get.size ≤ ramTop) :
+    s key = val4 (cw G C 192) (cw G C 196) (cw G C 200) (cw G C 204) := by
+  have hw : ∀ (k : Nat) (j : UInt32), j.toNat = k → k + 4 ≤ 236 →
+      wd (memBytes G.get C 236) k = (cw G C j).toNat :=
+    fun k j hj hk4 => wd_memBytes hfit htop k hk4 j hj
+  obtain ⟨_, _, _, _, _, hs, _, _⟩ := hg
+  unfold wd4 at hs
+  simp only [Nat.reduceAdd] at hs
+  rw [hw 192 192 rfl (by decide), hw 196 196 rfl (by decide), hw 200 200 rfl (by decide),
+    hw 204 204 rfl (by decide)] at hs
+  exact hs
+
+theorem accM_full (R : Nat) (msg : List UInt8) (h : msg.length % 16 = 0) : accM R (blocks msg) = accOf R msg := by
+  rw [blocks_split, show msg.drop (fullLen msg) = [] from
+    List.eq_nil_of_length_eq_zero (by rw [drop_fullLen_length]; omega), blocks_nil, List.append_nil]
+  rfl
+
+theorem accM_tail (R : Nat) (msg : List UInt8) (hn : msg.length % 16 ≠ 0) :
+    accM R (blocks msg) = accMa R (accOf R msg) [msg.drop (fullLen msg)] := by
+  have hl := drop_fullLen_length msg
+  rw [blocks_split, accM_append, blocks_short (msg.drop (fullLen msg)) (by rw [hl]; omega) (by
+    intro h; rw [h] at hl; simp at hl; omega)]
+  rfl
+
+theorem poly1305_eq (key msg : List UInt8) :
+    poly1305 key msg = Ssl.Spec.Poly1305.leBytes 16 ((accM (r key) (blocks msg) + s key) % 2 ^ 128) := by
+  unfold poly1305; rw [tagNat_eq]
+
+set_option maxHeartbeats 4000000 in
+/-- `num = 0`: no last block. -/
+theorem fin_p0 (key msg : List UInt8) (G : PMem) (U C mac : UInt32) (lU : List (Nat × UInt32))
+    (P : Nat → Prop) (hM : MemOK G G U 268 lU C 236 236 (lC0 G C) P)
+    (hg : GoodB key msg (memBytes G.get C 236)) (hP : ∀ x, PT U C mac x → P x)
+    (hmf : mac.toNat + 16 ≤ G.get.size) (hmi : mac.toNat + 16 ≤ 0x100000 ∨ 0x100000 + 1536 ≤ mac.toNat)
+    (hmU : mac.toNat + 16 ≤ U.toNat ∨ U.toNat + 268 ≤ mac.toNat)
+    (hmC : mac.toNat + 16 ≤ C.toNat ∨ C.toNat + 236 ≤ mac.toNat)
+    (ret a0 c0 d0 ebx0 ebp0 esi0 edi0 g0 : UInt32) (hlU : LK lU [(256, ret), (260, C), (264, mac)])
+    (hn0 : msg.length % 16 = 0) :
+    ∃ (N' : PMem) (lU' lC' : List (Nat × UInt32)) (eax ecx edx gf : UInt32) (ic : UInt64),
+      Run img (St.m ⟨G.get, a0, c0, d0, ebx0, UInt32.add U 256, ebp0, esi0, edi0, 0x100460, efl g0, icAdd 0 0⟩)
+        (St.m ⟨N'.get, eax, ecx, edx, ebx0, UInt32.add U 260, ebp0, esi0, edi0, ret, efl gf, ic⟩) ∧
+      MemOK G N' U 268 lU' mac 16 16 lC' (PT U C mac) ∧ LK lU' [(256, ret), (260, C), (264, mac)] ∧
+      memBytes N'.get mac 16 = poly1305 key msg ∧ ∀ j, j < 236 → memByte N'.get (C + j.toUInt32) = 0 := by
+  have hf := hM.fC; have hfit := hf.fit; have htop := hf.top
+  obtain ⟨g4, gacc, gr, gcl, gnum, gdat⟩ := goodB_cw hg hfit htop
+  have hs := goodB_s hg hfit htop
+  have hW := lk_lC0_W G C
+  obtain ⟨N1, lU1, g1, R1, M1, LU1, -⟩ := fin_a0 0 (by decide) G G U C lU (lC0 G C) P hM a0 c0 d0 ebx0 ebp0
+    esi0 edi0 g0 ret mac (cw G C 224) hlU ⟨lk_here, trivial⟩ (by rw [gnum, hn0])
+  have hs1 := M1.size
+  obtain ⟨N2, lU2, lC2, eax, ecx, edx, gf, ic, R2, M2, LU2, Htag, Hz⟩ := fin_tail (icAdd 0 7) (by decide) M1
+    (cw G C 224) c0 d0 ebx0 ebp0 g1 esi0 edi0 ret mac (cw G C 0) (cw G C 4) (cw G C 8) (cw G C 12) (cw G C 16)
+    (cw G C 192) (cw G C 196) (cw G C 200) (cw G C 204) hP LU1
+    ⟨hW.1, hW.2.1, hW.2.2.1, hW.2.2.2.1, hW.2.2.2.2.1, hW.2.2.2.2.2.2.2.2.2.1, hW.2.2.2.2.2.2.2.2.2.2.1,
+      hW.2.2.2.2.2.2.2.2.2.2.2.1, hW.2.2.2.2.2.2.2.2.2.2.2.2.1, trivial⟩
+    (by rw [hs1]; exact hmf) hmi hmU hmC
+  refine ⟨N2, lU2, lC2, eax, ecx, edx, gf, ic, R1.trans R2, M2.rebase (M1.pres.mono hP), LU2, ?_, Hz⟩
+  rw [Htag, emit_spec _ _ _ _ _ _ _ _ _ g4, gacc, ← hs, poly1305_eq, accM_full _ _ hn0]
+
+set_option maxHeartbeats 8000000 in
+/-- `num ≠ 0`: the padded last block. -/
+theorem fin_p1 (key msg : List UInt8) (G : PMem) (U C mac : UInt32) (lU : List (Nat × UInt32))
+    (P : Nat → Prop) (hM : MemOK G G U 268 lU C 236 236 (lC0 G C) P)
+    (hg : GoodB key msg (memBytes G.get C 236)) (hP : ∀ x, PT U C mac x → P x)
+    (hmf : mac.toNat + 16 ≤ G.get.size) (hmi : mac.toNat + 16 ≤ 0x100000 ∨ 0x100000 + 1536 ≤ mac.toNat)
+    (hmU : mac.toNat + 16 ≤ U.toNat ∨ U.toNat + 268 ≤ mac.toNat)
+    (hmC : mac.toNat + 16 ≤ C.toNat ∨ C.toNat + 236 ≤ mac.toNat)
+    (ret a0 c0 d0 ebx0 ebp0 esi0 edi0 g0 : UInt32) (hlU : LK lU [(256, ret), (260, C), (264, mac)])
+    (hn : msg.length % 16 ≠ 0) :
+    ∃ (N' : PMem) (lU' lC' : List (Nat × UInt32)) (eax ecx edx gf : UInt32) (ic : UInt64),
+      Run img (St.m ⟨G.get, a0, c0, d0, ebx0, UInt32.add U 256, ebp0, esi0, edi0, 0x100460, efl g0, icAdd 0 0⟩)
+        (St.m ⟨N'.get, eax, ecx, edx, ebx0, UInt32.add U 260, ebp0, esi0, edi0, ret, efl gf, ic⟩) ∧
+      MemOK G N' U 268 lU' mac 16 16 lC' (PT U C mac) ∧ LK lU' [(256, ret), (260, C), (264, mac)] ∧
+      memBytes N'.get mac 16 = poly1305 key msg ∧ ∀ j, j < 236 → memByte N'.get (C + j.toUInt32) = 0 := by
+  have hf := hM.fC; have hfit := hf.fit; have htop := hf.top; have hCi := hf.img
+  have hCt : C.toNat + 236 ≤ ramTop := Nat.le_trans hfit htop
+  have hdUC := hM.dUC
+  obtain ⟨g4, gacc, gr, gcl, gnum, gdat⟩ := goodB_cw hg hfit htop
+  have hs := goodB_s hg hfit htop
+  have hW := lk_lC0_W G C
+  obtain ⟨N1, lU1, g1, R1, M1, LU1, -⟩ := fin_a1 0 (by decide) G G U C lU (lC0 G C) P hM a0 c0 d0 ebx0 ebp0
+    esi0 edi0 g0 ret mac (cw G C 224) hlU ⟨lk_here, trivial⟩ (by rw [gnum]; exact hn)
+  have hs1 := M1.size
+  have e208 := hf.add_toNat (j := 208) (by decide)
+  have Mp := M1.switch (UInt32.add C 208) 16 0 []
+    ⟨by rw [hs1]; exact htop, by rw [hs1, e208]; simp only [UInt32.reduceToNat]; omega,
+      by rw [e208]; simp only [UInt32.reduceToNat]; omega⟩
+    (by rw [e208]; simp only [UInt32.reduceToNat]; omega) (Frame.nil _ _ _) (PadP U C (cw G C 224))
+    (fun x h => h.1) (fun x _ => by unfold OutF; omega)
+  obtain ⟨N2, lU2, a2, c2, g2, ic2, R2, hic2, M2, L2, Hk, H1, Hz0⟩ := fin_padall N1 (cw G C 224) esi0 edi0 ret mac
+    ebx0 ebp0 c0 g1 (icAdd 0 8) (by decide) Mp M1.fC hdUC LU1 (by rw [gnum]; omega)
+  have hs2 := M2.size
+  -- back to the context as the data region
+  have hFW : Frame N1 C 236 (WG G C) := M1.wC.sub _ (fun k v h => lk_of_mem hW k v (mem_of_lookup h))
+  have hFW2 : Frame N2 C 236 (WG G C) := Frame.pres' hFW M1.fC M2.pres (fun k v h j hj => by
+    have := W13_keys (mem_of_lookup h)
+    exact ⟨by unfold OutF; omega, by omega⟩)
+  have Mc := M2.switch C 236 236 (WG G C) (M1.fC.size_eq hs2) hdUC hFW2 P hM.pU hM.pC
+  have Mc4 := (((Mc.addC 208 208 rfl rfl (by decide)).addC 212 212 rfl rfl (by decide)).addC 216 216 rfl rfl
+    (by decide)).addC 220 220 rfl rfl (by decide)
+  obtain ⟨N3, lU3, R3, M3, LU3, -⟩ := fin_d ic2 (by omega) N2 N2 U C lU2 _ P Mc4 a2 c2 (UInt32.add C 208) ebx0 ebp0
+    mac g2 esi0 edi0 ret L2 trivial
+  have hs3 := M3.size
+  rw [icAdd0] at R3
+  have hW4 := lk_skip4 (lk_W13 (cw G C 0) (cw G C 4) (cw G C 8) (cw G C 12) (cw G C 16) (cw G C 20) (cw G C 24)
+    (cw G C 28) (cw G C 32) (cw G C 192) (cw G C 196) (cw G C 200) (cw G C 204)) (fun k v hm => W13_keys hm)
+    220 216 212 208 (rdRaw N2.get (UInt32.add C 220) 4) (rdRaw N2.get (UInt32.add C 216) 4)
+    (rdRaw N2.get (UInt32.add C 212) 4) (rdRaw N2.get (UInt32.add C 208) 4)
+    (by decide) (by decide) (by decide) (by decide)
+  have e132 := hM.fU.add_toNat (j := 132) (by decide)
+  have E4 : ExtR N3 (FQ U C) (UInt32.add C 208) (16 * 1) :=
+    ⟨by rw [e208, hs3, hs2, hs1]; simp only [UInt32.reduceToNat]; omega, by rw [hs3, hs2, hs1]; exact htop,
+      fun x h1 h2 => by
+        rw [e208] at h1 h2; simp only [UInt32.reduceToNat] at h1 h2
+        exact ⟨by unfold OutF; rw [e132]; simp only [UInt32.reduceToNat]; omega, by unfold OutF; omega⟩⟩
+  obtain ⟨N5, eax5, ecx5, edx5, gf5, o0, o1, o2, o3, o4, R5, M5, ho4, hv⟩ :=
+    fin_blk (icAdd ic2 4) M3 1 (Nat.le_refl _) (by have := icAdd_le ic2 4; omega)
+      a2 (UInt32.add C 208) ebx0 ebp0 C mac g2 1049769 16 0 esi0 edi0 ret C mac
+      (cw G C 0) (cw G C 4) (cw G C 8) (cw G C 12) (cw G C 16) (cw G C 20) (cw G C 24) (cw G C 28) (cw G C 32) LU3
+      ⟨hW4.1, hW4.2.1, hW4.2.2.1, hW4.2.2.2.1, hW4.2.2.2.2.1, hW4.2.2.2.2.2.1, hW4.2.2.2.2.2.2.1,
+        hW4.2.2.2.2.2.2.2.1, hW4.2.2.2.2.2.2.2.2.1, trivial⟩
+      [(192, cw G C 192), (196, cw G C 196), (200, cw G C 200), (204, cw G C 204)]
+      ⟨hW4.2.2.2.2.2.2.2.2.2.1, hW4.2.2.2.2.2.2.2.2.2.2.1, hW4.2.2.2.2.2.2.2.2.2.2.2.1,
+        hW4.2.2.2.2.2.2.2.2.2.2.2.2.1, trivial⟩
+      (fun k v hm => by have := List.mem_map_of_mem (f := Prod.fst) hm; simp at this; omega)
+      (by decide) E4 gcl.1 gcl.2.1 gcl.2.2.1 gcl.2.2.2.1 gcl.2.2.2.2.1 gcl.2.2.2.2.2.1 gcl.2.2.2.2.2.2 g4 (by decide)
+  obtain ⟨N6, lU6, g6, R6, M6, LU6, -⟩ := fin_e (icAdd (icAdd ic2 4) (61 + 184 * 1))
+    (by have := icAdd_le (icAdd ic2 4) (61 + 184 * 1); have := icAdd_le ic2 4; omega) N2 N5 U C _ _ P M5
+    eax5 ecx5 edx5 ebx0 ebp0 mac gf5 esi0 edi0 ret ⟨lk_here, lk_skip lk_here rfl, lk_skip (lk_skip lk_here rfl) rfl, lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl, trivial⟩ trivial
+  have hs6 := M6.size
+  rw [icAdd0] at R5 R6
+  obtain ⟨N7, lU7, lC7, eax, ecx, edx, gf, ic, R7, M7, LU7, Htag, Hz⟩ :=
+    fin_tail (icAdd (icAdd (icAdd ic2 4) (61 + 184 * 1)) 1)
+      (by have := icAdd_le (icAdd (icAdd ic2 4) (61 + 184 * 1)) 1; have := icAdd_le (icAdd ic2 4) (61 + 184 * 1)
+          have := icAdd_le ic2 4; omega)
+      M6 eax5 ecx5 edx5 ebx0 ebp0 g6 esi0 edi0 ret mac o0 o1 o2 o3 o4 (cw G C 192) (cw G C 196) (cw G C 200)
+      (cw G C 204) hP LU6 ⟨lk_here, lk_skip lk_here rfl, lk_skip (lk_skip lk_here rfl) rfl, lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl) rfl, trivial⟩ (by rw [hs6, hs2, hs1]; exact hmf) hmi hmU hmC
+  rw [icAdd0] at R7
+  have P06 : Pres G N6 (PT U C mac) :=
+    ((M1.pres.mono hP).trans (M2.pres.mono (fun x h => ⟨h.1, by have := h.2.1; unfold OutF at this; omega⟩))).trans
+      (M6.pres.mono hP)
+  refine ⟨N7, lU7, lC7, eax, ecx, edx, gf, ic, R1.trans (R2.trans (R3.trans (R5.trans (R6.trans R7)))),
+    M7.rebase P06, LU7, ?_, Hz⟩
+  -- the last block
+  have hTl := drop_fullLen_length msg
+  have hblk : memBytes N2.get (UInt32.add C 208) 16 =
+      msg.drop (fullLen msg) ++ 1 :: List.replicate (15 - msg.length % 16) 0 := by
+    apply list_ext! (by rw [memBytes_length]; simp only [List.length_append, List.length_cons,
+      List.length_replicate, hTl]; omega)
+    intro j hj
+    rw [memBytes_length] at hj
+    have ea := addr208 hCt j (by omega)
+    rw [getElem!_memBytes hj, show UInt32.add C 208 + j.toUInt32 = C + (208 + j).toUInt32 by
+      apply UInt32.toNat_inj.1; rw [ea, UInt32.toNat_add, e208]
+      simp only [Nat.toUInt32, UInt32.toNat_ofNat', UInt32.reduceToNat]; unfold ramTop at hCt; omega]
+    rw [gnum] at Hk H1 Hz0
+    by_cases hj1 : j < msg.length % 16
+    · rw [Hk j hj1, data_lk M1 hs1.symm ⟨lk_skip lk_here rfl, lk_skip (lk_skip lk_here rfl) rfl,
+        lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl, lk_skip (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) rfl,
+        trivial⟩ j (by omega), gdat j hj1, getElem!_app_l _ _ _ (by rw [hTl]; exact hj1), getElem!_drop']
+    · by_cases hj2 : j = msg.length % 16
+      · subst hj2
+        have := getElem!_app_r (msg.drop (fullLen msg)) (1 :: List.replicate (15 - msg.length % 16) 0) 0
+        rw [Nat.add_zero, hTl] at this
+        rw [H1, this]; rfl
+      · obtain ⟨i, rfl⟩ : ∃ i, j = msg.length % 16 + 1 + i := ⟨j - msg.length % 16 - 1, by omega⟩
+        rw [Hz0 _ (by omega) (by omega), ← hTl, Nat.add_assoc, getElem!_app_r]
+        simp only [List.getElem!_eq_getElem?_getD, Nat.add_comm 1 i, List.getElem?_cons_succ,
+          List.getElem?_replicate]
+        split <;> rfl
+  have hb3 : bval N3 (UInt32.add C 208) = bval N2 (UInt32.add C 208) := by
+    unfold bval
+    rw [uadd_assoc, uadd_assoc, uadd_assoc, show (208 : UInt32) + 4 = 212 from rfl,
+      show (208 : UInt32) + 8 = 216 from rfl, show (208 : UInt32) + 12 = 220 from rfl,
+      M3.rdC (k := 208) (lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl) 208 rfl,
+      M3.rdC (k := 212) (lk_skip (lk_skip lk_here rfl) rfl) 212 rfl,
+      M3.rdC (k := 216) (lk_skip lk_here rfl) 216 rfl, M3.rdC (k := 220) lk_here 220 rfl]
+  have hbv := bval_memBytes (G := N2) (a := UInt32.add C 208)
+    (by rw [e208, hs2, hs1]; simp only [UInt32.reduceToNat]; omega) (by rw [hs2, hs1]; exact htop)
+  rw [hblk, leNat_pad] at hbv
+  have h0 : (0 : UInt32).toNat = 0 := rfl
+  rw [Htag, emit_spec _ _ _ _ _ _ _ _ _ ho4, hv, accB_succ, accB_zero, hb3, hbv, h0, Nat.mul_zero, Nat.add_zero,
+    gacc, ← gr, ← hs, poly1305_eq, accM_tail _ _ hn, accMa_cons, accMa_nil]
+
+end Solutions.OpensslPoly1305

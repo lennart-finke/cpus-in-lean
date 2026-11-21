@@ -1,0 +1,84 @@
+  have n_v29 : v29.toNat = y18.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v29 rfl (by decide) (by decide)
+  have n_v30 : v30.toNat = v29.toNat + y17.toNat := tn_or 16 e_v30 (by rw [n_v29]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y17
+  have n_v31 : v31.toNat = v30.toNat * 2 ^ 2 % 2 ^ 32 := tn_shl 2 e_v31 rfl (by decide) (by decide)
+  have n_v32 : v32.toNat = v31.toNat % 2 ^ 25 / 2 ^ 2 * 2 ^ 2 := tn_landb 25 2 e_v32 (by decide) (by decide)
+  have n_v33 : v33.toNat = (v32.toNat + 16777216) % 2 ^ 32 := tn_addk 16777216 e_v33 rfl
+  have n_v34 : v34.toNat = v33.toNat / 2 ^ 25 := tn_shr 25 e_v34 rfl (by decide) (by decide)
+  have n_v35 : v35.toNat = v34.toNat * 19 % 2 ^ 32 := tn_mullo e_v35
+  have n_v37 : v37.toNat = (v35.toNat + y1.toNat) % 2 ^ 32 := tn_add e_v37
+  have n_v58 : v58.toNat = (v37.toNat + 33554432) % 2 ^ 32 := tn_addk 33554432 e_v58 rfl
+  have n_v62 : v62.toNat = v58.toNat % 2 ^ 32 / 2 ^ 26 * 2 ^ 26 := tn_landb 32 26 e_v62 (by decide) (by decide)
+  have n_v63 : v63.toNat = (v37.toNat + 2 ^ 33 - v62.toNat) % 2 ^ 32 := tn_sub e_v63
+  have n_v36 : v36.toNat = v34.toNat * 19 / 2 ^ 32 := tn_mulhi e_v36
+  have n_g37 : (cfBit g37).toNat = (v35.toNat + y1.toNat) / 2 ^ 32 := tn_cf e_g37
+  have n_v38 : v38.toNat = (v36.toNat + 0 + (cfBit g37).toNat) % 2 ^ 32 := tn_adc e_v38
+  have n_g55 : (cfBit g55).toNat = (v37.toNat + 33554432) / 2 ^ 32 := tn_cf e_g55
+  have n_v59 : v59.toNat = (v38.toNat + 0 + (cfBit g55).toNat) % 2 ^ 32 := tn_adc e_v59
+  have n_v60 : v60.toNat = (v59.toNat * 2 ^ 32 + v58.toNat) * 64 % 2 ^ 64 / 2 ^ 32 % 2 ^ 32 := tn_shld6 e_v60
+  have n_v2 : v2.toNat = y3.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v2 rfl (by decide) (by decide)
+  have n_v3 : v3.toNat = v2.toNat + y2.toNat := tn_or 16 e_v3 (by rw [n_v2]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y2
+  have n_v4 : v4.toNat = v3.toNat * 2 ^ 6 % 2 ^ 32 := tn_shl 6 e_v4 rfl (by decide) (by decide)
+  have n_v41 : v41.toNat = (v4.toNat + 16777216) % 2 ^ 32 := tn_addk 16777216 e_v41 rfl
+  have n_v42 : v42.toNat = v41.toNat % 2 ^ 31 / 2 ^ 25 * 2 ^ 25 := tn_landb 31 25 e_v42 (by decide) (by decide)
+  have n_v43 : v43.toNat = (v4.toNat + 2 ^ 33 - v42.toNat) % 2 ^ 32 := tn_sub e_v43
+  have n_v61 : v61.toNat = (v60.toNat + v43.toNat) % 2 ^ 32 := tn_add e_v61
+  have n_v44 : v44.toNat = v41.toNat / 2 ^ 25 := tn_shr 25 e_v44 rfl (by decide) (by decide)
+  have n_v6 : v6.toNat = y5.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v6 rfl (by decide) (by decide)
+  have n_v7 : v7.toNat = v6.toNat + y4.toNat := tn_or 16 e_v7 (by rw [n_v6]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y4
+  have n_v8 : v8.toNat = v7.toNat * 2 ^ 5 % 2 ^ 32 := tn_shl 5 e_v8 rfl (by decide) (by decide)
+  have n_v64 : v64.toNat = (v44.toNat + v8.toNat) % 2 ^ 32 := tn_add e_v64
+  have n_v65 : v65.toNat = ((v44.toNat + v8.toNat) % 2 ^ 32 + 33554432) % 2 ^ 32 := tn_add2k 33554432 e_v65 rfl
+  have n_v69 : v69.toNat = v65.toNat % 2 ^ 31 / 2 ^ 26 * 2 ^ 26 := tn_landb 31 26 e_v69 (by decide) (by decide)
+  have n_v70 : v70.toNat = (v64.toNat + 2 ^ 33 - v69.toNat) % 2 ^ 32 := tn_sub e_v70
+  have n_v66 : v66.toNat = v65.toNat / 2 ^ 26 := tn_shr 26 e_v66 rfl (by decide) (by decide)
+  have n_v10 : v10.toNat = y7.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v10 rfl (by decide) (by decide)
+  have n_v11 : v11.toNat = v10.toNat + y6.toNat := tn_or 16 e_v11 (by rw [n_v10]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y6
+  have n_v67 : v67.toNat = (v66.toNat + v11.toNat * 2 ^ 3 % 2 ^ 32) % 2 ^ 32 := tn_lea 3 e_v67 rfl
+  have n_v45 : v45.toNat = ((0 + v11.toNat * 2 ^ 3 % 2 ^ 32) % 2 ^ 32 + 16777216) % 2 ^ 32 := tn_leak0 3 16777216 e_v45 rfl rfl
+  have n_v47 : v47.toNat = v45.toNat % 2 ^ 28 / 2 ^ 25 * 2 ^ 25 := tn_landb 28 25 e_v47 (by decide) (by decide)
+  have n_v68 : v68.toNat = (v67.toNat + 2 ^ 33 - v47.toNat) % 2 ^ 32 := tn_sub e_v68
+  have n_v46 : v46.toNat = v45.toNat / 2 ^ 25 := tn_shr 25 e_v46 rfl (by decide) (by decide)
+  have n_v13 : v13.toNat = y9.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v13 rfl (by decide) (by decide)
+  have n_v14 : v14.toNat = v13.toNat + y8.toNat := tn_or 16 e_v14 (by rw [n_v13]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y8
+  have n_v71 : v71.toNat = (v46.toNat + v14.toNat * 2 ^ 2 % 2 ^ 32) % 2 ^ 32 := tn_lea 2 e_v71 rfl
+  have n_v72 : v72.toNat = ((v46.toNat + v14.toNat * 2 ^ 2 % 2 ^ 32) % 2 ^ 32 + 33554432) % 2 ^ 32 := tn_leak 2 33554432 e_v72 rfl rfl
+  have n_v75 : v75.toNat = v72.toNat % 2 ^ 28 / 2 ^ 26 * 2 ^ 26 := tn_landb 28 26 e_v75 (by decide) (by decide)
+  have n_v76 : v76.toNat = (v71.toNat + 2 ^ 33 - v75.toNat) % 2 ^ 32 := tn_sub e_v76
+  have n_v73 : v73.toNat = v72.toNat / 2 ^ 26 := tn_shr 26 e_v73 rfl (by decide) (by decide)
+  have n_v48 : v48.toNat = (y10.toNat + 16777216) % 2 ^ 32 := tn_addk 16777216 e_v48 rfl
+  have n_v52 : v52.toNat = v48.toNat % 2 ^ 32 / 2 ^ 25 * 2 ^ 25 := tn_landb 32 25 e_v52 (by decide) (by decide)
+  have n_v53 : v53.toNat = (y10.toNat + 2 ^ 33 - v52.toNat) % 2 ^ 32 := tn_sub e_v53
+  have n_v74 : v74.toNat = (v73.toNat + v53.toNat) % 2 ^ 32 := tn_add e_v74
+  have n_g47 : (cfBit g47).toNat = (y10.toNat + 16777216) / 2 ^ 32 := tn_cf e_g47
+  have n_v49 : v49.toNat = (cfBit g47).toNat := tn_setb' e_v49
+  have n_v50 : v50.toNat = (v49.toNat * 2 ^ 32 + v48.toNat) * 128 % 2 ^ 64 / 2 ^ 32 % 2 ^ 32 := tn_shld7 e_v50
+  have n_v17 : v17.toNat = y12.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v17 rfl (by decide) (by decide)
+  have n_v18 : v18.toNat = v17.toNat + y11.toNat := tn_or 16 e_v18 (by rw [n_v17]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y11
+  have n_v19 : v19.toNat = v18.toNat * 2 ^ 7 % 2 ^ 32 := tn_shl 7 e_v19 rfl (by decide) (by decide)
+  have n_v51 : v51.toNat = (v50.toNat + v19.toNat) % 2 ^ 32 := tn_add e_v51
+  have n_v77 : v77.toNat = (v51.toNat + 33554432) % 2 ^ 32 := tn_addk 33554432 e_v77 rfl
+  have n_v81 : v81.toNat = v77.toNat % 2 ^ 32 / 2 ^ 26 * 2 ^ 26 := tn_landb 32 26 e_v81 (by decide) (by decide)
+  have n_v82 : v82.toNat = (v51.toNat + 2 ^ 33 - v81.toNat) % 2 ^ 32 := tn_sub e_v82
+  have n_g70 : (cfBit g70).toNat = (v51.toNat + 33554432) / 2 ^ 32 := tn_cf e_g70
+  have n_v78 : v78.toNat = (cfBit g70).toNat := tn_setb' e_v78
+  have n_v79 : v79.toNat = (v78.toNat * 2 ^ 32 + v77.toNat) * 64 % 2 ^ 64 / 2 ^ 32 % 2 ^ 32 := tn_shld6 e_v79
+  have n_v21 : v21.toNat = y14.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v21 rfl (by decide) (by decide)
+  have n_v22 : v22.toNat = v21.toNat + y13.toNat := tn_or 16 e_v22 (by rw [n_v21]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y13
+  have n_v23 : v23.toNat = v22.toNat * 2 ^ 5 % 2 ^ 32 := tn_shl 5 e_v23 rfl (by decide) (by decide)
+  have n_v54 : v54.toNat = (v23.toNat + 16777216) % 2 ^ 32 := tn_addk 16777216 e_v54 rfl
+  have n_v55 : v55.toNat = v54.toNat % 2 ^ 30 / 2 ^ 25 * 2 ^ 25 := tn_landb 30 25 e_v55 (by decide) (by decide)
+  have n_v56 : v56.toNat = (v23.toNat + 2 ^ 33 - v55.toNat) % 2 ^ 32 := tn_sub e_v56
+  have n_v80 : v80.toNat = (v79.toNat + v56.toNat) % 2 ^ 32 := tn_add e_v80
+  have n_v57 : v57.toNat = v54.toNat / 2 ^ 25 := tn_shr 25 e_v57 rfl (by decide) (by decide)
+  have n_v25 : v25.toNat = y16.toNat * 2 ^ 16 % 2 ^ 32 := tn_shl 16 e_v25 rfl (by decide) (by decide)
+  have n_v26 : v26.toNat = v25.toNat + y15.toNat := tn_or 16 e_v26 (by rw [n_v25]; exact fb_mod_shl_zero _ 16 (by decide)) hb_y15
+  have n_v27 : v27.toNat = v26.toNat * 2 ^ 4 % 2 ^ 32 := tn_shl 4 e_v27 rfl (by decide) (by decide)
+  have n_v83 : v83.toNat = (v57.toNat + v27.toNat) % 2 ^ 32 := tn_add e_v83
+  have n_v84 : v84.toNat = ((v57.toNat + v27.toNat) % 2 ^ 32 + 33554432) % 2 ^ 32 := tn_add2k 33554432 e_v84 rfl
+  have n_v87 : v87.toNat = v84.toNat % 2 ^ 30 / 2 ^ 26 * 2 ^ 26 := tn_landb 30 26 e_v87 (by decide) (by decide)
+  have n_v88 : v88.toNat = (v83.toNat + 2 ^ 33 - v87.toNat) % 2 ^ 32 := tn_sub e_v88
+  have n_v85 : v85.toNat = v84.toNat / 2 ^ 26 := tn_shr 26 e_v85 rfl (by decide) (by decide)
+  have n_v39 : v39.toNat = v33.toNat % 2 ^ 26 / 2 ^ 25 * 2 ^ 25 := tn_landb 26 25 e_v39 (by decide) (by decide)
+  have n_v40 : v40.toNat = (v32.toNat + 2 ^ 33 - v39.toNat) % 2 ^ 32 := tn_sub e_v40
+  have n_v86 : v86.toNat = (v85.toNat + v40.toNat) % 2 ^ 32 := tn_add e_v86
+  obtain ⟨⟨m0, b0, b0'⟩, ⟨m1, b1, b1'⟩, ⟨m2, b2, b2'⟩, ⟨m3, b3, b3'⟩, ⟨m4, b4, b4'⟩, ⟨m5, b5, b5'⟩, ⟨m6, b6, b6'⟩, ⟨m7, b7, b7'⟩, ⟨m8, b8, b8'⟩, ⟨m9, b9, b9'⟩⟩ := fb_limbs y1.toNat y2.toNat y3.toNat y4.toNat y5.toNat y6.toNat y7.toNat y8.toNat y9.toNat y10.toNat y11.toNat y12.toNat y13.toNat y14.toNat y15.toNat y16.toNat y17.toNat y18.toNat _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ v29.toNat v30.toNat v31.toNat v32.toNat v33.toNat v34.toNat v35.toNat v37.toNat v58.toNat v62.toNat v63.toNat v36.toNat (cfBit g37).toNat v38.toNat (cfBit g55).toNat v59.toNat v60.toNat v2.toNat v3.toNat v4.toNat v41.toNat v42.toNat v43.toNat v61.toNat v44.toNat v6.toNat v7.toNat v8.toNat v64.toNat v65.toNat v69.toNat v70.toNat v66.toNat v10.toNat v11.toNat v67.toNat v45.toNat v47.toNat v68.toNat v46.toNat v13.toNat v14.toNat v71.toNat v72.toNat v75.toNat v76.toNat v73.toNat v48.toNat v52.toNat v53.toNat v74.toNat (cfBit g47).toNat v49.toNat v50.toNat v17.toNat v18.toNat v19.toNat v51.toNat v77.toNat v81.toNat v82.toNat (cfBit g70).toNat v78.toNat v79.toNat v21.toNat v22.toNat v23.toNat v54.toNat v55.toNat v56.toNat v80.toNat v57.toNat v25.toNat v26.toNat v27.toNat v83.toNat v84.toNat v87.toNat v88.toNat v85.toNat v39.toNat v40.toNat v86.toNat hb_y1 hb_y2 hb_y3 hb_y4 hb_y5 hb_y6 hb_y7 hb_y8 hb_y9 hb_y10 hb_y11 hb_y12 hb_y13 hb_y14 hb_y15 hb_y16 hb_y17 hb_y18 rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl n_v29 n_v30 n_v31 n_v32 n_v33 n_v34 n_v35 n_v37 n_v58 n_v62 n_v63 n_v36 n_g37 n_v38 n_g55 n_v59 n_v60 n_v2 n_v3 n_v4 n_v41 n_v42 n_v43 n_v61 n_v44 n_v6 n_v7 n_v8 n_v64 n_v65 n_v69 n_v70 n_v66 n_v10 n_v11 n_v67 n_v45 n_v47 n_v68 n_v46 n_v13 n_v14 n_v71 n_v72 n_v75 n_v76 n_v73 n_v48 n_v52 n_v53 n_v74 n_g47 n_v49 n_v50 n_v17 n_v18 n_v19 n_v51 n_v77 n_v81 n_v82 n_g70 n_v78 n_v79 n_v21 n_v22 n_v23 n_v54 n_v55 n_v56 n_v80 n_v57 n_v25 n_v26 n_v27 n_v83 n_v84 n_v87 n_v88 n_v85 n_v39 n_v40 n_v86

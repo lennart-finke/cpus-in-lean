@@ -47,7 +47,7 @@ def check_suite():
         data, _ = gen_image.pinned_image(target)
         print(f"{target}: embedded image matches {hashlib.sha256(data).hexdigest()}")
     for path in (HERE / LIB).rglob("*.lean"):
-        if re.search(r"\b(sorry|admit|axiom|native_decide|implemented_by|extern|unsafe)\b", path.read_text()):
+        if re.search(r"\b(sorry|admit|axiom|native_decide|bv_decide|implemented_by|extern|unsafe)\b", path.read_text()):
             raise SystemExit(f"Proof hole, declared axiom or kernel bypass in {path}")
     for path in (HERE / LIB / "Spec").glob("*.lean"):   # specifications are independent of the CPU model
         if re.findall(r"^import (.+)$", path.read_text(), re.M):

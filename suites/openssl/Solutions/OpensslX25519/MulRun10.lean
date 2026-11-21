@@ -1,0 +1,174 @@
+import Solutions.OpensslX25519.ShapesSq1
+import Solutions.OpensslX25519.ShapesSq2
+import Solutions.OpensslX25519.ShapesSq3
+import Solutions.OpensslX25519.ShapesSq4
+import Solutions.OpensslX25519.ShapesMul1
+import Solutions.OpensslX25519.ShapesMul2
+import Solutions.OpensslX25519.Frame
+import Solutions.Exec.Mul
+/-!
+# The run of `fe_mul`, pieces 54–59
+
+Generated (`gen/genmulmain.py`) from the disassembly: each piece runs at most eight instructions (at
+most four stores) by `cbv` from a memory `N` whose frame words are listed in `l`, and states the
+values it computes as single-operation equations over its inputs.
+-/
+namespace Solutions.OpensslX25519
+open X86 Ssl Solutions.Logic Solutions.Exec Ssl.OpensslX25519 Solutions.Exec.Mul Solutions.Exec.Fast
+
+attribute [local cbv_opaque] Image.bytes
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+set_option cbv.maxSteps 50000000
+
+/-- movl 0x4c(%esp), %ebx ; movl %ebx, %eax ; imull %ecx ; movl %edx, 0x7c(%esp) ; movl %eax, 0x78(%esp) ; movl %edi, %eax ; imull %ecx ; movl %edx, 0xa4(%esp) -/
+theorem mul_p54 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v286 x9 v287 x8 v34 x11 v26 g288 v24 v289 v290 g291 v292 v293 g294 : UInt32)
+        (l_v24 : l.lookup 76 = some v24)
+    (e_v289 : v289 = UInt64.toUInt32 (imulCore 4 v24 x9).1)
+    (e_v290 : v290 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v24 x9).1 32))
+    (e_g291 : g291 = mixF g288 (ovfBits (imulCore 4 v24 x9).2) 2049)
+    (e_v292 : v292 = UInt64.toUInt32 (imulCore 4 v26 x9).1)
+    (e_v293 : v293 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v26 x9).1 32))
+    (e_g294 : g294 = mixF g291 (ovfBits (imulCore 4 v26 x9).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v286, x9, v287, x8, fb, v34, x11, v26, 0x10138a, efl g288, 437⟩)
+      (St.m ⟨N'.get, v292, x9, v293, v24, fb, v34, x11, v26, 0x1013a5, efl g294, 445⟩) ∧
+      Frame N' fb 836 ((164, v293) :: (120, v289) :: (124, v290) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF N fb 836 124 v290 hS (by decide)) fb 836 120 v289 stF_FB (by decide)) fb 836 164 v293 stF_FB (by decide)), run_of_runOk (k := 8) ?_, (((hF.wrF 124 rfl rfl).wrF 120 rfl rfl).wrF 164 rfl rfl), (((hP.wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g294
+  subst e_v293
+  subst e_v292
+  subst e_g291
+  subst e_v290
+  subst e_v289
+  have r_v24 := hF.rd l_v24 76 rfl; subst r_v24
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- movl %eax, 0xa0(%esp) ; movl 0x40(%esp), %eax ; imull %ecx ; movl %edx, 0xec(%esp) ; movl %eax, 0xe4(%esp) ; movl 0x3c(%esp), %eax ; imull %ecx ; movl %edx, 0x134(%esp) -/
+theorem mul_p55 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v292 x9 v293 v24 v34 x11 v26 g294 v28 v30 v295 v296 g297 v298 v299 g300 : UInt32)
+        (l_v28 : l.lookup 64 = some v28)
+    (l_v30 : l.lookup 60 = some v30)
+    (e_v295 : v295 = UInt64.toUInt32 (imulCore 4 v28 x9).1)
+    (e_v296 : v296 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v28 x9).1 32))
+    (e_g297 : g297 = mixF g294 (ovfBits (imulCore 4 v28 x9).2) 2049)
+    (e_v298 : v298 = UInt64.toUInt32 (imulCore 4 v30 x9).1)
+    (e_v299 : v299 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v30 x9).1 32))
+    (e_g300 : g300 = mixF g297 (ovfBits (imulCore 4 v30 x9).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v292, x9, v293, v24, fb, v34, x11, v26, 0x1013a5, efl g294, 445⟩)
+      (St.m ⟨N'.get, v298, x9, v299, v24, fb, v34, x11, v26, 0x1013cd, efl g300, 453⟩) ∧
+      Frame N' fb 836 ((308, v299) :: (228, v295) :: (236, v296) :: (160, v292) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF (stF N fb 836 160 v292 hS (by decide)) fb 836 236 v296 stF_FB (by decide)) fb 836 228 v295 stF_FB (by decide)) fb 836 308 v299 stF_FB (by decide)), run_of_runOk (k := 8) ?_, ((((hF.wrF 160 rfl rfl).wrF 236 rfl rfl).wrF 228 rfl rfl).wrF 308 rfl rfl), ((((hP.wrF (by decide)).wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g300
+  subst e_v299
+  subst e_v298
+  subst e_g297
+  subst e_v296
+  subst e_v295
+  have r_v28 := hF.rd l_v28 64 rfl; subst r_v28
+  have r_v30 := hF.rd l_v30 60 rfl; subst r_v30
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- movl %eax, 0x12c(%esp) ; movl 0x38(%esp), %edi ; movl %edi, %eax ; imull %ecx ; movl %edx, 0x8c(%esp) ; movl %eax, 0x88(%esp) ; movl %ebp, %eax ; imull %ecx -/
+theorem mul_p56 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v298 x9 v299 v24 v34 x11 v26 g300 v32 v301 v302 g303 v304 v305 g306 : UInt32)
+        (l_v32 : l.lookup 56 = some v32)
+    (e_v301 : v301 = UInt64.toUInt32 (imulCore 4 v32 x9).1)
+    (e_v302 : v302 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v32 x9).1 32))
+    (e_g303 : g303 = mixF g300 (ovfBits (imulCore 4 v32 x9).2) 2049)
+    (e_v304 : v304 = UInt64.toUInt32 (imulCore 4 v34 x9).1)
+    (e_v305 : v305 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v34 x9).1 32))
+    (e_g306 : g306 = mixF g303 (ovfBits (imulCore 4 v34 x9).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v298, x9, v299, v24, fb, v34, x11, v26, 0x1013cd, efl g300, 453⟩)
+      (St.m ⟨N'.get, v304, x9, v305, v24, fb, v34, x11, v32, 0x1013ee, efl g306, 461⟩) ∧
+      Frame N' fb 836 ((136, v301) :: (140, v302) :: (300, v298) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF N fb 836 300 v298 hS (by decide)) fb 836 140 v302 stF_FB (by decide)) fb 836 136 v301 stF_FB (by decide)), run_of_runOk (k := 8) ?_, (((hF.wrF 300 rfl rfl).wrF 140 rfl rfl).wrF 136 rfl rfl), (((hP.wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g306
+  subst e_v305
+  subst e_v304
+  subst e_g303
+  subst e_v302
+  subst e_v301
+  have r_v32 := hF.rd l_v32 56 rfl; subst r_v32
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- movl %edx, 0xc0(%esp) ; movl %eax, 0xb8(%esp) ; movl 0x24(%esp), %eax ; imull %ecx ; movl %edx, 0x104(%esp) ; movl %eax, 0x100(%esp) ; movl 0x10(%esp), %ebp ; movl %ebp, %eax -/
+theorem mul_p57 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v304 x9 v305 v24 v34 x11 v32 g306 v36 v38 v307 v308 g309 : UInt32)
+        (l_v36 : l.lookup 36 = some v36)
+    (l_v38 : l.lookup 16 = some v38)
+    (e_v307 : v307 = UInt64.toUInt32 (imulCore 4 v36 x9).1)
+    (e_v308 : v308 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v36 x9).1 32))
+    (e_g309 : g309 = mixF g306 (ovfBits (imulCore 4 v36 x9).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v304, x9, v305, v24, fb, v34, x11, v32, 0x1013ee, efl g306, 461⟩)
+      (St.m ⟨N'.get, v38, x9, v308, v24, fb, v38, x11, v32, 0x101416, efl g309, 469⟩) ∧
+      Frame N' fb 836 ((256, v307) :: (260, v308) :: (184, v304) :: (192, v305) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF (stF N fb 836 192 v305 hS (by decide)) fb 836 184 v304 stF_FB (by decide)) fb 836 260 v308 stF_FB (by decide)) fb 836 256 v307 stF_FB (by decide)), run_of_runOk (k := 8) ?_, ((((hF.wrF 192 rfl rfl).wrF 184 rfl rfl).wrF 260 rfl rfl).wrF 256 rfl rfl), ((((hP.wrF (by decide)).wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g309
+  subst e_v308
+  subst e_v307
+  have r_v36 := hF.rd l_v36 36 rfl; subst r_v36
+  have r_v38 := hF.rd l_v38 16 rfl; subst r_v38
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- imull %ecx ; movl %edx, 0x158(%esp) ; movl %eax, 0x154(%esp) ; movl %esi, %eax ; movl 0x1e8(%esp), %esi ; imull %esi ; movl %eax, 0x50(%esp) ; movl %edx, 0x2c(%esp) -/
+theorem mul_p58 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v38 x9 v308 v24 x11 v32 g309 x10 v310 v311 g312 v313 v314 g315 : UInt32)
+        (l_x10 : l.lookup 488 = some x10)
+    (e_v310 : v310 = UInt64.toUInt32 (imulCore 4 v38 x9).1)
+    (e_v311 : v311 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v38 x9).1 32))
+    (e_g312 : g312 = mixF g309 (ovfBits (imulCore 4 v38 x9).2) 2049)
+    (e_v313 : v313 = UInt64.toUInt32 (imulCore 4 x11 x10).1)
+    (e_v314 : v314 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 x11 x10).1 32))
+    (e_g315 : g315 = mixF g312 (ovfBits (imulCore 4 x11 x10).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v38, x9, v308, v24, fb, v38, x11, v32, 0x101416, efl g309, 469⟩)
+      (St.m ⟨N'.get, v313, x9, v314, v24, fb, v38, x10, v32, 0x101439, efl g315, 477⟩) ∧
+      Frame N' fb 836 ((44, v314) :: (80, v313) :: (340, v310) :: (344, v311) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF (stF N fb 836 344 v311 hS (by decide)) fb 836 340 v310 stF_FB (by decide)) fb 836 80 v313 stF_FB (by decide)) fb 836 44 v314 stF_FB (by decide)), run_of_runOk (k := 8) ?_, ((((hF.wrF 344 rfl rfl).wrF 340 rfl rfl).wrF 80 rfl rfl).wrF 44 rfl rfl), ((((hP.wrF (by decide)).wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g315
+  subst e_v314
+  subst e_v313
+  subst e_g312
+  subst e_v311
+  subst e_v310
+  have r_x10 := hF.rd l_x10 488 rfl; subst r_x10
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- leal (%esi,%esi,1), %ecx ; movl 0x54(%esp), %eax ; imull %ecx ; movl %edx, 0x8(%esp) ; movl %eax, 0x4(%esp) ; movl %ebx, %eax ; imull %esi ; movl %edx, 0x84(%esp) -/
+theorem mul_p59 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v313 x9 v314 v24 v38 x10 v32 g315 v22 v316 v317 v318 g319 v320 v321 g322 : UInt32)
+        (l_v22 : l.lookup 84 = some v22)
+    (e_v316 : v316 = UInt32.add x10 x10)
+    (e_v317 : v317 = UInt64.toUInt32 (imulCore 4 v22 v316).1)
+    (e_v318 : v318 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v22 v316).1 32))
+    (e_g319 : g319 = mixF g315 (ovfBits (imulCore 4 v22 v316).2) 2049)
+    (e_v320 : v320 = UInt64.toUInt32 (imulCore 4 v24 x10).1)
+    (e_v321 : v321 = UInt64.toUInt32 (UInt64.shiftRight (imulCore 4 v24 x10).1 32))
+    (e_g322 : g322 = mixF g319 (ovfBits (imulCore 4 v24 x10).2) 2049) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v313, x9, v314, v24, fb, v38, x10, v32, 0x101439, efl g315, 477⟩)
+      (St.m ⟨N'.get, v320, v316, v321, v24, fb, v38, x10, v32, 0x101455, efl g322, 485⟩) ∧
+      Frame N' fb 836 ((132, v321) :: (4, v317) :: (8, v318) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF (stF (stF N fb 836 8 v318 hS (by decide)) fb 836 4 v317 stF_FB (by decide)) fb 836 132 v321 stF_FB (by decide)), run_of_runOk (k := 8) ?_, (((hF.wrF 8 rfl rfl).wrF 4 rfl rfl).wrF 132 rfl rfl), (((hP.wrF (by decide)).wrF (by decide)).wrF (by decide))⟩
+  subst e_g322
+  subst e_v321
+  subst e_v320
+  subst e_g319
+  subst e_v318
+  subst e_v317
+  subst e_v316
+  have r_v22 := hF.rd l_v22 84 rfl; subst r_v22
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+end Solutions.OpensslX25519

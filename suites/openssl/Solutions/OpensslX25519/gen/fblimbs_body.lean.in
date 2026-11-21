@@ -1,0 +1,49 @@
+  have A1 := fz_ld 6 (by decide) hb_y3 hb_y2 n_v2 n_v3
+  have A2 := fz_ld 5 (by decide) hb_y5 hb_y4 n_v6 n_v7
+  have A3 := fz_ld 3 (by decide) hb_y7 hb_y6 n_v10 n_v11
+  have A4 := fz_ld 2 (by decide) hb_y9 hb_y8 n_v13 n_v14
+  have A6 := fz_ld 7 (by decide) hb_y12 hb_y11 n_v17 n_v18
+  have A7 := fz_ld 5 (by decide) hb_y14 hb_y13 n_v21 n_v22
+  have A8 := fz_ld 4 (by decide) hb_y16 hb_y15 n_v25 n_v26
+  have A9 := fz_h9 hb_y18 hb_y17 n_v29 n_v30 n_v31 n_v32
+  have w4 : v4 = H1 := n_v4.trans (A1.1.trans h_H1.symm)
+  have w8 : v8 = H2 := n_v8.trans (A2.1.trans h_H2.symm)
+  have w11 : v11 * 2 ^ 3 % 2 ^ 32 = H3 := A3.1.trans h_H3.symm
+  have w14 : v14 * 2 ^ 2 % 2 ^ 32 = H4 := A4.1.trans h_H4.symm
+  have w19 : v19 = H6 := n_v19.trans (A6.1.trans h_H6.symm)
+  have w23 : v23 = H7 := n_v23.trans (A7.1.trans h_H7.symm)
+  have w27 : v27 = H8 := n_v27.trans (A8.1.trans h_H8.symm)
+  have w32 : v32 = H9 := A9.1.trans h_H9.symm
+  have b1 : H1 < 2 ^ (24 + 6) := by rw [h_H1]; exact A1.2
+  have b2 : H2 < 2 ^ (24 + 5) := by rw [h_H2]; exact A2.2
+  have b3 : H3 < 2 ^ (24 + 3) := by rw [h_H3]; exact A3.2
+  have b4 : H4 < 2 ^ (24 + 2) := by rw [h_H4]; exact A4.2
+  have b6 : H6 < 2 ^ (24 + 7) := by rw [h_H6]; exact A6.2
+  have b7 : H7 < 2 ^ (24 + 5) := by rw [h_H7]; exact A7.2
+  have b8 : H8 < 2 ^ (24 + 4) := by rw [h_H8]; exact A8.2
+  have b9 : H9 < 2 ^ 25 := by rw [h_H9]; exact A9.2
+  have c9b : c9 ≤ 1 := fz_c9 b9 h_c9
+  have C9 := fz_codd b9 (by decide) w32 n_v33 n_v34 h_c9
+  have T := fz_t0 hb_y1 c9b C9.1 n_v35 n_v36 n_g37 n_v37 n_v38
+  have hT : v37 + 2 ^ 32 * v38 = T0 := T.2.1.trans (by rw [h_T0, h_H0])
+  have h37 : v37 < 2 ^ 32 := by rw [n_v37]; exact Nat.mod_lt _ (by decide)
+  have C0 := fz_c0 hT T.2.2 h37 n_g55 n_v58 n_v59 n_v60 h_c0
+  have C1 := fz_codd b1 (by decide) w4 n_v41 n_v44 h_c1
+  have C2 := fz_ceven b2 (by decide) w8 C1.1 C1.2 n_v65 n_v66 h_c2
+  have C3 := fz_codd0 b3 (by decide) w11 n_v45 n_v46 h_c3
+  have C4 := fz_ceven b4 (by decide) w14 C3.1 C3.2 n_v72 n_v73 h_c4
+  have C5 := fz_c5 (c := c5) hb_y10 rfl n_g47 n_v49 n_v48 n_v50 (by rw [h_c5, h_H5])
+  have C6 := fz_c6 b6 (by decide) w19 C5.1 C5.2 n_v51 n_g70 n_v78 n_v77 n_v79 h_c6
+  have C7 := fz_codd b7 (by decide) w23 n_v54 n_v57 h_c7
+  have C8 := fz_ceven b8 (by decide) w27 C7.1 C7.2 n_v84 n_v85 h_c8
+  have X0 := fz_limb0 hT n_v58 n_v62 n_v63 h_c0
+  have X1 := fz_oddA 31 (by decide) b1 (by decide) w4 n_v41 n_v42 n_v43 C0.1 C0.2 n_v61 h_c1
+  have X2 := fz_evenB2 31 (by decide) b2 (by decide) w8 C1.1 C1.2 n_v64 n_v65 n_v69 n_v70 h_c2
+  have X3 := fz_oddB 28 (by decide) b3 (by decide) w11 n_v45 n_v47 C2.1 C2.2 n_v67 n_v68 h_c3
+  have X4 := fz_evenB2 28 (by decide) b4 (by decide) w14 C3.1 C3.2 n_v71 n_v72 n_v75 n_v76 h_c4
+  have X5 := fz_limb5 h_H5.symm n_v48 n_v52 n_v53 C4.1 C4.2 n_v74 h_c5
+  have X6 := fz_evenB 32 (by decide) b6 (by decide) w19 C5.1 C5.2 n_v51 n_v77 n_v81 n_v82 h_c6
+  have X7 := fz_oddA 30 (by decide) b7 (by decide) w23 n_v54 n_v55 n_v56 C6.1 C6.2 n_v80 h_c7
+  have X8 := fz_evenB2 30 (by decide) b8 (by decide) w27 C7.1 C7.2 n_v83 n_v84 n_v87 n_v88 h_c8
+  have X9 := fz_oddA 26 (by decide) b9 (by decide) w32 n_v33 n_v39 n_v40 C8.1 C8.2 n_v86 h_c9
+  exact ⟨X0, X1, X2, X3, X4, X5, X6, X7, X8, X9⟩

@@ -1,0 +1,55 @@
+set_option maxHeartbeats 1000000 in
+/-- `memset(ctx, 0, 236)` called through `OPENSSL_cleanse` from the `Final` frame (return address
+`0x100591` at `U + 220`); the caller's data region is the tag. -/
+theorem fin_ms (ic0 : UInt64) (hic : ic0.toNat + 22 + 4 * 236 < 2 ^ 63) {mac : UInt32}
+    (hM : MemOK G N U 268 lU mac 16 16 lC P)
+    (a0 c0 d0 ebx0 esi0 edi0 ebp0 g0 ctx w0 w1 w2 w3 w4 w5 w6 w7 : UInt32)
+    (hlU : LK lU [(220, 1050001), (224, ctx), (228, 0), (232, 236), (236, w0), (240, w1), (244, w2), (248, w3),
+      (252, w4), (256, w5), (260, w6), (264, w7)])
+    (lK : List (Nat × UInt32)) (hlK : LK lC lK) (hK : ∀ k v, (k, v) ∈ lK → k + 4 ≤ 16)
+    (hcf : FB N.get.size ctx 236) (hcU : ctx.toNat + 236 ≤ U.toNat ∨ U.toNat + 268 ≤ ctx.toNat)
+    (hcm : ctx.toNat + 236 ≤ mac.toNat ∨ mac.toNat + 16 ≤ ctx.toNat)
+    (hP : ∀ x, P x → x < ctx.toNat ∨ ctx.toNat + 236 ≤ x) :
+    ∃ (N' : PMem) (eax ecx edx gf : UInt32),
+      Run img (St.m ⟨N.get, a0, c0, d0, ebx0, UInt32.add U 220, ebp0, esi0, edi0, 0x1005d0, efl g0, icAdd ic0 0⟩)
+        (St.m ⟨N'.get, eax, ecx, edx, ebx0, UInt32.add U 224, ebp0, esi0, edi0, 1050001, efl gf,
+          icAdd ic0 (msK 236)⟩) ∧
+      MemOK G N' U 268 [(236, w0), (240, w1), (244, w2), (248, w3), (252, w4), (256, w5), (260, w6), (264, w7)]
+        mac 16 16 lK P ∧
+      ∀ j, j < 236 → memByte N'.get (ctx + j.toUInt32) = 0 := by
+  have e216 := hM.fU.add_toNat (j := 216) (by decide)
+  have hdUC := hM.dUC
+  have hfc := hcf.fit; have hfi := hcf.img
+  have hMm := hM.callee 216 20 (by decide) [(4, 1050001), (8, ctx), (12, 0), (16, 236)] (fun k v hm => by
+      simp only [List.mem_cons, Prod.mk.injEq, List.not_mem_nil, or_false] at hm
+      rcases hm with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
+      · exact ⟨rfl, by decide, hlU.1⟩
+      · exact ⟨rfl, by decide, hlU.2.1⟩
+      · exact ⟨rfl, by decide, hlU.2.2.1⟩
+      · exact ⟨rfl, by decide, hlU.2.2.2.1⟩)
+    ctx 236 0 [] hcf (by simp only [UInt32.reduceToNat]; omega) (Frame.nil _ _ _)
+    (MsP (UInt32.add U 216) ctx 236) (fun x h => h.1) (fun x _ => by unfold OutF; omega)
+  have hPQ : ∀ x, P x → MsP (UInt32.add U 216) ctx 236 x := by
+    intro x hx
+    have h1 := hM.pU x hx; have h2 := hP x hx
+    unfold OutF at h1
+    exact ⟨by unfold OutF; rw [e216]; simp only [UInt32.reduceToNat]; omega, by simp only [UInt32.reduceToNat]; omega⟩
+  obtain ⟨N', lU', eax, ecx, edx, gf, R, M', hb⟩ :=
+    memset_call ic0 N (UInt32.add U 216) ctx ctx 236 0 1050001 a0 c0 d0 ebx0 esi0 edi0 ebp0 g0 _ hMm
+      ⟨lk_here, lk_skip lk_here rfl, lk_skip (lk_skip lk_here rfl) rfl, lk_skip (lk_skip (lk_skip lk_here rfl) rfl) rfl,
+        trivial⟩ (by simp only [UInt32.reduceToNat]; omega) (by simp only [UInt32.reduceToNat]; omega)
+      (by rw [e216]; simp only [UInt32.reduceToNat]; omega) hic
+  rw [uadd_assoc, uadd_assoc, show (216 : UInt32) + 4 = 220 from rfl, show (216 : UInt32) + 8 = 224 from rfl] at R
+  refine ⟨N', eax, ecx, edx, gf, R, ?_, fun j hj => (hb j hj).trans rfl⟩
+  have hmf := hM.fC.fit
+  refine hM.back M' hPQ _ _ (fun k v hm => ?_) (fun k v hm => ?_)
+  · refine ⟨lk_of_mem hlU k v (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
+      (List.mem_cons_of_mem _ hm)))), fun j hj => ?_⟩
+    have hk : 236 ≤ k ∧ k ≤ 264 := by
+      have := List.mem_map_of_mem (f := Prod.fst) hm; simp at this; omega
+    exact ⟨by unfold OutF; rw [e216]; simp only [UInt32.reduceToNat]; omega, by simp only [UInt32.reduceToNat]; omega⟩
+  · have hk := hK k v hm
+    exact Or.inl ⟨lk_of_mem hlK k v hm, fun j hj =>
+      ⟨by unfold OutF; rw [e216]; simp only [UInt32.reduceToNat]; omega, by simp only [UInt32.reduceToNat]; omega⟩⟩
+
+end Solutions.OpensslPoly1305

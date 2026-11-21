@@ -1,0 +1,48 @@
+import Solutions.Exec.Shape
+/-!
+# Decoded instruction shapes of the Poly1305 image (1/4)
+
+The `decode_shape` theorems (`Solutions.Exec.Shape`) for the instructions of the image
+(`targets/openssl_poly1305`) that the X25519 shape modules (imported by `Solutions.OpensslPoly1305.Shapes`)
+do not define; written by `gen/genshapes.py` from `Solutions/Exec/shapes.py`.
+-/
+open X86 Solutions.Logic Solutions.Exec Solutions.Exec.Shape
+
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+set_option cbv.maxSteps 50000000
+
+decode_shape [0x01, 0xC1] 2
+decode_shape [0x01, 0xC8] 2
+decode_shape [0x01, 0xD8] 2
+decode_shape [0x01, 0xD9] 2
+decode_shape [0x01, 0xDF] 2
+decode_shape [0x01, 0xE8] 2
+decode_shape [0x01, 0xEB] 2
+decode_shape [0x01, 0xEF] 2
+decode_shape [0x01, 0xF7] 2
+decode_shape [0x01, 0xF8] 2
+decode_shape [0x01, 0xFB] 2
+decode_shape [0x01, 0xFD] 2
+decode_shape [0x01, 0xFE] 2
+decode_shape [0x03, 0x0C, 0x24] 3
+decode_shape [0x03, 0x30] 2
+decode_shape [0x09, 0xC7] 2
+decode_shape [0x09, 0xCA] 2
+decode_shape [0x09, 0xD1] 2
+decode_shape [0x09, 0xD6] 2
+decode_shape [0x09, 0xEB] 2
+decode_shape [0x0F, 0x87] 6
+decode_shape [0x0F, 0xAF, 0x44, 0x24] 5
+decode_shape [0x0F, 0xAF, 0x4C, 0x24] 5
+decode_shape [0x0F, 0xAF, 0xF3] 3
+decode_shape [0x0F, 0xB6, 0x1C, 0x32] 4
+decode_shape [0x11, 0xCB] 2
+decode_shape [0x11, 0xCD] 2
+decode_shape [0x11, 0xD8] 2
+decode_shape [0x11, 0xDA] 2
+decode_shape [0x11, 0xE9] 2
+decode_shape [0x11, 0xF9] 2
+decode_shape [0x11, 0xFA] 2
+decode_shape [0x13, 0x50] 3
+decode_shape [0x13, 0x58] 3

@@ -122,7 +122,7 @@ def T.caller (t : T) (img : Img) (L : Layout) (args : List UInt32) (bufs : List 
   let mem := img.bytes.copySlice 0 mem img.base.toNat img.bytes.size
   let mem := bufs.foldl (fun m (a, b) => put m a b) mem
   let mem := put mem sp ((img.halt :: args).flatMap le32)
-  let regs : Regs :=
+  let regs : Ssl.Regs :=
     { eax := r 0
       ecx := ecx.getD (r 1)
       edx := edx.getD (r 2)

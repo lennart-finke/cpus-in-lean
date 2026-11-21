@@ -12,7 +12,7 @@ decodes it (32-bit code segment); `none` if it does not decode. -/
 def vectorKey (base : ByteArray) (v : ByteArray) (o : Nat) : Option String :=
   let code := v.extract (o + 1) (o + 16)
   let mem := code.copySlice 0 base 0x20000 15
-  let r : Regs := { eax := 0, ecx := 0, edx := 0, ebx := 0, esi := 0, edi := 0, ebp := 0, flags := 0 }
+  let r : Ssl.Regs := { eax := 0, ecx := 0, edx := 0, ebx := 0, esi := 0, edi := 0, ebp := 0, flags := 0 }
   match decode (entry mem r 0x20000 0x10000) with
   | .ok i _ => some (encKey i)
   | .error _ _ => none

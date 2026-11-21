@@ -1,0 +1,246 @@
+import Solutions.OpensslX25519.ShapesSq1
+import Solutions.OpensslX25519.ShapesSq2
+import Solutions.OpensslX25519.ShapesSq3
+import Solutions.OpensslX25519.ShapesSq4
+import Solutions.OpensslX25519.ShapesMul1
+import Solutions.OpensslX25519.ShapesMul2
+import Solutions.OpensslX25519.Frame
+import Solutions.Exec.Mul
+/-!
+# The run of `fe_mul`, pieces 102–107
+
+Generated (`gen/genmulmain.py`) from the disassembly: each piece runs at most eight instructions (at
+most four stores) by `cbv` from a memory `N` whose frame words are listed in `l`, and states the
+values it computes as single-operation equations over its inputs.
+-/
+namespace Solutions.OpensslX25519
+open X86 Ssl Solutions.Logic Solutions.Exec Ssl.OpensslX25519 Solutions.Exec.Mul Solutions.Exec.Fast
+
+attribute [local cbv_opaque] Image.bytes
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+set_option cbv.maxSteps 50000000
+
+/-- subl %eax, %edx ; movl %edx, 0x20(%esp) ; movl %ebx, %ebp ; movl %ebx, %esi ; addl $0x1000000, %ebp -/
+theorem mul_p102 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v744 v726 v672 v724 v686 v740 v742 g745 v746 g747 v748 g749 : UInt32)
+        (e_v746 : v746 = (subF 4 v672 v744 0).1)
+    (e_g747 : g747 = (subF 4 v672 v744 0).2)
+    (e_v748 : v748 = (addF 4 v724 16777216 0).1)
+    (e_g749 : g749 = (addF 4 v724 16777216 0).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v744, v726, v672, v724, fb, v686, v740, v742, 0x101a2f, efl g745, 774⟩)
+      (St.m ⟨N'.get, v744, v726, v746, v724, fb, v748, v724, v742, 0x101a3f, efl g749, 779⟩) ∧
+      Frame N' fb 836 ((32, v746) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF N fb 836 32 v746 hS (by decide)), run_of_runOk (k := 5) ?_, (hF.wrF 32 rfl rfl), (hP.wrF (by decide))⟩
+  subst e_g749
+  subst e_v748
+  subst e_g747
+  subst e_v746
+  
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- adcl $0x0, %ecx ; movl %ebp, %eax ; shrdl $0x19, %ecx, %eax ; sarl $0x19, %ecx ; movl 0x1b0(%esp), %ebx ; addl 0x1f0(%esp), %ebx ; movl 0x1b8(%esp), %edx ; adcl 0x1f8(%esp), %edx -/
+theorem mul_p103 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v744 v726 v746 v724 v748 v742 g749 v283 v256 v284 v257 v750 g751 v752 g753 v754 g755 v756 g757 v758 g759 : UInt32)
+        (l_v283 : l.lookup 432 = some v283)
+    (l_v256 : l.lookup 496 = some v256)
+    (l_v284 : l.lookup 440 = some v284)
+    (l_v257 : l.lookup 504 = some v257)
+    (e_v750 : v750 = (addF 4 v726 0 (cfBit g749)).1)
+    (e_g751 : g751 = (addF 4 v726 0 (cfBit g749)).2)
+    (e_v752 : v752 = sdR false v748 v750 25)
+    (e_g753 : g753 = sdF false v748 v750 25)
+    (e_v754 : v754 = sarR v750 25)
+    (e_g755 : g755 = sarF v750 25)
+    (e_v756 : v756 = (addF 4 v283 v256 0).1)
+    (e_g757 : g757 = (addF 4 v283 v256 0).2)
+    (e_v758 : v758 = (addF 4 v284 v257 (cfBit g757)).1)
+    (e_g759 : g759 = (addF 4 v284 v257 (cfBit g757)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v744, v726, v746, v724, fb, v748, v724, v742, 0x101a3f, efl g749, 779⟩)
+      (St.m ⟨N'.get, v752, v754, v758, v756, fb, v748, v724, v742, 0x101a67, efl g759, 787⟩) ∧
+      Frame N' fb 836 (l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨N, run_of_runOk (k := 8) ?_, hF, hP⟩
+  subst e_g759
+  subst e_v758
+  subst e_g757
+  subst e_v756
+  subst e_g755
+  subst e_v754
+  subst e_g753
+  subst e_v752
+  subst e_g751
+  subst e_v750
+  have r_v283 := hF.rd l_v283 432 rfl; subst r_v283
+  have r_v256 := hF.rd l_v256 496 rfl; subst r_v256
+  have r_v284 := hF.rd l_v284 440 rfl; subst r_v284
+  have r_v257 := hF.rd l_v257 504 rfl; subst r_v257
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- addl 0x23c(%esp), %ebx ; adcl 0x240(%esp), %edx ; addl 0x264(%esp), %ebx ; adcl 0x268(%esp), %edx ; addl 0x294(%esp), %ebx ; adcl 0x298(%esp), %edx ; addl 0x2c0(%esp), %ebx ; adcl 0x2c4(%esp), %edx -/
+theorem mul_p104 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v752 v754 v758 v756 v748 v724 v742 g759 v228 v229 v201 v202 v173 v174 v146 v147 v760 g761 v762 g763 v764 g765 v766 g767 v768 g769 v770 g771 v772 g773 v774 g775 : UInt32)
+        (l_v228 : l.lookup 572 = some v228)
+    (l_v229 : l.lookup 576 = some v229)
+    (l_v201 : l.lookup 612 = some v201)
+    (l_v202 : l.lookup 616 = some v202)
+    (l_v173 : l.lookup 660 = some v173)
+    (l_v174 : l.lookup 664 = some v174)
+    (l_v146 : l.lookup 704 = some v146)
+    (l_v147 : l.lookup 708 = some v147)
+    (e_v760 : v760 = (addF 4 v756 v228 0).1)
+    (e_g761 : g761 = (addF 4 v756 v228 0).2)
+    (e_v762 : v762 = (addF 4 v758 v229 (cfBit g761)).1)
+    (e_g763 : g763 = (addF 4 v758 v229 (cfBit g761)).2)
+    (e_v764 : v764 = (addF 4 v760 v201 0).1)
+    (e_g765 : g765 = (addF 4 v760 v201 0).2)
+    (e_v766 : v766 = (addF 4 v762 v202 (cfBit g765)).1)
+    (e_g767 : g767 = (addF 4 v762 v202 (cfBit g765)).2)
+    (e_v768 : v768 = (addF 4 v764 v173 0).1)
+    (e_g769 : g769 = (addF 4 v764 v173 0).2)
+    (e_v770 : v770 = (addF 4 v766 v174 (cfBit g769)).1)
+    (e_g771 : g771 = (addF 4 v766 v174 (cfBit g769)).2)
+    (e_v772 : v772 = (addF 4 v768 v146 0).1)
+    (e_g773 : g773 = (addF 4 v768 v146 0).2)
+    (e_v774 : v774 = (addF 4 v770 v147 (cfBit g773)).1)
+    (e_g775 : g775 = (addF 4 v770 v147 (cfBit g773)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v752, v754, v758, v756, fb, v748, v724, v742, 0x101a67, efl g759, 787⟩)
+      (St.m ⟨N'.get, v752, v754, v774, v772, fb, v748, v724, v742, 0x101a9f, efl g775, 795⟩) ∧
+      Frame N' fb 836 (l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨N, run_of_runOk (k := 8) ?_, hF, hP⟩
+  subst e_g775
+  subst e_v774
+  subst e_g773
+  subst e_v772
+  subst e_g771
+  subst e_v770
+  subst e_g769
+  subst e_v768
+  subst e_g767
+  subst e_v766
+  subst e_g765
+  subst e_v764
+  subst e_g763
+  subst e_v762
+  subst e_g761
+  subst e_v760
+  have r_v228 := hF.rd l_v228 572 rfl; subst r_v228
+  have r_v229 := hF.rd l_v229 576 rfl; subst r_v229
+  have r_v201 := hF.rd l_v201 612 rfl; subst r_v201
+  have r_v202 := hF.rd l_v202 616 rfl; subst r_v202
+  have r_v173 := hF.rd l_v173 660 rfl; subst r_v173
+  have r_v174 := hF.rd l_v174 664 rfl; subst r_v174
+  have r_v146 := hF.rd l_v146 704 rfl; subst r_v146
+  have r_v147 := hF.rd l_v147 708 rfl; subst r_v147
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- addl 0x2e4(%esp), %ebx ; adcl 0x2e8(%esp), %edx ; addl 0x300(%esp), %ebx ; adcl 0x304(%esp), %edx ; addl 0x310(%esp), %ebx ; adcl 0x314(%esp), %edx ; addl 0x30(%esp), %ebx ; adcl 0x24(%esp), %edx -/
+theorem mul_p105 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v752 v754 v774 v772 v748 v724 v742 g775 v118 v119 v91 v92 v63 v64 v341 v342 v776 g777 v778 g779 v780 g781 v782 g783 v784 g785 v786 g787 v788 g789 v790 g791 : UInt32)
+        (l_v118 : l.lookup 740 = some v118)
+    (l_v119 : l.lookup 744 = some v119)
+    (l_v91 : l.lookup 768 = some v91)
+    (l_v92 : l.lookup 772 = some v92)
+    (l_v63 : l.lookup 784 = some v63)
+    (l_v64 : l.lookup 788 = some v64)
+    (l_v341 : l.lookup 48 = some v341)
+    (l_v342 : l.lookup 36 = some v342)
+    (e_v776 : v776 = (addF 4 v772 v118 0).1)
+    (e_g777 : g777 = (addF 4 v772 v118 0).2)
+    (e_v778 : v778 = (addF 4 v774 v119 (cfBit g777)).1)
+    (e_g779 : g779 = (addF 4 v774 v119 (cfBit g777)).2)
+    (e_v780 : v780 = (addF 4 v776 v91 0).1)
+    (e_g781 : g781 = (addF 4 v776 v91 0).2)
+    (e_v782 : v782 = (addF 4 v778 v92 (cfBit g781)).1)
+    (e_g783 : g783 = (addF 4 v778 v92 (cfBit g781)).2)
+    (e_v784 : v784 = (addF 4 v780 v63 0).1)
+    (e_g785 : g785 = (addF 4 v780 v63 0).2)
+    (e_v786 : v786 = (addF 4 v782 v64 (cfBit g785)).1)
+    (e_g787 : g787 = (addF 4 v782 v64 (cfBit g785)).2)
+    (e_v788 : v788 = (addF 4 v784 v341 0).1)
+    (e_g789 : g789 = (addF 4 v784 v341 0).2)
+    (e_v790 : v790 = (addF 4 v786 v342 (cfBit g789)).1)
+    (e_g791 : g791 = (addF 4 v786 v342 (cfBit g789)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v752, v754, v774, v772, fb, v748, v724, v742, 0x101a9f, efl g775, 795⟩)
+      (St.m ⟨N'.get, v752, v754, v790, v788, fb, v748, v724, v742, 0x101ad1, efl g791, 803⟩) ∧
+      Frame N' fb 836 (l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨N, run_of_runOk (k := 8) ?_, hF, hP⟩
+  subst e_g791
+  subst e_v790
+  subst e_g789
+  subst e_v788
+  subst e_g787
+  subst e_v786
+  subst e_g785
+  subst e_v784
+  subst e_g783
+  subst e_v782
+  subst e_g781
+  subst e_v780
+  subst e_g779
+  subst e_v778
+  subst e_g777
+  subst e_v776
+  have r_v118 := hF.rd l_v118 740 rfl; subst r_v118
+  have r_v119 := hF.rd l_v119 744 rfl; subst r_v119
+  have r_v91 := hF.rd l_v91 768 rfl; subst r_v91
+  have r_v92 := hF.rd l_v92 772 rfl; subst r_v92
+  have r_v63 := hF.rd l_v63 784 rfl; subst r_v63
+  have r_v64 := hF.rd l_v64 788 rfl; subst r_v64
+  have r_v341 := hF.rd l_v341 48 rfl; subst r_v341
+  have r_v342 := hF.rd l_v342 36 rfl; subst r_v342
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- addl %eax, %ebx ; adcl %ecx, %edx ; andl $0xfe000000, %ebp -/
+theorem mul_p106 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v752 v754 v790 v788 v748 v724 v742 g791 v792 g793 v794 g795 v796 g797 : UInt32)
+        (e_v792 : v792 = (addF 4 v788 v752 0).1)
+    (e_g793 : g793 = (addF 4 v788 v752 0).2)
+    (e_v794 : v794 = (addF 4 v790 v754 (cfBit g793)).1)
+    (e_g795 : g795 = (addF 4 v790 v754 (cfBit g793)).2)
+    (e_v796 : v796 = (logicF 4 (UInt32.land v748 4261412864)).1)
+    (e_g797 : g797 = (logicF 4 (UInt32.land v748 4261412864)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v752, v754, v790, v788, fb, v748, v724, v742, 0x101ad1, efl g791, 803⟩)
+      (St.m ⟨N'.get, v752, v754, v794, v792, fb, v796, v724, v742, 0x101adb, efl g797, 806⟩) ∧
+      Frame N' fb 836 (l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨N, run_of_runOk (k := 3) ?_, hF, hP⟩
+  subst e_g797
+  subst e_v796
+  subst e_g795
+  subst e_v794
+  subst e_g793
+  subst e_v792
+  
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- subl %ebp, %esi ; movl %esi, 0x18(%esp) ; movl 0x10(%esp), %ecx ; movl %ecx, %eax ; addl $0x2000000, %eax -/
+theorem mul_p107 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 836) (l : List (Nat × UInt32))
+    (hF : Frame N fb 836 l) (hP : Pres G N (OutF fb 828)) (v752 v754 v794 v792 v796 v724 v742 g797 v740 v798 g799 v800 g801 : UInt32)
+        (l_v740 : l.lookup 16 = some v740)
+    (e_v798 : v798 = (subF 4 v724 v796 0).1)
+    (e_g799 : g799 = (subF 4 v724 v796 0).2)
+    (e_v800 : v800 = (addF 4 v740 33554432 0).1)
+    (e_g801 : g801 = (addF 4 v740 33554432 0).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v752, v754, v794, v792, fb, v796, v724, v742, 0x101adb, efl g797, 806⟩)
+      (St.m ⟨N'.get, v800, v740, v794, v792, fb, v796, v798, v742, 0x101aec, efl g801, 811⟩) ∧
+      Frame N' fb 836 ((24, v798) :: l) ∧ Pres G N' (OutF fb 828) := by
+  refine ⟨(stF N fb 836 24 v798 hS (by decide)), run_of_runOk (k := 5) ?_, (hF.wrF 24 rfl rfl), (hP.wrF (by decide))⟩
+  subst e_g801
+  subst e_v800
+  subst e_g799
+  subst e_v798
+  have r_v740 := hF.rd l_v740 16 rfl; subst r_v740
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+end Solutions.OpensslX25519

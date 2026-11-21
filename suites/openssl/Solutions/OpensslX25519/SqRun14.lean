@@ -1,0 +1,124 @@
+import Solutions.OpensslX25519.ShapesSq1
+import Solutions.OpensslX25519.ShapesSq2
+import Solutions.OpensslX25519.ShapesSq3
+import Solutions.OpensslX25519.ShapesSq4
+import Solutions.OpensslX25519.Frame
+import Solutions.Exec.Mul
+/-!
+# The run of `fe_sq`, pieces 78–81
+
+Generated (`.lake/scratch/i/gensq.py`) from the disassembly: each piece runs at most eight
+instructions (at most four stores) by `cbv` from a memory `N` whose frame words are listed in `l`,
+and states the values it computes as single-operation equations over its inputs.
+-/
+namespace Solutions.OpensslX25519
+open X86 Ssl Solutions.Logic Solutions.Exec Ssl.OpensslX25519 Solutions.Exec.Mul Solutions.Exec.Fast
+
+attribute [local cbv_opaque] Image.bytes
+set_option maxRecDepth 100000
+set_option maxHeartbeats 0
+set_option cbv.maxSteps 50000000
+
+/-- mull %edx ; addl %edi, %edx ; addl 0xc(%esp), %eax ; adcl 0x14(%esp), %edx ; andl $0xfe000000, %esi -/
+theorem sq_p78 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 468) (l : List (Nat × UInt32))
+    (hF : Frame N fb 468 l) (hP : Pres G N (OutF fb 464)) (v542 v504 v530 v536 v538 v547 g545 v276 v278 v548 v549 g550 v551 g552 v553 g554 v555 g556 v557 g558 : UInt32)
+        (l_v276 : l.lookup 12 = some v276)
+    (l_v278 : l.lookup 20 = some v278)
+    (e_v548 : v548 = UInt64.toUInt32 (UInt64.mul (UInt32.toUInt64 v542) 19))
+    (e_v549 : v549 = UInt64.toUInt32 (UInt64.shiftRight (UInt64.mul (UInt32.toUInt64 v542) 19) 32))
+    (e_g550 : g550 = mixF g545 (ovfBits (UInt64.shiftRight (UInt64.mul (UInt32.toUInt64 v542) 19) 32 != 0)) 2049)
+    (e_v551 : v551 = (addF 4 v549 v547 0).1)
+    (e_g552 : g552 = (addF 4 v549 v547 0).2)
+    (e_v553 : v553 = (addF 4 v548 v276 0).1)
+    (e_g554 : g554 = (addF 4 v548 v276 0).2)
+    (e_v555 : v555 = (addF 4 v551 v278 (cfBit g554)).1)
+    (e_g556 : g556 = (addF 4 v551 v278 (cfBit g554)).2)
+    (e_v557 : v557 = (logicF 4 (UInt32.land v538 4261412864)).1)
+    (e_g558 : g558 = (logicF 4 (UInt32.land v538 4261412864)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v542, v504, 19, v530, fb, v536, v538, v547, 0x102c59, efl g545, 539⟩)
+      (St.m ⟨N'.get, v553, v504, v555, v530, fb, v536, v557, v547, 0x102c6b, efl g558, 544⟩) ∧
+      Frame N' fb 468 (l) ∧ Pres G N' (OutF fb 464) := by
+  refine ⟨N, run_of_runOk (k := 5) ?_, hF, hP⟩
+  subst e_g558
+  subst e_v557
+  subst e_g556
+  subst e_v555
+  subst e_g554
+  subst e_v553
+  subst e_g552
+  subst e_v551
+  subst e_g550
+  subst e_v549
+  subst e_v548
+  have r_v276 := hF.rd l_v276 12 rfl; subst r_v276
+  have r_v278 := hF.rd l_v278 20 rfl; subst r_v278
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- subl %esi, %ebx ; movl %eax, %esi ; addl $0x2000000, %esi -/
+theorem sq_p79 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 468) (l : List (Nat × UInt32))
+    (hF : Frame N fb 468 l) (hP : Pres G N (OutF fb 464)) (v553 v504 v555 v530 v536 v557 v547 g558 v559 g560 v561 g562 : UInt32)
+        (e_v559 : v559 = (subF 4 v530 v557 0).1)
+    (e_g560 : g560 = (subF 4 v530 v557 0).2)
+    (e_v561 : v561 = (addF 4 v553 33554432 0).1)
+    (e_g562 : g562 = (addF 4 v553 33554432 0).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v553, v504, v555, v530, fb, v536, v557, v547, 0x102c6b, efl g558, 544⟩)
+      (St.m ⟨N'.get, v553, v504, v555, v559, fb, v536, v561, v547, 0x102c75, efl g562, 547⟩) ∧
+      Frame N' fb 468 (l) ∧ Pres G N' (OutF fb 464) := by
+  refine ⟨N, run_of_runOk (k := 3) ?_, hF, hP⟩
+  subst e_g562
+  subst e_v561
+  subst e_g560
+  subst e_v559
+  
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- adcl $0x0, %edx ; shldl $0x6, %esi, %edx ; addl (%esp), %edx ; andl $0xfc000000, %esi -/
+theorem sq_p80 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 468) (l : List (Nat × UInt32))
+    (hF : Frame N fb 468 l) (hP : Pres G N (OutF fb 464)) (v553 v504 v555 v559 v536 v561 v547 g562 v344 v563 g564 v565 g566 v567 g568 v569 g570 : UInt32)
+        (l_v344 : l.lookup 0 = some v344)
+    (e_v563 : v563 = (addF 4 v555 0 (cfBit g562)).1)
+    (e_g564 : g564 = (addF 4 v555 0 (cfBit g562)).2)
+    (e_v565 : v565 = sdR true v563 v561 6)
+    (e_g566 : g566 = sdF true v563 v561 6)
+    (e_v567 : v567 = (addF 4 v565 v344 0).1)
+    (e_g568 : g568 = (addF 4 v565 v344 0).2)
+    (e_v569 : v569 = (logicF 4 (UInt32.land v561 4227858432)).1)
+    (e_g570 : g570 = (logicF 4 (UInt32.land v561 4227858432)).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v553, v504, v555, v559, fb, v536, v561, v547, 0x102c75, efl g562, 547⟩)
+      (St.m ⟨N'.get, v553, v504, v567, v559, fb, v536, v569, v547, 0x102c85, efl g570, 551⟩) ∧
+      Frame N' fb 468 (l) ∧ Pres G N' (OutF fb 464) := by
+  refine ⟨N, run_of_runOk (k := 4) ?_, hF, hP⟩
+  subst e_g570
+  subst e_v569
+  subst e_g568
+  subst e_v567
+  subst e_g566
+  subst e_v565
+  subst e_g564
+  subst e_v563
+  have r_v344 := hF.rd0 l_v344; subst r_v344
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+/-- subl %esi, %eax -/
+theorem sq_p81 (G N : XMem) (fb : UInt32) (hS : FB N.get.size fb 468) (l : List (Nat × UInt32))
+    (hF : Frame N fb 468 l) (hP : Pres G N (OutF fb 464)) (v553 v504 v567 v559 v536 v569 v547 g570 v571 g572 : UInt32)
+        (e_v571 : v571 = (subF 4 v553 v569 0).1)
+    (e_g572 : g572 = (subF 4 v553 v569 0).2) :
+    ∃ N' : XMem, Run img (St.m ⟨N.get, v553, v504, v567, v559, fb, v536, v569, v547, 0x102c85, efl g570, 551⟩)
+      (St.m ⟨N'.get, v571, v504, v567, v559, fb, v536, v569, v547, 0x102c87, efl g572, 552⟩) ∧
+      Frame N' fb 468 (l) ∧ Pres G N' (OutF fb 464) := by
+  refine ⟨N, run_of_runOk (k := 1) ?_, hF, hP⟩
+  subst e_g572
+  subst e_v571
+  
+  have h1 := hS.top; have h2 := hS.fit; have h3 := hS.img
+  clear hF hP
+  cbv
+
+end Solutions.OpensslX25519

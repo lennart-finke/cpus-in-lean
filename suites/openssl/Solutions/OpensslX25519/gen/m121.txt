@@ -1,0 +1,183 @@
+103c00 pushl %ebp
+103c01 pushl %ebx
+103c02 pushl %edi
+103c03 pushl %esi
+103c04 subl $0x44, %esp
+103c07 movl %edx, %esi
+103c09 movl %ecx, 0x40(%esp)
+103c0d movl $0x1db42, %eax
+103c12 imull (%edx)
+103c14 movl %edx, 0x8(%esp)
+103c18 movl %eax, 0xc(%esp)
+103c1c movl $0x1db42, %eax
+103c21 imull 0x4(%esi)
+103c24 movl %edx, 0x10(%esp)
+103c28 movl %eax, 0x18(%esp)
+103c2c movl $0x1db42, %eax
+103c31 imull 0x8(%esi)
+103c34 movl %edx, 0x28(%esp)
+103c38 movl %eax, 0x4(%esp)
+103c3c movl $0x1db42, %eax
+103c41 imull 0xc(%esi)
+103c44 movl %edx, %edi
+103c46 movl %eax, 0x1c(%esp)
+103c4a movl $0x1db42, %eax
+103c4f imull 0x10(%esi)
+103c52 movl %edx, (%esp)
+103c55 movl %eax, 0x14(%esp)
+103c59 movl $0x1db42, %eax
+103c5e imull 0x14(%esi)
+103c61 movl %edx, %ebx
+103c63 movl %eax, 0x20(%esp)
+103c67 movl $0x1db42, %eax
+103c6c imull 0x18(%esi)
+103c6f movl %edx, 0x30(%esp)
+103c73 movl %eax, 0x2c(%esp)
+103c77 movl $0x1db42, %eax
+103c7c imull 0x1c(%esi)
+103c7f movl %edx, %ebp
+103c81 movl %eax, 0x24(%esp)
+103c85 movl $0x1db42, %eax
+103c8a imull 0x20(%esi)
+103c8d movl %edx, 0x38(%esp)
+103c91 movl %eax, 0x34(%esp)
+103c95 movl $0x1db42, %eax
+103c9a imull 0x24(%esi)
+103c9d movl %eax, %esi
+103c9f movl %eax, %ecx
+103ca1 addl $0x1000000, %ecx
+103ca7 adcl $0x0, %edx
+103caa shldl $0x7, %ecx, %edx
+103cae movl %edx, %eax
+103cb0 movl $0x13, %edx
+103cb5 imull %edx
+103cb7 addl 0xc(%esp), %eax
+103cbb movl %eax, 0xc(%esp)
+103cbf adcl 0x8(%esp), %edx
+103cc3 movl %edx, 0x8(%esp)
+103cc7 andl $0xfe000000, %ecx
+103ccd subl %ecx, %esi
+103ccf movl %esi, 0x3c(%esp)
+103cd3 movl 0x18(%esp), %edx
+103cd7 movl %edx, %eax
+103cd9 addl $0x1000000, %eax
+103cde movl 0x10(%esp), %ecx
+103ce2 adcl $0x0, %ecx
+103ce5 movl %eax, %esi
+103ce7 shrdl $0x19, %ecx, %esi
+103ceb sarl $0x19, %ecx
+103cee addl 0x4(%esp), %esi
+103cf2 movl %esi, 0x4(%esp)
+103cf6 adcl 0x28(%esp), %ecx
+103cfa movl %ecx, 0x10(%esp)
+103cfe andl $0xfe000000, %eax
+103d03 subl %eax, %edx
+103d05 movl %edx, 0x18(%esp)
+103d09 movl 0x1c(%esp), %ecx
+103d0d movl %ecx, %eax
+103d0f addl $0x1000000, %eax
+103d14 adcl $0x0, %edi
+103d17 movl %eax, %edx
+103d19 shrdl $0x19, %edi, %edx
+103d1d sarl $0x19, %edi
+103d20 addl 0x14(%esp), %edx
+103d24 movl %edx, 0x14(%esp)
+103d28 adcl (%esp), %edi
+103d2b movl %edi, (%esp)
+103d2e andl $0xfe000000, %eax
+103d33 subl %eax, %ecx
+103d35 movl %ecx, 0x1c(%esp)
+103d39 movl 0x20(%esp), %ecx
+103d3d movl %ecx, %eax
+103d3f addl $0x1000000, %eax
+103d44 adcl $0x0, %ebx
+103d47 movl %eax, %esi
+103d49 shrdl $0x19, %ebx, %esi
+103d4d sarl $0x19, %ebx
+103d50 addl 0x2c(%esp), %esi
+103d54 adcl 0x30(%esp), %ebx
+103d58 andl $0xfe000000, %eax
+103d5d subl %eax, %ecx
+103d5f movl %ecx, 0x20(%esp)
+103d63 movl 0x24(%esp), %ecx
+103d67 movl %ecx, %eax
+103d69 addl $0x1000000, %eax
+103d6e adcl $0x0, %ebp
+103d71 movl %eax, %edx
+103d73 shrdl $0x19, %ebp, %edx
+103d77 sarl $0x19, %ebp
+103d7a addl 0x34(%esp), %edx
+103d7e adcl 0x38(%esp), %ebp
+103d82 andl $0xfe000000, %eax
+103d87 subl %eax, %ecx
+103d89 movl %ecx, 0x24(%esp)
+103d8d movl 0xc(%esp), %ecx
+103d91 movl %ecx, %eax
+103d93 addl $0x2000000, %eax
+103d98 movl 0x8(%esp), %edi
+103d9c adcl $0x0, %edi
+103d9f shldl $0x6, %eax, %edi
+103da3 addl 0x18(%esp), %edi
+103da7 movl %edi, 0x8(%esp)
+103dab andl $0xfc000000, %eax
+103db0 subl %eax, %ecx
+103db2 movl %ecx, 0xc(%esp)
+103db6 movl 0x4(%esp), %edi
+103dba movl %edi, %eax
+103dbc addl $0x2000000, %eax
+103dc1 movl 0x10(%esp), %ecx
+103dc5 adcl $0x0, %ecx
+103dc8 shldl $0x6, %eax, %ecx
+103dcc addl 0x1c(%esp), %ecx
+103dd0 movl %ecx, 0x10(%esp)
+103dd4 andl $0xfc000000, %eax
+103dd9 subl %eax, %edi
+103ddb movl %edi, 0x4(%esp)
+103ddf movl 0x14(%esp), %ecx
+103de3 movl %ecx, %eax
+103de5 addl $0x2000000, %eax
+103dea movl (%esp), %edi
+103ded adcl $0x0, %edi
+103df0 shldl $0x6, %eax, %edi
+103df4 addl 0x20(%esp), %edi
+103df8 movl %edi, (%esp)
+103dfb andl $0xfc000000, %eax
+103e00 subl %eax, %ecx
+103e02 movl %ecx, %edi
+103e04 movl %esi, %eax
+103e06 addl $0x2000000, %eax
+103e0b movl %ebx, %ecx
+103e0d adcl $0x0, %ecx
+103e10 shldl $0x6, %eax, %ecx
+103e14 addl 0x24(%esp), %ecx
+103e18 andl $0xfc000000, %eax
+103e1d subl %eax, %esi
+103e1f movl %edx, %eax
+103e21 addl $0x2000000, %eax
+103e26 adcl $0x0, %ebp
+103e29 shldl $0x6, %eax, %ebp
+103e2d addl 0x3c(%esp), %ebp
+103e31 andl $0xfc000000, %eax
+103e36 subl %eax, %edx
+103e38 movl 0x40(%esp), %eax
+103e3c movl 0xc(%esp), %ebx
+103e40 movl %ebx, (%eax)
+103e42 movl 0x8(%esp), %ebx
+103e46 movl %ebx, 0x4(%eax)
+103e49 movl 0x4(%esp), %ebx
+103e4d movl %ebx, 0x8(%eax)
+103e50 movl 0x10(%esp), %ebx
+103e54 movl %ebx, 0xc(%eax)
+103e57 movl %edi, 0x10(%eax)
+103e5a movl (%esp), %edi
+103e5d movl %edi, 0x14(%eax)
+103e60 movl %esi, 0x18(%eax)
+103e63 movl %ecx, 0x1c(%eax)
+103e66 movl %edx, 0x20(%eax)
+103e69 movl %ebp, 0x24(%eax)
+103e6c addl $0x44, %esp
+103e6f popl %esi
+103e70 popl %edi
+103e71 popl %ebx
+103e72 popl %ebp
+103e73 retl
